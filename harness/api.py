@@ -146,7 +146,11 @@ async def trial_run(row_id: str):
     trial = Trial(trial_id=trial_id, config=cfg, turn_plan=plan, status="running")
     STORE.save(trial)
 
-    # Subscribe audit_tail → capture into buffer for this trial
+    # Record trial start time for time-window audit correlation.
+    # Header-based demux still registered as a fallback (fires only if
+    # cidgar ever starts logging X-Harness-Trial-ID; currently does not).
+    import time
+    trial_started_mono = time.time()
     if AUDIT_TAIL is not None:
         def cb(entry: dict):
             AUDIT_BUFFER_PER_TRIAL[trial_id].append(AuditEntry(
@@ -162,14 +166,32 @@ async def trial_run(row_id: str):
     adapter = AdapterClient(framework=cfg.framework)
 
     # Run in background (pass row_id so we can update the matrix on completion)
-    asyncio.create_task(_run_trial_bg(trial_id, adapter, row_id=row_id))
+    asyncio.create_task(_run_trial_bg(trial_id, adapter, row_id=row_id, started_mono=trial_started_mono))
 
     return {"trial_id": trial_id, "status": "running"}
 
 
-async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None):
+async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, started_mono: float | None = None):
     def audit_provider():
-        return list(AUDIT_BUFFER_PER_TRIAL.get(trial_id, []))
+        """Combine (a) header-demuxed entries (future) + (b) time-window entries.
+        Plan A relies on (b) since cidgar governance log omits request headers.
+        """
+        demuxed = list(AUDIT_BUFFER_PER_TRIAL.get(trial_id, []))
+        if AUDIT_TAIL is not None and started_mono is not None:
+            window = AUDIT_TAIL.entries_since(started_mono)
+            # Dedupe against demuxed (header-matched) entries by phase+cid+timestamp
+            seen = {(e.phase, e.cid, e.captured_at) for e in demuxed}
+            for e in window:
+                key = (e.get("phase"), e.get("cid"), e.get("timestamp"))
+                if key in seen:
+                    continue
+                demuxed.append(AuditEntry(
+                    trial_id=trial_id, turn_id=e.get("turn_id"),
+                    phase=e.get("phase"), cid=e.get("cid"),
+                    backend=e.get("backend"), raw=e.get("raw", {}),
+                    captured_at=e.get("timestamp", ""),
+                ))
+        return demuxed
 
     await run_trial(
         trial_id=trial_id,

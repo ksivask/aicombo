@@ -14,26 +14,56 @@ def _user_msg_turns(trial: Trial):
     return [t for t in trial.turns if t.kind == "user_msg"]
 
 
+def _has_header_demux(trial: Trial) -> bool:
+    """True if audit entries carry turn_id (header-based demux available)."""
+    return any(e.turn_id for e in trial.audit_entries)
+
+
 def _audit_for_turn(trial: Trial, turn_id: str) -> list:
+    """Header-demux path: entries with matching turn_id + a cid."""
     return [e for e in trial.audit_entries if e.turn_id == turn_id and e.cid]
 
 
+def _audit_with_cid(trial: Trial) -> list:
+    """Time-window path: all entries that carry a CID."""
+    return [e for e in trial.audit_entries if e.cid]
+
+
 def verdict_a_presence(trial: Trial) -> Verdict:
-    """(a) presence — each user_msg turn has ≥1 audit entry with a cid."""
+    """(a) presence — audit log shows cidgar fired for this trial's turns."""
     user_turns = _user_msg_turns(trial)
     if not user_turns:
         return Verdict("na", "no user_msg turns in trial")
-    cids = set()
-    for t in user_turns:
-        matching = _audit_for_turn(trial, t.turn_id)
-        if not matching:
-            if not trial.audit_entries:
-                return Verdict("error",
-                    "no AGW audit entries captured — check governance policy on route "
-                    "and RUST_LOG_FORMAT=json")
-            return Verdict("fail", f"Turn {t.turn_idx} has no audit entry with a CID")
-        cids.update(e.cid for e in matching)
-    return Verdict("pass", f"CID present in all {len(user_turns)} turns; unique CIDs: {sorted(cids)}")
+
+    if not trial.audit_entries:
+        return Verdict("error",
+            "no AGW audit entries captured — check governance policy on route "
+            "and that audit_tail can reach the AGW container")
+
+    if _has_header_demux(trial):
+        # Strict per-turn correlation (only when cidgar emits headers in governance log)
+        cids = set()
+        for t in user_turns:
+            matching = _audit_for_turn(trial, t.turn_id)
+            if not matching:
+                return Verdict("fail", f"Turn {t.turn_idx} has no audit entry with a CID")
+            cids.update(e.cid for e in matching)
+        return Verdict("pass",
+            f"CID present in all {len(user_turns)} turns; unique CIDs: {sorted(cids)}")
+
+    # Time-window correlation (Plan A default; cidgar log has no headers)
+    cid_entries = _audit_with_cid(trial)
+    if not cid_entries:
+        return Verdict("fail",
+            f"{len(trial.audit_entries)} audit entries but none carry a CID")
+    unique_cids = sorted({e.cid for e in cid_entries})
+    if len(cid_entries) < len(user_turns):
+        return Verdict("fail",
+            f"only {len(cid_entries)} CID-bearing audit entries for "
+            f"{len(user_turns)} turns (expected ≥ one per turn)")
+    return Verdict("pass",
+        f"CID present across {len(cid_entries)} audit entries for "
+        f"{len(user_turns)} turns (time-window correlation); unique CIDs: {unique_cids}")
 
 
 def _find_cid_in_text(text: str) -> str | None:
@@ -74,21 +104,27 @@ def _find_c2_marker_openai(body: dict[str, Any]) -> str | None:
 
 
 def verdict_b_channel_structure(trial: Trial) -> Verdict:
-    """(b) channel structure — expected channels carry audit-reported CID."""
+    """(b) channel structure — response bodies carry CIDs matching audit log."""
     user_turns = _user_msg_turns(trial)
     if not user_turns:
         return Verdict("na", "no user_msg turns in trial")
 
+    header_demux = _has_header_demux(trial)
+    all_audit_cids = {e.cid for e in trial.audit_entries if e.cid}
     issues = []
 
     for t in user_turns:
-        audit = _audit_for_turn(trial, t.turn_id)
-        if not audit:
-            return Verdict("error", f"turn {t.turn_idx} has no audit entry — verdict_a should have caught this")
-        expected_cid = audit[0].cid
-        body = (t.response or {}).get("body", {}) or {}
+        if header_demux:
+            audit = _audit_for_turn(trial, t.turn_id)
+            if not audit:
+                return Verdict("error",
+                    f"turn {t.turn_idx} has no audit entry — verdict_a should have caught this")
+            expected_cids = {audit[0].cid}
+        else:
+            # Time-window correlation — any CID seen in audit is acceptable
+            expected_cids = all_audit_cids
 
-        # Detect whether this turn carries tool_calls (→ C1 expected) or text (→ C2 expected)
+        body = (t.response or {}).get("body", {}) or {}
         choices = body.get("choices", []) or []
         has_tool_calls = any(
             (ch.get("message", {}) or {}).get("tool_calls")
@@ -100,19 +136,23 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
         )
 
         if has_tool_calls:
-            c1_cids = _find_cid_in_tool_calls_openai(body)
-            if expected_cid not in c1_cids:
-                issues.append(f"Turn {t.turn_idx}: C1 missing — expected cid={expected_cid} "
-                              f"in tool_calls[].function.arguments._ib_cid; found={c1_cids}")
+            c1_cids = set(_find_cid_in_tool_calls_openai(body))
+            if not (c1_cids & expected_cids):
+                issues.append(f"Turn {t.turn_idx}: C1 missing — no tool_calls cid "
+                              f"matched audit (found={c1_cids}, expected one of={expected_cids})")
         elif has_text:
             c2_cid = _find_c2_marker_openai(body)
-            if c2_cid != expected_cid:
-                issues.append(f"Turn {t.turn_idx}: C2 text marker missing or mismatched — "
-                              f"expected cid={expected_cid}; found={c2_cid}")
+            if c2_cid is None:
+                issues.append(f"Turn {t.turn_idx}: C2 text marker absent from response content")
+            elif c2_cid not in expected_cids:
+                issues.append(f"Turn {t.turn_idx}: C2 marker cid={c2_cid} "
+                              f"not in audit CIDs {expected_cids}")
 
     if issues:
         return Verdict("fail", " | ".join(issues))
-    return Verdict("pass", f"all channels carry expected CID across {len(user_turns)} turns")
+    mode = "header-demux" if header_demux else "time-window"
+    return Verdict("pass",
+        f"channels carry expected CID across {len(user_turns)} turns ({mode})")
 
 
 def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
