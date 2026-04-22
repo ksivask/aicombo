@@ -1,0 +1,97 @@
+networks:
+  aiplay-network:
+    driver: bridge
+    name: aiplay_net
+
+services:
+
+  # ── Harness API (+ frontend) ──
+  harness-api:
+    build: ./harness
+    image: aiplay-harness:local
+    ports:
+      - "8000:8000"
+    environment:
+      - AIPLAY_DEFAULT_ROUTING=via_agw
+      - MAX_CONCURRENT_TRIALS=1
+      - TURN_CAP=10
+      - AGW_CONTAINER_NAME=agentgateway
+      - AGW_ADMIN_URL=http://agentgateway:15000
+      - DATA_DIR=/data
+    volumes:
+      - ./data:/data
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./frontend:/app/frontend:ro
+      - ./harness/defaults.yaml:/app/defaults.yaml:ro
+    depends_on:
+      - agentgateway
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  # ── AGW (cidgar branch, externally-built) ──
+  agentgateway:
+    image: agentgateway:cidgar
+    command: ["-f", "/config/gateway-config.yaml"]
+    ports:
+      - "8080:8080"
+      - "15000:15000"
+    environment:
+      - RUST_LOG=info,agentgateway::governance=debug
+      - RUST_LOG_FORMAT=json
+      - ADMIN_ADDR=0.0.0.0:15000
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./agw/config.yaml:/config/gateway-config.yaml:ro
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  # ── Adapter: langchain (Plan A's only framework adapter) ──
+  adapter-langchain:
+    build: ./adapters/langchain
+    image: aiplay-adapter-langchain:local
+    environment:
+      - ADAPTER_PORT=5001
+      - AGW_LLM_BASE_URL_OLLAMA=http://agentgateway:8080/llm/ollama/v1
+      - AGW_MCP_WEATHER=http://agentgateway:8080/mcp/weather
+      - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
+      - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
+      - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
+      - DIRECT_MCP_WEATHER=http://mcp-weather:8000/mcp
+      - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
+      - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
+      - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DEFAULT_OLLAMA_MODEL=qwen2.5:7b-instruct
+    env_file: [.env]
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      - agentgateway
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  # ── MCP servers (all 4 imported from demo; all on aiplay-network) ──
+  mcp-weather:
+    build: ./mcp/weather
+    image: aiplay-mcp-weather:local
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  mcp-news:
+    build: ./mcp/news
+    image: aiplay-mcp-news:local
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  mcp-library:
+    build: ./mcp/library
+    image: aiplay-mcp-library:local
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  mcp-fetch:
+    build: ./mcp/fetch
+    image: aiplay-mcp-fetch:local
+    networks: [aiplay-network]
+    restart: unless-stopped
