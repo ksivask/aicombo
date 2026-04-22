@@ -1,0 +1,67 @@
+body { font-family: system-ui, sans-serif; margin: 0; background: #f7f7f7; }
+
+.toolbar {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 10px 20px; background: #333; color: white;
+}
+.toolbar h1 { margin: 0; font-size: 18px; }
+.toolbar-actions button {
+  margin-left: 6px; padding: 6px 12px; background: #555;
+  color: white; border: none; border-radius: 3px; cursor: pointer;
+}
+.toolbar-actions button:hover { background: #666; }
+
+main { padding: 10px; }
+
+#matrix-grid { background: white; border: 1px solid #ddd; }
+
+.status-pill { padding: 2px 8px; border-radius: 12px; font-size: 11px; }
+.status-pill.pass { background: #d4edda; color: #155724; }
+.status-pill.fail { background: #f8d7da; color: #721c24; }
+.status-pill.running { background: #fff3cd; color: #856404; }
+.status-pill.idle { background: #e2e3e5; color: #495057; }
+.status-pill.error { background: #f8d7da; color: #721c24; }
+
+.verdict-pill {
+  display: inline-block; width: 20px; text-align: center;
+  margin-right: 2px; font-weight: bold;
+}
+.verdict-pill.pass { color: #28a745; }
+.verdict-pill.fail { color: #dc3545; }
+.verdict-pill.na { color: #6c757d; }
+
+.drawer {
+  background: white; border: 1px solid #ddd; border-top: none;
+  height: 35vh; overflow-y: auto;
+}
+.drawer.hidden { display: none; }
+.drawer-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 8px 16px; background: #f0f0f0; border-bottom: 1px solid #ddd;
+}
+.drawer-tabs { display: flex; border-bottom: 1px solid #ddd; }
+.tab-btn {
+  padding: 8px 16px; background: none; border: none; cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+.tab-btn.active { border-bottom-color: #007bff; font-weight: bold; }
+.drawer-body { padding: 16px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+.turn-card {
+  border: 1px solid #ddd; margin-bottom: 10px; padding: 10px;
+  border-radius: 4px;
+}
+.turn-card h4 { margin: 0 0 6px 0; font-size: 14px; }
+.turn-card pre {
+  background: #f5f5f5; padding: 8px; border-radius: 3px;
+  font-size: 11px; overflow-x: auto; max-height: 200px;
+}
+
+.verdict-card {
+  border-left: 3px solid #ccc; padding: 6px 12px; margin-bottom: 6px;
+}
+.verdict-card.pass { border-left-color: #28a745; background: #f4f9f5; }
+.verdict-card.fail { border-left-color: #dc3545; background: #fbf4f4; }
+.verdict-card.na { border-left-color: #6c757d; background: #f5f5f5; }

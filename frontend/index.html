@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>aiplay — cidgar Harness C</title>
+  <link rel="stylesheet" href="/style.css">
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/ag-grid-community@32/styles/ag-grid.css">
+  <link rel="stylesheet"
+    href="https://cdn.jsdelivr.net/npm/ag-grid-community@32/styles/ag-theme-quartz.css">
+</head>
+<body>
+  <header class="toolbar">
+    <h1>aiplay — cidgar Harness C</h1>
+    <div class="toolbar-actions">
+      <button id="btn-add-row">+ Add Row</button>
+      <button id="btn-run-all">▶ Run All</button>
+      <button id="btn-settings">⚙ Settings</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="matrix-grid" class="ag-theme-quartz" style="height: 60vh;"></div>
+    <div id="drawer" class="drawer hidden">
+      <div class="drawer-header">
+        <span id="drawer-title">Trial details</span>
+        <button id="drawer-close">✕</button>
+      </div>
+      <div class="drawer-tabs">
+        <button class="tab-btn active" data-tab="turns">Turns</button>
+        <button class="tab-btn" data-tab="verdicts">Verdicts</button>
+        <button class="tab-btn" data-tab="raw">Raw JSON</button>
+      </div>
+      <div class="drawer-body">
+        <div id="tab-turns" class="tab-content active"></div>
+        <div id="tab-verdicts" class="tab-content"></div>
+        <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
+      </div>
+    </div>
+  </main>
+
+  <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32/dist/ag-grid-community.min.js"></script>
+  <script type="module" src="/config.js"></script>
+  <script type="module" src="/app.js"></script>
+  <script type="module" src="/drawer.js"></script>
+</body>
+</html>
