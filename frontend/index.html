@@ -21,10 +21,14 @@
 
   <main>
     <div id="matrix-grid" class="ag-theme-quartz" style="height: 60vh;"></div>
-    <div id="drawer" class="drawer hidden">
+    <div id="drawer" class="drawer hidden" style="height: 35vh;">
+      <div class="drawer-resize-handle" title="drag to resize"></div>
       <div class="drawer-header">
         <span id="drawer-title">Trial details</span>
-        <button id="drawer-close">✕</button>
+        <span class="drawer-header-actions">
+          <button id="drawer-maximize" title="toggle full-screen">⇱</button>
+          <button id="drawer-close" title="close">✕</button>
+        </span>
       </div>
       <div class="drawer-tabs">
         <button class="tab-btn active" data-tab="turns">Turns</button>

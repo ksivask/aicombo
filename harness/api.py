@@ -38,9 +38,39 @@ SSE_QUEUES: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
 def _load_matrix() -> list[dict]:
     if not MATRIX_PATH.exists():
+        # First-boot seed from harness/defaults.yaml
+        seeded = _seed_matrix_from_defaults()
+        if seeded:
+            _save_matrix(seeded)
+            return seeded
         return []
     with MATRIX_PATH.open() as f:
         return json.load(f).get("rows", [])
+
+
+def _seed_matrix_from_defaults() -> list[dict]:
+    """Load matrix_seed_rows from harness/defaults.yaml (Plan A: langchain row)."""
+    try:
+        import yaml
+        defaults_path = Path(__file__).with_name("defaults.yaml")
+        if not defaults_path.exists():
+            return []
+        with defaults_path.open() as f:
+            data = yaml.safe_load(f) or {}
+        rows_spec = data.get("matrix_seed_rows", [])
+        seeded = []
+        for idx, spec in enumerate(rows_spec):
+            # Plan A only runs langchain. Seed just langchain rows (+ the NONE direct-MCP
+            # row) — the other frameworks become available in Plan B.
+            if spec.get("framework") not in ("langchain", "NONE"):
+                continue
+            seeded.append({
+                "row_id": f"row-seed-{idx:02d}",
+                **spec,
+            })
+        return seeded
+    except Exception:
+        return []
 
 
 def _save_matrix(rows: list[dict]) -> None:

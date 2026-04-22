@@ -127,10 +127,27 @@ export async function refreshDrawer(trialId) {
     `).join("");
   };
 
+  // Audit entries may not carry turn_id (cidgar governance log omits headers),
+  // so fall back to time-window matching on captured_at between turn start/end.
+  const pickAudits = (t) => {
+    const all = trial.audit_entries || [];
+    const headerDemux = all.some(a => a.turn_id);
+    if (headerDemux) {
+      return all.filter(a => a.turn_id === t.turn_id);
+    }
+    // Time-window: include audit entries whose captured_at falls within this turn's window.
+    const start = t.started_at || "";
+    const end = t.finished_at || "9999";
+    return all.filter(a => {
+      const ts = a.captured_at || "";
+      return ts >= start && ts <= end;
+    });
+  };
+
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => {
     const req = t.request || {};
     const resp = t.response || {};
-    const audits = (trial.audit_entries || []).filter(a => a.turn_id === t.turn_id);
+    const audits = pickAudits(t);
     return `
     <div class="turn-card">
       <h4>Turn ${i}: ${t.kind} <span class="turn-id">${t.turn_id || ''}</span></h4>
