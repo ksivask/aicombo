@@ -177,6 +177,14 @@ async def trial_run(row_id: str):
     if not row:
         raise HTTPException(404, "row not found")
 
+    # Reject unrunnable rows (LLM=NONE + MCP=NONE) at the API too, not just UI.
+    if row.get("llm", "NONE") == "NONE" and row.get("mcp", "NONE") == "NONE":
+        raise HTTPException(
+            400,
+            "row is not runnable: LLM=NONE AND MCP=NONE is invalid "
+            "(nothing to exercise — pick at least one).",
+        )
+
     trial_id = str(uuid.uuid4())
     cfg = TrialConfig(
         framework=row["framework"], api=row["api"],

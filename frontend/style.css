@@ -254,3 +254,8 @@ body.trial-page { background: #f7f7f7; margin: 0; font-family: system-ui, sans-s
   padding: 2px 8px; background: #e0e0e0; color: #757575;
   border-radius: 10px; font-size: 10px; font-family: ui-monospace, monospace;
 }
+
+/* Non-runnable rows (LLM=NONE + MCP=NONE) — greyed out so user sees at a glance */
+.ag-row.row-not-runnable { opacity: 0.55; background: #f5f5f5 !important; }
+.ag-row.row-not-runnable button.btn-run { cursor: not-allowed; color: #bbb; }
+button[disabled] { opacity: 0.5; cursor: not-allowed; }

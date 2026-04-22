@@ -6,6 +6,23 @@ function openTrialTab(trialId) {
   window.open(`/trial.html?id=${encodeURIComponent(trialId)}`, "_blank");
 }
 
+// Runnability — mirror of harness/validator.py rules that actually matter for the
+// Run button. Anything beyond this is advisory (state/stream/provider constraints
+// are auto-forced, not blocking).
+function isRowRunnable(row) {
+  const llm = row.llm || "NONE";
+  const mcp = row.mcp || "NONE";
+  if (llm === "NONE" && mcp === "NONE") return false;  // nothing to exercise
+  return true;
+}
+
+function invalidReason(row) {
+  if ((row.llm || "NONE") === "NONE" && (row.mcp || "NONE") === "NONE") {
+    return "LLM=NONE + MCP=NONE: nothing to exercise. Pick at least one.";
+  }
+  return "invalid config";
+}
+
 let gridApi;
 let providers = [];
 
@@ -107,12 +124,20 @@ function buildColumnDefs() {
     {
       headerName: "Actions", width: 170,
       cellRenderer: params => {
-        const running = params.data?.status === "running";
-        const runBtn = running
-          ? `<button class="btn-pause" data-row-id="${params.data.row_id}" disabled title="abort not implemented in Plan A">⏸</button>`
-          : `<button class="btn-run" data-row-id="${params.data.row_id}" title="run trial">▶</button>`;
-        const previewBtn = `<button class="btn-preview" data-row-id="${params.data.row_id}" title="preview turn plan">📋</button>`;
-        const deleteBtn = `<button class="btn-delete" data-row-id="${params.data.row_id}" title="delete row">✕</button>`;
+        const row = params.data || {};
+        const running = row.status === "running";
+        const runnable = isRowRunnable(row);
+
+        let runBtn;
+        if (running) {
+          runBtn = `<button class="btn-pause" data-row-id="${row.row_id}" disabled title="abort not implemented in Plan A">⏸</button>`;
+        } else if (!runnable) {
+          runBtn = `<button class="btn-run" data-row-id="${row.row_id}" disabled title="row is not runnable — ${invalidReason(row)}">▶</button>`;
+        } else {
+          runBtn = `<button class="btn-run" data-row-id="${row.row_id}" title="run trial">▶</button>`;
+        }
+        const previewBtn = `<button class="btn-preview" data-row-id="${row.row_id}" title="preview turn plan">📋</button>`;
+        const deleteBtn = `<button class="btn-delete" data-row-id="${row.row_id}" title="delete row">✕</button>`;
         return `${runBtn}${previewBtn}${deleteBtn}`;
       },
     },
@@ -131,6 +156,8 @@ async function initGrid() {
     // Row click no longer opens the trial tab — was breaking cell editing /
     // column selection. Use the Verdicts cell link to open trial detail.
     onCellClicked: onCellClicked,
+    // Grey-out unrunnable rows (LLM=NONE + MCP=NONE)
+    getRowClass: params => isRowRunnable(params.data) ? null : "row-not-runnable",
   };
   const div = document.getElementById("matrix-grid");
   gridApi = agGrid.createGrid(div, gridOptions);
@@ -148,6 +175,12 @@ async function onCellValueChanged(event) {
         row[k] = v;
       }
       event.api.getRowNode(row.row_id).setData(row);
+    }
+    // Force re-render of Actions (Run button) + row styling when llm/mcp changed —
+    // isRowRunnable depends on those two fields.
+    if (event.column?.getColId() === "llm" || event.column?.getColId() === "mcp") {
+      gridApi.refreshCells({rowNodes: [event.api.getRowNode(row.row_id)], columns: ["Actions"], force: true});
+      event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
     }
     // Persist
     await fetch(`${API_BASE}/matrix/row/${row.row_id}`, {
@@ -243,6 +276,11 @@ async function previewPlan(rowId) {
 }
 
 async function runRow(rowId) {
+  const rowNode = gridApi.getRowNode(rowId);
+  if (rowNode && !isRowRunnable(rowNode.data)) {
+    showToast(invalidReason(rowNode.data));
+    return;
+  }
   const r = await fetch(`${API_BASE}/trials/${rowId}/run`, {method: "POST"});
   if (!r.ok) {
     alert(`Failed to start trial: ${r.status} ${await r.text()}`);
