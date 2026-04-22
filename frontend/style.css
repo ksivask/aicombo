@@ -213,3 +213,44 @@ body.trial-page { background: #f7f7f7; margin: 0; font-family: system-ui, sans-s
   background: #f5f5f5; padding: 1px 5px; border-radius: 2px;
   font-family: ui-monospace, monospace; font-size: 12px;
 }
+
+/* Turn-plan preview (modal) + trial page Turn Plan tab */
+.plan-list {
+  list-style: none; padding: 0; margin: 8px 0;
+}
+.plan-turn {
+  display: grid; grid-template-columns: 30px 90px 1fr;
+  gap: 8px; align-items: baseline;
+  padding: 6px 8px; border-bottom: 1px solid #eee;
+}
+.plan-turn:last-child { border-bottom: none; }
+.plan-turn-idx {
+  text-align: center; font-family: ui-monospace, monospace;
+  font-size: 11px; color: #999; font-weight: 600;
+}
+.plan-turn-kind {
+  background: #e1f5fe; color: #0277bd;
+  padding: 2px 8px; border-radius: 10px; font-size: 11px;
+  font-family: ui-monospace, monospace; text-align: center;
+}
+.plan-turn-kind.control {
+  background: #fff3e0; color: #e65100;
+}
+.plan-turn-content {
+  font-size: 12px; color: #333; word-break: break-word;
+}
+.plan-note {
+  color: #6c757d; font-size: 11px; margin-top: 12px;
+  padding: 8px; background: #f5f5f5; border-radius: 3px;
+}
+.plan-turn {
+  grid-template-columns: 30px 90px 1fr auto;
+}
+.plan-executed-badge {
+  padding: 2px 8px; background: #e8f5e9; color: #2e7d32;
+  border-radius: 10px; font-size: 10px; font-family: ui-monospace, monospace;
+}
+.plan-pending-badge {
+  padding: 2px 8px; background: #e0e0e0; color: #757575;
+  border-radius: 10px; font-size: 10px; font-family: ui-monospace, monospace;
+}

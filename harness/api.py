@@ -125,6 +125,18 @@ def validate_endpoint(payload: dict = Body(...)):
     return validate_row(row, available_keys=available)
 
 
+@router.post("/templates/preview")
+def templates_preview(row: RowConfig):
+    """Return the turn plan that would be used for this row config.
+
+    Same logic as templates.default_turn_plan but exposed as an HTTP endpoint
+    so the UI can preview without creating a trial. Plan B will add an edit
+    path (PATCH /templates/override) to override the default per row."""
+    row_dict = row.model_dump()
+    plan = default_turn_plan(row_dict)
+    return {"row_config": row_dict, "turn_plan": plan}
+
+
 @router.get("/matrix")
 def matrix_list():
     return {"rows": _load_matrix()}

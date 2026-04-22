@@ -10,6 +10,7 @@ const elStatus = document.getElementById("trial-status-pill");
 const elRowSummary = document.getElementById("row-summary");
 const tabContents = {
   turns: document.getElementById("tab-turns"),
+  plan: document.getElementById("tab-plan"),
   verdicts: document.getElementById("tab-verdicts"),
   raw: document.getElementById("tab-raw"),
 };
@@ -149,6 +150,41 @@ async function refresh() {
   // Tabs
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>No turns yet.</p>";
+
+  // Turn Plan tab — read-only list with side-by-side "planned vs executed" note
+  const plan = trial.turn_plan || {turns: []};
+  const planTurns = plan.turns || [];
+  const executedCount = (trial.turns || []).length;
+  const planItems = planTurns.map((t, i) => {
+    const kind = t.kind || "user_msg";
+    const isExecuted = i < executedCount;
+    const executedBadge = isExecuted
+      ? '<span class="plan-executed-badge">✓ executed</span>'
+      : '<span class="plan-pending-badge">pending</span>';
+    if (kind === "user_msg") {
+      return `<li class="plan-turn">
+        <span class="plan-turn-idx">${i}</span>
+        <span class="plan-turn-kind">user_msg</span>
+        <span class="plan-turn-content">${escapeHtml(t.content || "")}</span>
+        ${executedBadge}
+      </li>`;
+    }
+    const extra = Object.entries(t).filter(([k]) => k !== "kind")
+      .map(([k, v]) => `<code>${escapeHtml(k)}=${escapeHtml(JSON.stringify(v))}</code>`).join(" ");
+    return `<li class="plan-turn">
+      <span class="plan-turn-idx">${i}</span>
+      <span class="plan-turn-kind control">${escapeHtml(kind)}</span>
+      <span class="plan-turn-content">${extra}</span>
+      ${executedBadge}
+    </li>`;
+  }).join("");
+  tabContents.plan.innerHTML = `
+    <h3 style="margin-top:0">Planned turns</h3>
+    <ol class="plan-list">${planItems || '<li><em>(empty plan)</em></li>'}</ol>
+    <h3>Raw turn_plan JSON</h3>
+    <pre>${escapeHtml(JSON.stringify(plan, null, 2))}</pre>
+    <p class="plan-note">Read-only in Plan A. Plan B will add inline JSON editor + reset-to-default + add-turn controls per design §5.3.</p>
+  `;
 
   const verdicts = trial.verdicts || {};
   const labels = {a: "Presence", b: "Channel structure", c: "Continuity", d: "Resilience", e: "State-mode gap"};

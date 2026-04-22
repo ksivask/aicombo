@@ -105,13 +105,15 @@ function buildColumnDefs() {
       },
     },
     {
-      headerName: "Actions", width: 140,
+      headerName: "Actions", width: 170,
       cellRenderer: params => {
         const running = params.data?.status === "running";
         const runBtn = running
           ? `<button class="btn-pause" data-row-id="${params.data.row_id}" disabled title="abort not implemented in Plan A">⏸</button>`
           : `<button class="btn-run" data-row-id="${params.data.row_id}" title="run trial">▶</button>`;
-        return `${runBtn}<button class="btn-delete" data-row-id="${params.data.row_id}" title="delete row">✕</button>`;
+        const previewBtn = `<button class="btn-preview" data-row-id="${params.data.row_id}" title="preview turn plan">📋</button>`;
+        const deleteBtn = `<button class="btn-delete" data-row-id="${params.data.row_id}" title="delete row">✕</button>`;
+        return `${runBtn}${previewBtn}${deleteBtn}`;
       },
     },
   ];
@@ -179,7 +181,65 @@ async function onCellClicked(event) {
   } else if (target.classList.contains("btn-delete")) {
     const rowId = target.dataset.rowId;
     await deleteRow(rowId);
+  } else if (target.classList.contains("btn-preview")) {
+    const rowId = target.dataset.rowId;
+    await previewPlan(rowId);
   }
+}
+
+async function previewPlan(rowId) {
+  const rows = await fetchMatrix();
+  const row = rows.find(r => r.row_id === rowId);
+  if (!row) return;
+  const r = await fetch(`${API_BASE}/templates/preview`, {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify(row),
+  });
+  if (!r.ok) {
+    showToast(`Preview failed: ${r.status}`);
+    return;
+  }
+  const data = await r.json();
+  const plan = data.turn_plan || {turns: []};
+  const turns = plan.turns || [];
+  const escape = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const turnItems = turns.map((t, i) => {
+    const kind = t.kind || "user_msg";
+    if (kind === "user_msg") {
+      return `<li class="plan-turn">
+        <span class="plan-turn-idx">${i}</span>
+        <span class="plan-turn-kind">user_msg</span>
+        <span class="plan-turn-content">${escape(t.content || "")}</span>
+      </li>`;
+    }
+    // compact / force_state_ref / inject_ambient_cid / direct_mcp_*
+    const params_summary = Object.entries(t).filter(([k]) => k !== "kind")
+      .map(([k, v]) => `<code>${escape(k)}=${escape(JSON.stringify(v))}</code>`).join(" ");
+    return `<li class="plan-turn">
+      <span class="plan-turn-idx">${i}</span>
+      <span class="plan-turn-kind control">${escape(kind)}</span>
+      <span class="plan-turn-content">${params_summary}</span>
+    </li>`;
+  }).join("");
+
+  const body = `
+    <h3>Row config</h3>
+    <div class="row-summary">
+      ${["framework","api","llm","mcp","routing"].map(k =>
+        `<span class="chip"><span class="chip-k">${k}</span>${escape(row[k] || "")}</span>`
+      ).join("")}
+      ${row.stream ? '<span class="chip"><span class="chip-k">stream</span>on</span>' : ""}
+      ${row.state  ? '<span class="chip"><span class="chip-k">state</span>on</span>'  : ""}
+    </div>
+    <h3>Turn plan (${turns.length} turn${turns.length === 1 ? "" : "s"})</h3>
+    <ol class="plan-list">${turnItems || '<li><em>(empty plan)</em></li>'}</ol>
+    <h3>Raw JSON</h3>
+    <pre>${escape(JSON.stringify(plan, null, 2))}</pre>
+    <p class="plan-note">Read-only in Plan A. Plan B will add an inline JSON editor here + a per-row <code>[Reset to default]</code> + <code>[+ Add turn]</code> actions per design §5.3.</p>
+  `;
+  openSettingsModal(body);
 }
 
 async function runRow(rowId) {
