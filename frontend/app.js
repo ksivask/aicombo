@@ -89,14 +89,19 @@ function buildColumnDefs() {
       },
     },
     {
-      headerName: "Verdicts", field: "verdicts", width: 140,
+      headerName: "Verdicts", field: "verdicts", width: 160,
       cellRenderer: params => {
         const v = params.value || {};
-        return ["a", "b", "c", "d", "e"].map(lvl => {
+        const pills = ["a", "b", "c", "d", "e"].map(lvl => {
           const cls = (v[lvl]?.verdict) || "na";
           const glyph = cls === "pass" ? "✓" : cls === "fail" ? "✗" : "—";
           return `<span class="verdict-pill ${cls}" title="${v[lvl]?.reason || ""}">${glyph}</span>`;
         }).join("");
+        const trialId = params.data?.last_trial_id;
+        if (trialId) {
+          return `<a class="verdict-link" href="/trial.html?id=${encodeURIComponent(trialId)}" target="_blank" rel="noopener" title="open trial detail in new tab">${pills}<span class="verdict-link-icon">↗</span></a>`;
+        }
+        return `<span class="verdict-link disabled" title="no trial yet — click ▶ to run">${pills}</span>`;
       },
     },
     {
@@ -121,7 +126,8 @@ async function initGrid() {
     rowData: rows,
     getRowId: params => params.data.row_id,
     onCellValueChanged: onCellValueChanged,
-    onRowClicked: onRowClicked,
+    // Row click no longer opens the trial tab — was breaking cell editing /
+    // column selection. Use the Verdicts cell link to open trial detail.
     onCellClicked: onCellClicked,
   };
   const div = document.getElementById("matrix-grid");
@@ -148,21 +154,6 @@ async function onCellValueChanged(event) {
       body: JSON.stringify(row),
     });
   }, VALIDATE_DEBOUNCE_MS);
-}
-
-async function onRowClicked(event) {
-  // Button click inside the row — let the button handler own it
-  const t = event.event?.target;
-  if (t && t.closest && t.closest('button')) return;
-  // Refetch row from backend for the persisted last_trial_id
-  const rows = await fetchMatrix();
-  const row = rows.find(r => r.row_id === event.data.row_id) || event.data;
-  if (row.last_trial_id) {
-    openTrialTab(row.last_trial_id);
-  } else {
-    // No trial yet — brief toast-style message
-    showToast(`Row has no trial yet. Click ▶ to run one.`);
-  }
 }
 
 function showToast(msg) {

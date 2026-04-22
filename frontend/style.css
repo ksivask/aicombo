@@ -30,6 +30,17 @@ main { padding: 10px; }
 .verdict-pill.fail { color: #dc3545; }
 .verdict-pill.na { color: #6c757d; }
 
+.verdict-link {
+  text-decoration: none; color: inherit; cursor: pointer;
+  padding: 2px 4px; border-radius: 3px;
+}
+.verdict-link:hover { background: #e3f2fd; }
+.verdict-link.disabled { cursor: default; opacity: 0.7; }
+.verdict-link.disabled:hover { background: transparent; }
+.verdict-link-icon {
+  margin-left: 4px; color: #0277bd; font-size: 10px;
+}
+
 .drawer {
   background: white; border: 1px solid #ddd; border-top: none;
   overflow: hidden; /* outer container; body does scroll */
