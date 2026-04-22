@@ -74,9 +74,10 @@ async def drive_turn(trial_id: str, req: TurnReq):
 
 
 @app.delete("/trials/{trial_id}")
-def delete_trial(trial_id: str):
-    if trial_id in TRIALS:
-        del TRIALS[trial_id]
+async def delete_trial(trial_id: str):
+    trial = TRIALS.pop(trial_id, None)
+    if trial is not None:
+        await trial.aclose()
     return {"ok": True}
 
 

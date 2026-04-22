@@ -50,17 +50,65 @@ export async function refreshDrawer(trialId) {
   }
   const trial = await r.json();
 
-  // Turns tab
-  tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => `
+  // Turns tab — pedagogical rendering with headers table + body pretty-print
+  const renderHeaders = (h) => {
+    if (!h || Object.keys(h).length === 0) return "<em>(none)</em>";
+    return `<table class="kv"><tbody>${Object.entries(h).map(([k, v]) =>
+      `<tr><td class="k">${k}</td><td class="v">${String(v).replace(/</g, "&lt;")}</td></tr>`
+    ).join("")}</tbody></table>`;
+  };
+  const renderBody = (b) => {
+    if (b === null || b === undefined) return "<em>(empty)</em>";
+    return `<pre>${JSON.stringify(b, null, 2)}</pre>`;
+  };
+  const renderAudit = (entries) => {
+    if (!entries.length) return "<em>(no audit entries for this turn — AGW governance may not have fired)</em>";
+    return entries.map(a => `
+      <div class="audit-entry">
+        <span class="badge ${a.phase || 'unknown'}">phase: ${a.phase || '?'}</span>
+        <span class="badge">cid: ${a.cid || '∅'}</span>
+        <span class="badge">backend: ${a.backend || '?'}</span>
+        <details><summary>raw governance log</summary><pre>${JSON.stringify(a.raw, null, 2)}</pre></details>
+      </div>
+    `).join("");
+  };
+
+  tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => {
+    const req = t.request || {};
+    const resp = t.response || {};
+    const audits = (trial.audit_entries || []).filter(a => a.turn_id === t.turn_id);
+    return `
     <div class="turn-card">
-      <h4>Turn ${i}: ${t.kind}</h4>
-      <details><summary>Request</summary><pre>${JSON.stringify(t.request, null, 2)}</pre></details>
-      <details><summary>Response</summary><pre>${JSON.stringify(t.response, null, 2)}</pre></details>
-      <details><summary>Audit entries (${(trial.audit_entries || []).filter(a => a.turn_id === t.turn_id).length})</summary>
-        <pre>${(trial.audit_entries || []).filter(a => a.turn_id === t.turn_id).map(a => JSON.stringify(a, null, 2)).join("\n\n")}</pre>
+      <h4>Turn ${i}: ${t.kind} <span class="turn-id">${t.turn_id || ''}</span></h4>
+
+      <details open><summary><strong>Request</strong> — what the adapter sent (pre-cidgar mutation)</summary>
+        <div class="section">
+          <div class="http-line"><strong>${req.method || 'POST'}</strong> ${req.url || ''}</div>
+          <div class="subhead">Headers</div>
+          ${renderHeaders(req.headers)}
+          <div class="subhead">Body ${req.body_bytes_len ? `(${req.body_bytes_len} bytes)` : ''}</div>
+          ${renderBody(req.body)}
+        </div>
+      </details>
+
+      <details open><summary><strong>Response</strong> — what AGW returned (post-cidgar mutation)</summary>
+        <div class="section">
+          <div class="http-line"><strong>HTTP ${resp.status || '?'}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</div>
+          <div class="subhead">Headers</div>
+          ${renderHeaders(resp.headers)}
+          <div class="subhead">Body ${resp.body_bytes_len ? `(${resp.body_bytes_len} bytes)` : ''}</div>
+          ${renderBody(resp.body)}
+        </div>
+      </details>
+
+      <details><summary><strong>Governance audit</strong> — AGW-side view of this turn (${audits.length} entries)</summary>
+        <div class="section">
+          ${renderAudit(audits)}
+        </div>
       </details>
     </div>
-  `).join("") || "<p>No turns yet.</p>";
+  `;
+  }).join("") || "<p>No turns yet.</p>";
 
   // Verdicts tab
   const verdicts = trial.verdicts || {};
