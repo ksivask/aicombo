@@ -161,13 +161,13 @@ async def trial_run(row_id: str):
     from adapters_registry import AdapterClient
     adapter = AdapterClient(framework=cfg.framework)
 
-    # Run in background
-    asyncio.create_task(_run_trial_bg(trial_id, adapter))
+    # Run in background (pass row_id so we can update the matrix on completion)
+    asyncio.create_task(_run_trial_bg(trial_id, adapter, row_id=row_id))
 
     return {"trial_id": trial_id, "status": "running"}
 
 
-async def _run_trial_bg(trial_id: str, adapter):
+async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None):
     def audit_provider():
         return list(AUDIT_BUFFER_PER_TRIAL.get(trial_id, []))
 
@@ -180,6 +180,22 @@ async def _run_trial_bg(trial_id: str, adapter):
 
     if AUDIT_TAIL is not None:
         AUDIT_TAIL.unsubscribe(trial_id)
+
+    # Reconcile matrix row with final trial state so the UI can recover
+    # even if an SSE client disconnected mid-trial.
+    if row_id:
+        try:
+            final = STORE.load(trial_id)
+            rows = _load_matrix()
+            for r in rows:
+                if r["row_id"] == row_id:
+                    r["status"] = final.status
+                    r["verdicts"] = final.verdicts or {}
+                    r["last_trial_id"] = trial_id
+                    _save_matrix(rows)
+                    break
+        except Exception:
+            pass
 
 
 @router.get("/trials/{trial_id}")

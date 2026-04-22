@@ -3,6 +3,8 @@ import { API_BASE } from "/config.js";
 const drawerEl = document.getElementById("drawer");
 const drawerTitle = document.getElementById("drawer-title");
 const closeBtn = document.getElementById("drawer-close");
+const maximizeBtn = document.getElementById("drawer-maximize");
+const resizeHandle = drawerEl.querySelector(".drawer-resize-handle");
 const tabBtns = document.querySelectorAll(".tab-btn");
 const tabContents = {
   turns: document.getElementById("tab-turns"),
@@ -11,10 +13,62 @@ const tabContents = {
 };
 
 let currentTrialId = null;
+let drawerMaximized = false;
+let lastDrawerHeight = null;  // remember last non-maximized size
 
 closeBtn.addEventListener("click", () => {
   drawerEl.classList.add("hidden");
   currentTrialId = null;
+});
+
+// Maximize toggle (35vh ↔ 90vh)
+maximizeBtn.addEventListener("click", () => {
+  if (drawerMaximized) {
+    drawerEl.style.height = lastDrawerHeight || "35vh";
+    maximizeBtn.textContent = "⇱";
+    maximizeBtn.title = "maximize";
+    drawerMaximized = false;
+  } else {
+    lastDrawerHeight = drawerEl.style.height || "35vh";
+    drawerEl.style.height = "90vh";
+    maximizeBtn.textContent = "⇲";
+    maximizeBtn.title = "restore";
+    drawerMaximized = true;
+  }
+});
+
+// Drag-resize (vertical) via top handle
+let isResizing = false;
+let resizeStartY = 0;
+let resizeStartHeight = 0;
+resizeHandle.addEventListener("mousedown", (e) => {
+  isResizing = true;
+  resizeStartY = e.clientY;
+  resizeStartHeight = drawerEl.getBoundingClientRect().height;
+  document.body.style.userSelect = "none";
+  document.body.style.cursor = "ns-resize";
+  e.preventDefault();
+});
+document.addEventListener("mousemove", (e) => {
+  if (!isResizing) return;
+  const dy = resizeStartY - e.clientY;  // drag up grows drawer
+  const newH = Math.max(120, Math.min(window.innerHeight - 60, resizeStartHeight + dy));
+  drawerEl.style.height = `${newH}px`;
+  drawerMaximized = false;
+  maximizeBtn.textContent = "⇱";
+});
+document.addEventListener("mouseup", () => {
+  if (isResizing) {
+    isResizing = false;
+    document.body.style.userSelect = "";
+    document.body.style.cursor = "";
+  }
+});
+
+// Double-click header to toggle maximize
+document.querySelector(".drawer-header").addEventListener("dblclick", (e) => {
+  if (e.target.tagName === "BUTTON") return;
+  maximizeBtn.click();
 });
 
 tabBtns.forEach(btn => {

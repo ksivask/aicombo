@@ -146,9 +146,14 @@ async function onCellValueChanged(event) {
 }
 
 async function onRowClicked(event) {
-  // If click was on a button, don't open drawer
-  if (event.event?.target?.tagName === "BUTTON") return;
-  openDrawer(event.data.last_trial_id, event.data);
+  // If click was on or inside a button, don't open drawer — let the button handler own it
+  const t = event.event?.target;
+  if (t && t.closest && t.closest('button')) return;
+  // Refetch row from backend so we get the persisted last_trial_id even
+  // if grid-state missed the setDataValue (e.g. after page reload)
+  const rows = await fetchMatrix();
+  const row = rows.find(r => r.row_id === event.data.row_id) || event.data;
+  openDrawer(row.last_trial_id, row);
 }
 
 async function onCellClicked(event) {
@@ -240,5 +245,74 @@ document.getElementById("btn-run-all").addEventListener("click", async () => {
   }
 });
 
+// ── Settings modal ──
+document.getElementById("btn-settings").addEventListener("click", async () => {
+  const [info, providersResp] = await Promise.all([
+    fetch(`${API_BASE}/info`).then(r => r.json()),
+    fetch(`${API_BASE}/providers`).then(r => r.json()),
+  ]);
+  const providers = providersResp.providers;
+  const body = `
+    <h3>Providers (LLM key detection)</h3>
+    <table class="kv"><tbody>
+      ${providers.map(p => `
+        <tr>
+          <td class="k">${p.id}</td>
+          <td class="v">${p.available ? "✓ available" : "✗ " + (p.unavailable_reason || "unavailable")}</td>
+        </tr>
+      `).join("")}
+    </tbody></table>
+    <h3>Harness info</h3>
+    <pre>${JSON.stringify(info, null, 2)}</pre>
+    <h3>Reload matrix state</h3>
+    <p>Frontend reads env-key availability every ${PROVIDERS_REFRESH_MS/1000}s. To pick up .env changes immediately, edit .env then <code>make rotate-keys</code> on the host and click this button again.</p>
+  `;
+  openSettingsModal(body);
+});
+
+function openSettingsModal(bodyHtml) {
+  let modal = document.getElementById("settings-modal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "settings-modal";
+    modal.className = "modal";
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <span>⚙ Settings</span>
+          <button id="modal-close">✕</button>
+        </div>
+        <div class="modal-body"></div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+    modal.addEventListener("click", (e) => { if (e.target === modal) modal.classList.add("hidden"); });
+    modal.querySelector("#modal-close").addEventListener("click", () => modal.classList.add("hidden"));
+  }
+  modal.querySelector(".modal-body").innerHTML = bodyHtml;
+  modal.classList.remove("hidden");
+}
+
 initGrid();
 setInterval(fetchProviders, PROVIDERS_REFRESH_MS);
+
+// Polling fallback: every 5s refresh row status + verdicts from backend
+// so a dropped EventSource doesn't leave a row stuck at "running".
+setInterval(async () => {
+  if (!gridApi) return;
+  const rows = await fetchMatrix();
+  for (const row of rows) {
+    const node = gridApi.getRowNode(row.row_id);
+    if (!node) continue;
+    if (!row.last_trial_id) continue;
+    if (node.data.status === row.status && JSON.stringify(node.data.verdicts || {}) === JSON.stringify(row.verdicts || {})) continue;
+    // Out-of-date: fetch the trial to get verdicts
+    const tr = await fetch(`${API_BASE}/trials/${row.last_trial_id}`).catch(() => null);
+    if (tr && tr.ok) {
+      const trial = await tr.json();
+      node.setDataValue("status", trial.status);
+      node.setDataValue("verdicts", trial.verdicts || {});
+      gridApi.refreshCells({rowNodes: [node], columns: ["Actions"], force: true});
+    }
+  }
+}, 5000);
