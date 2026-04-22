@@ -112,7 +112,9 @@ class TrialStore:
         plan = TurnPlan(turns=data.get("turn_plan", {}).get("turns", []))
         turns = [Turn(**t) for t in data.get("turns", [])]
         audits = [AuditEntry(**a) for a in data.get("audit_entries", [])]
-        verdicts = {k: Verdict(**v) for k, v in data.get("verdicts", {}).items()}
+        # Verdicts are stored/read as plain dicts {verdict, reason} so UI and
+        # downstream consumers (incl. runner-driven tests) can subscript them.
+        verdicts = dict(data.get("verdicts", {}))
         trial = Trial(
             trial_id=data["trial_id"],
             config=cfg,
