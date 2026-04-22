@@ -122,6 +122,57 @@ table.kv td.v { color: #333; word-break: break-all; }
 .audit-entry .badge.tools_list { background: #e0f2f1; color: #00695c; }
 .audit-entry details { margin-top: 6px; }
 
+/* ── Trial detail page (trial.html / trial.js) ── */
+body.trial-page { background: #f7f7f7; margin: 0; font-family: system-ui, sans-serif; }
+.trial-header {
+  background: white; border-bottom: 1px solid #ddd; padding: 12px 20px;
+  position: sticky; top: 0; z-index: 100;
+}
+.trial-header-row {
+  display: flex; align-items: center; gap: 12px; margin-bottom: 6px;
+}
+.trial-header h1 {
+  margin: 0; font-size: 18px; font-weight: 600; color: #333;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.trial-header .back-link {
+  color: #555; text-decoration: none; font-size: 14px;
+  padding: 4px 10px; border-radius: 3px;
+}
+.trial-header .back-link:hover { background: #eee; color: #000; }
+.row-summary { font-size: 12px; line-height: 1.8; }
+.row-summary .chip {
+  display: inline-block; padding: 2px 10px; margin-right: 6px;
+  background: #eceff1; border-radius: 12px;
+  font-family: ui-monospace, monospace; color: #333;
+}
+.row-summary .chip-k {
+  color: #6c757d; margin-right: 4px; font-size: 10px;
+  text-transform: uppercase; letter-spacing: 0.5px;
+}
+.trial-main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+.trial-tabs {
+  display: flex; gap: 4px; border-bottom: 1px solid #ddd; margin-bottom: 16px;
+}
+.trial-tab-btn {
+  padding: 8px 16px; background: none; border: none; cursor: pointer;
+  border-bottom: 2px solid transparent; font-size: 13px;
+}
+.trial-tab-btn.active { border-bottom-color: #007bff; font-weight: bold; }
+.trial-tab-btn:hover { background: #f0f0f0; }
+.trial-main .tab-content { display: none; }
+.trial-main .tab-content.active { display: block; }
+
+/* ── Toast ── */
+.toast {
+  position: fixed; bottom: 24px; right: 24px; z-index: 2000;
+  background: #333; color: white; padding: 10px 16px; border-radius: 4px;
+  font-size: 13px; box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+  opacity: 0; transform: translateY(8px); transition: all 0.2s;
+  pointer-events: none;
+}
+.toast.visible { opacity: 1; transform: translateY(0); }
+
 /* Settings modal */
 .modal {
   position: fixed; top: 0; left: 0; right: 0; bottom: 0;

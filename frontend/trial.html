@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>aiplay — trial</title>
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body class="trial-page">
+  <header class="trial-header">
+    <div class="trial-header-row">
+      <a href="/" class="back-link" title="back to matrix">← matrix</a>
+      <h1 id="trial-title">Loading…</h1>
+      <span id="trial-status-pill" class="status-pill idle">idle</span>
+    </div>
+    <div id="row-summary" class="row-summary"></div>
+  </header>
+  <main class="trial-main">
+    <div class="trial-tabs">
+      <button class="trial-tab-btn active" data-tab="turns">Turns</button>
+      <button class="trial-tab-btn" data-tab="verdicts">Verdicts</button>
+      <button class="trial-tab-btn" data-tab="raw">Raw JSON</button>
+    </div>
+    <div id="tab-turns" class="tab-content active"></div>
+    <div id="tab-verdicts" class="tab-content"></div>
+    <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
+  </main>
+  <script type="module" src="/trial.js"></script>
+</body>
+</html>

@@ -20,32 +20,11 @@
   </header>
 
   <main>
-    <div id="matrix-grid" class="ag-theme-quartz" style="height: 60vh;"></div>
-    <div id="drawer" class="drawer hidden" style="height: 35vh;">
-      <div class="drawer-resize-handle" title="drag to resize"></div>
-      <div class="drawer-header">
-        <span id="drawer-title">Trial details</span>
-        <span class="drawer-header-actions">
-          <button id="drawer-maximize" title="toggle full-screen">⇱</button>
-          <button id="drawer-close" title="close">✕</button>
-        </span>
-      </div>
-      <div class="drawer-tabs">
-        <button class="tab-btn active" data-tab="turns">Turns</button>
-        <button class="tab-btn" data-tab="verdicts">Verdicts</button>
-        <button class="tab-btn" data-tab="raw">Raw JSON</button>
-      </div>
-      <div class="drawer-body">
-        <div id="tab-turns" class="tab-content active"></div>
-        <div id="tab-verdicts" class="tab-content"></div>
-        <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
-      </div>
-    </div>
+    <div id="matrix-grid" class="ag-theme-quartz" style="height: calc(100vh - 80px);"></div>
   </main>
 
   <script src="https://cdn.jsdelivr.net/npm/ag-grid-community@32/dist/ag-grid-community.min.js"></script>
   <script type="module" src="/config.js"></script>
   <script type="module" src="/app.js"></script>
-  <script type="module" src="/drawer.js"></script>
 </body>
 </html>

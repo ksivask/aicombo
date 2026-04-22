@@ -1,5 +1,10 @@
 import { API_BASE, VALIDATE_DEBOUNCE_MS, PROVIDERS_REFRESH_MS } from "/config.js";
-import { openDrawer, refreshDrawer } from "/drawer.js";
+
+// Row + trial detail now opens in a new tab at /trial.html?id=X (not an inline drawer).
+function openTrialTab(trialId) {
+  if (!trialId) return;
+  window.open(`/trial.html?id=${encodeURIComponent(trialId)}`, "_blank");
+}
 
 let gridApi;
 let providers = [];
@@ -146,14 +151,32 @@ async function onCellValueChanged(event) {
 }
 
 async function onRowClicked(event) {
-  // If click was on or inside a button, don't open drawer — let the button handler own it
+  // Button click inside the row — let the button handler own it
   const t = event.event?.target;
   if (t && t.closest && t.closest('button')) return;
-  // Refetch row from backend so we get the persisted last_trial_id even
-  // if grid-state missed the setDataValue (e.g. after page reload)
+  // Refetch row from backend for the persisted last_trial_id
   const rows = await fetchMatrix();
   const row = rows.find(r => r.row_id === event.data.row_id) || event.data;
-  openDrawer(row.last_trial_id, row);
+  if (row.last_trial_id) {
+    openTrialTab(row.last_trial_id);
+  } else {
+    // No trial yet — brief toast-style message
+    showToast(`Row has no trial yet. Click ▶ to run one.`);
+  }
+}
+
+function showToast(msg) {
+  let toast = document.getElementById("aiplay-toast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "aiplay-toast";
+    toast.className = "toast";
+    document.body.appendChild(toast);
+  }
+  toast.textContent = msg;
+  toast.classList.add("visible");
+  clearTimeout(toast._timer);
+  toast._timer = setTimeout(() => toast.classList.remove("visible"), 3500);
 }
 
 async function onCellClicked(event) {
@@ -189,27 +212,22 @@ async function runRow(rowId) {
     body: JSON.stringify({last_trial_id: trialId}),
   }).catch(() => {});
 
-  // Open drawer immediately so the user can watch progress
-  openDrawer(trialId, rowNode.data);
+  // Open trial detail page in a new tab — live updates there via SSE
+  openTrialTab(trialId);
 
-  // Subscribe to SSE
+  // Grid-side SSE: just updates the row pill in the matrix view
   const es = new EventSource(`${API_BASE}/trials/${trialId}/stream`);
-  es.onerror = () => {
-    console.warn("SSE connection error for trial", trialId);
-  };
+  es.onerror = () => {};
   es.onmessage = async (e) => {
     let data;
     try { data = JSON.parse(e.data); } catch { return; }
     if (data.event === "trial_done") {
       es.close();
-      // Reload trial to pull verdicts + final status
       const tr = await fetch(`${API_BASE}/trials/${trialId}`);
       const trial = await tr.json();
       rowNode.setDataValue("status", trial.status);
       rowNode.setDataValue("verdicts", trial.verdicts || {});
-      // force re-render of the Actions column (play/pause swap)
       gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
-      refreshDrawer(trialId);
     } else if (data.event === "status") {
       rowNode.setDataValue("status", data.status);
       gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
