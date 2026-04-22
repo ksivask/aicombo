@@ -1,0 +1,46 @@
+# Matrix seed rows (Plan A — only langchain is actively running)
+
+matrix_seed_rows:
+  - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: NONE, routing: via_agw}
+  - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: weather, routing: via_agw}
+  - {framework: NONE, api: NONE, stream: false, state: false, llm: NONE, mcp: weather, routing: via_agw}
+
+# Default turn-plan templates — keyed by (has_mcp, api_category)
+# Plan A implements: no_mcp_chat, with_mcp_chat, direct_mcp
+# Plan B implements: with_mcp_responses, responses_stateful, with_compact, etc.
+
+turn_plan_templates:
+  no_mcp_chat:
+    turns:
+      - {kind: user_msg, content: "Hello, tell me a short one-line fact about testing."}
+      - {kind: user_msg, content: "Can you elaborate on that?"}
+      - {kind: user_msg, content: "Summarize what you just told me."}
+
+  with_mcp_weather:
+    turns:
+      - {kind: user_msg, content: "Hello, what tools do you have available?"}
+      - {kind: user_msg, content: "What's the weather in Paris?"}
+      - {kind: user_msg, content: "And in London?"}
+
+  with_mcp_news:
+    turns:
+      - {kind: user_msg, content: "Hello, what tools do you have available?"}
+      - {kind: user_msg, content: "Give me news about AI."}
+      - {kind: user_msg, content: "Any news about space exploration?"}
+
+  with_mcp_library:
+    turns:
+      - {kind: user_msg, content: "Hello, what tools do you have available?"}
+      - {kind: user_msg, content: "Find books with 'Clean Code' in the title."}
+      - {kind: user_msg, content: "Show me more results."}
+
+  with_mcp_fetch:
+    turns:
+      - {kind: user_msg, content: "Hello, what tools do you have available?"}
+      - {kind: user_msg, content: "Fetch https://example.com and summarize it."}
+      - {kind: user_msg, content: "Fetch https://httpbin.org/uuid and tell me what it returns."}
+
+  direct_mcp:
+    turns:
+      - {kind: direct_mcp_tools_list}
+      - {kind: direct_mcp_tools_call}
