@@ -1,0 +1,22 @@
+# Secrets
+.env
+
+# Runtime data
+data/trials/*.json
+data/settings.json
+data/matrix.json
+
+# Python
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+.venv/
+
+# Editor
+.DS_Store
+.vscode/
+.idea/
+
+# Docker
+*.log
