@@ -1,0 +1,63 @@
+# aiplay — conversation log
+
+## 2026-04-21 — Initial design session (Harness C brainstorming)
+
+Session running in parent directory `/mnt/share/ws/agw-gh` where cidgar finalization is also happening. Aiplay scope emerged mid-session as a separate playground.
+
+### Entry 1 — Kickoff
+**User:** Brainstorm test harness C for cidgar covering 7 frameworks, 4 APIs, streaming/server-state toggles. Prefer Ollama > claude.ai > chatgpt > gemini > copilot. UI-driven. Non-auth MCP. Optionally inherit from `/my/ws/demo`. **(Later in the session: Microsoft Copilot clarified as consumer https://copilot.microsoft.com/ which has no public API; provider dropped entirely since Ollama + chatgpt + claude cover all 4 target APIs.)**
+
+**Actions:** Explored `/my/ws/demo` — found langgraph/crewai/autogen agent services, weather/news/library/fetch MCPs, compose orchestration. Mapped gaps: missing langchain/pydantic-ai/llamaindex/n8n, no responses/messages coverage, no streaming toggle, no server-state, Ollama-only, no cidgar UI.
+
+### Entry 2 — Q1 efficacy scope
+**User:** "a+b+c+d+e all"
+**Result:** All five efficacy levels in scope.
+
+### Entry 3 — Q2 matrix density + playground location
+**User:** "can we build this harness generically outside of the agw-gh or auth2v directory, maybe a new playground. i like the table view presented - is it possible to drive that using UI, where the columns are drop down or checkbox for T/F ?"
+**Result:** Minimum-spanning default rows (7) + UI-extensible. Sibling project outside both repos.
+
+### Entry 4 — Q3 UI tech stack
+**User:** "B"
+**Result:** FastAPI + AG-Grid + vanilla JS + SSE.
+
+### Entry 5 — Location + MCP NONE + invalid combos
+**User:** "just call it as /my/ws/aiplay, what of the /my/ws/demo are we re-using? dont bring in auth from there. in the table dropdown for LLM, have a NONE option meaning no LLM is being used, similarly have a MCP column and have NONE option along with weather/everything/library/news/fetch."
+**Result:** `/my/ws/aiplay/` locked. Reuse inventory documented. Auth excluded. MCP column with NONE + weather/news/library/fetch.
+
+### Entry 6 — Q4 state model + Q5 log capture
+**User:** "1. what is the conv_id in option Y ? 2. postpone n8n to later. 3. correlation custom header, but what is the AGW audit log? where to see it?"
+**Actions:** Explained `conv_id` (opaque UUID handle), surfaced AGW audit log as stderr tracing events (no admin query endpoint), presented log capture options L1-L4.
+
+**User (continued):** "skip ollama-pull.sh, server-everything. for chat-completion API auto-set the state=F and disabled, similarly for other invalid combinations. 1. can you call it something else instead of conv_id - it is conflicting in mind for conv_id of test-harness vs conv_id of cidgar feature itself. 5 = L1"
+**Result:**
+- ollama-pull.sh + server-everything skipped
+- Invalid-combination enforcement rules defined; `validate(row)` endpoint
+- `conv_id` renamed to `trial_id`
+- Log capture: L1 (docker logs + `RUST_LOG_FORMAT=json`)
+
+### Entry 7 — Q6 AGW image (round 1)
+**User:** "1. trial_id is ok, G1 vs G4 seem same?"
+**Actions:** Clarified G1 = G4 on single machine; G4 adds value for multi-machine/CI.
+
+### Entry 8 — Q6 AGW image (round 2, final)
+**User:** "P3 - for Q6, i will build the image from the right branch, the docker compose should just reference/use the statically tagged image. now i dont know if thats G1 or G4. keep it like what auth2v docker-compose.agw.yaml is doing. i dont want the aiplay docker-compose starting any agw builds"
+**Actions:** Verified auth2v pattern — `image: ghcr.io/.../agentgateway:v1.0.1.ib-hsr1` with NO `build:` key. Compose never triggers a build.
+**Result:** aiplay compose uses `image: agentgateway:cidgar` (or similar static tag) only. User owns build + tag lifecycle externally. Missing tag = fail-fast instead of silent stale image.
+
+### Entry 9 — Brainstorming file location
+**User:** "which docs/brainstorming are you updating?"
+**Actions:** Honest acknowledgment: nothing yet. Proposed scaffold at `/my/ws/aiplay/docs/*` + pointer from agw-gh/docs/brainstorming.md.
+**User:** "yes in background"
+**Actions:** Dispatched subagent to scaffold + backfill. Subagent was blocked on Bash + Write permissions for `/my/ws/aiplay/` (Task 5 append to agw-gh brainstorming succeeded; Tasks 1-4 blocked). Completed scaffold directly in main session.
+
+### Entry 10 — P2 round (D1-D5)
+**User:** "lets discuss P2, some LLM providers need API keys. also the other aspects you mentioned"
+**Actions:** Presented D1 (API keys: K1+K5), D2 (persistence: SQLite R2), D3 (concurrency: C1 default + C2 env flag), D4 (UI mockup with AG-Grid + drawer), D5 (Ollama model: qwen2.5:7b-instruct).
+**Status:** Pending user confirmation.
+
+## Pending
+
+- User decisions on D1-D5.
+- Draft design doc at `/my/ws/aiplay/docs/design.md`.
+- Implementation plan after design approval.
