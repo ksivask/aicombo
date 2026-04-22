@@ -1,0 +1,86 @@
+"""FastAPI adapter service wrapping langchain."""
+from __future__ import annotations
+
+import logging
+import os
+
+from fastapi import Body, FastAPI, HTTPException
+from pydantic import BaseModel
+
+import langchain
+from framework_bridge import Trial
+
+log = logging.getLogger("aiplay.adapter.langchain")
+
+app = FastAPI(title="aiplay-adapter-langchain")
+
+TRIALS: dict[str, Trial] = {}
+
+
+class Config(BaseModel):
+    api: str
+    stream: bool = False
+    state: bool = False
+    llm: str
+    mcp: str = "NONE"
+    routing: str = "via_agw"
+    model: str | None = None
+
+
+class CreateTrialReq(BaseModel):
+    trial_id: str
+    config: Config
+
+
+class TurnReq(BaseModel):
+    turn_id: str
+    user_msg: str
+
+
+@app.get("/info")
+def info():
+    return {
+        "framework": "langchain",
+        "version": getattr(langchain, "__version__", "unknown"),
+        "supports": {
+            "apis": ["chat"],
+            "streaming": False,  # Plan A
+            "state_modes": ["stateless"],
+            "compact_strategies": [],  # Plan B
+        },
+        "default_ollama_model": os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b-instruct"),
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/trials")
+def create_trial(req: CreateTrialReq):
+    if req.config.api != "chat":
+        raise HTTPException(400, f"unsupported_combination: api={req.config.api}")
+    TRIALS[req.trial_id] = Trial(req.trial_id, req.config.model_dump())
+    return {"ok": True, "trial_id": req.trial_id}
+
+
+@app.post("/trials/{trial_id}/turn")
+async def drive_turn(trial_id: str, req: TurnReq):
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial.turn(req.turn_id, req.user_msg)
+
+
+@app.delete("/trials/{trial_id}")
+def delete_trial(trial_id: str):
+    if trial_id in TRIALS:
+        del TRIALS[trial_id]
+    return {"ok": True}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("ADAPTER_PORT", "5001"))
+    uvicorn.run(app, host="0.0.0.0", port=port)
