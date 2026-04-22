@@ -53,6 +53,8 @@ services:
     environment:
       - ADAPTER_PORT=5001
       - AGW_LLM_BASE_URL_OLLAMA=http://agentgateway:8080/llm/ollama/v1
+      - AGW_LLM_BASE_URL_MOCK=http://agentgateway:8080/llm/mock/v1
+      - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - AGW_MCP_WEATHER=http://agentgateway:8080/mcp/weather
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
@@ -93,5 +95,14 @@ services:
   mcp-fetch:
     build: ./mcp/fetch
     image: aiplay-mcp-fetch:local
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  # ── Mock LLM: upstream that honors n > 1 for multi-choice testing ──
+  #   Used by the 'mock' LLM provider for verifying cidgar injects C2
+  #   markers into every choice (completions_shape.rs iter_mut).
+  mock-llm:
+    build: ./mock_llm
+    image: aiplay-mock-llm:local
     networks: [aiplay-network]
     restart: unless-stopped

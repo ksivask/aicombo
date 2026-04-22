@@ -24,6 +24,12 @@ def get_providers() -> list[dict]:
             "unavailable_reason": None,
         },
         {
+            "id": "mock",
+            "name": "Mock LLM (multi-choice test)",
+            "available": True,
+            "unavailable_reason": None,
+        },
+        {
             "id": "claude",
             "name": "claude.ai (Anthropic)",
             "available": key_set("ANTHROPIC_API_KEY"),

@@ -57,7 +57,7 @@ function buildColumnDefs() {
     {
       headerName: "LLM", field: "llm", editable: true,
       cellEditor: "agSelectCellEditor",
-      cellEditorParams: {values: providerOptions()},
+      cellEditorParams: () => ({values: providerOptions()}),
       cellStyle: params => {
         const provider = providers.find(p => p.id === params.value);
         return provider && !provider.available ? {color: "#999", textDecoration: "line-through"} : null;

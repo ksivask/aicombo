@@ -12,9 +12,11 @@ from langchain_openai import ChatOpenAI
 def pick_llm_base_url(routing: str, llm: str) -> str:
     env_map_via_agw = {
         "ollama": "AGW_LLM_BASE_URL_OLLAMA",
+        "mock":   "AGW_LLM_BASE_URL_MOCK",
     }
     env_map_direct = {
         "ollama": "DIRECT_LLM_BASE_URL_OLLAMA",
+        "mock":   "DIRECT_LLM_BASE_URL_MOCK",
     }
     env_map = env_map_via_agw if routing == "via_agw" else env_map_direct
     var = env_map.get(llm)

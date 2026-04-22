@@ -44,6 +44,37 @@ binds:
                     openAI: {}
                   hostOverride: "host.docker.internal:11434"
 
+          # ── LLM route: mock (for multi-choice n>1 testing) ──
+          #   upstream is mock_llm/, a FastAPI server that honors n>1
+          #   and returns deterministic per-choice content. Used to verify
+          #   cidgar injects C2 text marker into EACH choice per
+          #   completions_shape.rs:165 `for choice in resp.choices.iter_mut()`.
+          - name: llm-mock
+            matches:
+              - path:
+                  pathPrefix: /llm/mock/
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                  header_passthrough: true
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - ai:
+                  name: mock-openai
+                  provider:
+                    openAI: {}
+                  hostOverride: "mock-llm:8000"
+
           # ── MCP route: weather ──
           - name: mcp-weather
             matches:

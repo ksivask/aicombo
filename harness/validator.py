@@ -11,7 +11,7 @@ API_VALID_STATE = {
 }
 
 API_TO_PROVIDERS = {
-    "chat": ["ollama", "claude", "chatgpt", "gemini"],
+    "chat": ["ollama", "mock", "claude", "chatgpt", "gemini"],
     "responses": ["chatgpt"],
     "responses+conv": ["chatgpt"],
     "messages": ["claude"],
@@ -19,6 +19,7 @@ API_TO_PROVIDERS = {
 
 PROVIDER_TO_KEY = {
     "ollama": None,          # no key required
+    "mock": None,            # compose-internal mock_llm service
     "chatgpt": "openai",
     "claude": "anthropic",
     "gemini": "google",
