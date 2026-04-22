@@ -1,0 +1,132 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/agentgateway/agentgateway/main/schema/config.json
+#
+# aiplay — AGW gateway config for cidgar Harness C MVP
+#
+# All routes governed (cidgar policy present). Plan A exposes:
+#   - /llm/ollama/*        → host.docker.internal:11434 (Ollama on host)
+#   - /mcp/{weather,news,library,fetch} → fastmcp containers
+#
+# Plan B adds /llm/chatgpt/, /llm/claude/, /llm/gemini/ routes.
+#
+# The cidgar governance policy is identical on every route — it's what makes
+# this a cidgar test harness. Tweaking per-route is a Plan B exercise.
+
+binds:
+  - port: 8080
+    listeners:
+      - protocol: HTTP
+        routes:
+
+          # ── LLM route: Ollama (primary provider in Plan A) ──
+          - name: llm-ollama
+            matches:
+              - path:
+                  pathPrefix: /llm/ollama/
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                  header_passthrough: true
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - ai:
+                  name: ollama
+                  provider:
+                    openAI: {}
+                  hostOverride: "host.docker.internal:11434"
+
+          # ── MCP route: weather ──
+          - name: mcp-weather
+            matches:
+              - path:
+                  pathPrefix: /mcp/weather
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /mcp
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - mcp:
+                  prefixMode: always
+                  targets:
+                    - name: weather
+                      mcp:
+                        host: http://mcp-weather:8000/mcp
+
+          # ── MCP route: news ──
+          - name: mcp-news
+            matches:
+              - path:
+                  pathPrefix: /mcp/news
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /mcp
+              governance:
+                kind: cid_gar
+                log_level: debug
+            backends:
+              - mcp:
+                  prefixMode: always
+                  targets:
+                    - name: news
+                      mcp:
+                        host: http://mcp-news:8000/mcp
+
+          # ── MCP route: library ──
+          - name: mcp-library
+            matches:
+              - path:
+                  pathPrefix: /mcp/library
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /mcp
+              governance:
+                kind: cid_gar
+                log_level: debug
+            backends:
+              - mcp:
+                  prefixMode: always
+                  targets:
+                    - name: library
+                      mcp:
+                        host: http://mcp-library:8000/mcp
+
+          # ── MCP route: fetch ──
+          - name: mcp-fetch
+            matches:
+              - path:
+                  pathPrefix: /mcp/fetch
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /mcp
+              governance:
+                kind: cid_gar
+                log_level: debug
+            backends:
+              - mcp:
+                  prefixMode: always
+                  targets:
+                    - name: fetch
+                      mcp:
+                        host: http://mcp-fetch:8000/mcp
