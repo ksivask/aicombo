@@ -26,11 +26,19 @@ tabBtns.forEach(btn => {
   });
 });
 
-export async function openDrawer(trialId) {
-  currentTrialId = trialId;
+export async function openDrawer(trialId, rowData) {
+  currentTrialId = trialId || null;
   drawerEl.classList.remove("hidden");
-  drawerTitle.textContent = `Trial ${trialId.slice(0, 8)}…`;
-  await refreshDrawer(trialId);
+  if (trialId) {
+    drawerTitle.textContent = `Trial ${trialId.slice(0, 8)}…`;
+    await refreshDrawer(trialId);
+  } else {
+    drawerTitle.textContent = "No trial yet";
+    const cfg = rowData ? `<pre>${JSON.stringify(rowData, null, 2)}</pre>` : "";
+    tabContents.turns.innerHTML = `<p>No trial has been run for this row yet. Click ▶ to start one.</p>${cfg}`;
+    tabContents.verdicts.innerHTML = "<p>Run a trial to compute verdicts.</p>";
+    document.getElementById("raw-json").textContent = rowData ? JSON.stringify(rowData, null, 2) : "{}";
+  }
 }
 
 export async function refreshDrawer(trialId) {

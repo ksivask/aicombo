@@ -40,7 +40,7 @@ services:
       - RUST_LOG_FORMAT=json
       - ADMIN_ADDR=0.0.0.0:15000
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:192.168.64.1"
     volumes:
       - ./agw/config.yaml:/config/gateway-config.yaml:ro
     networks: [aiplay-network]
@@ -62,10 +62,10 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
-      - DEFAULT_OLLAMA_MODEL=qwen2.5:7b-instruct
+      - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - "host.docker.internal:192.168.64.1"
     depends_on:
       - agentgateway
     networks: [aiplay-network]

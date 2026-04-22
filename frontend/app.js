@@ -34,13 +34,17 @@ function buildColumnDefs() {
     {
       headerName: "Framework", field: "framework", editable: true,
       cellEditor: "agSelectCellEditor",
-      cellEditorParams: {values: ["langchain", "langgraph", "crewai", "pydantic-ai", "autogen", "llamaindex", "NONE"]},
+      cellEditorParams: {values: ["langchain", "langgraph", "crewai", "pydantic-ai", "autogen", "llamaindex"]},
+      cellStyle: params => (params.data?.llm === "NONE" ? {color: "#bbb", fontStyle: "italic"} : null),
+      valueFormatter: params => (params.data?.llm === "NONE" ? "— (direct MCP)" : params.value),
       pinned: "left", width: 120,
     },
     {
       headerName: "API", field: "api", editable: true,
       cellEditor: "agSelectCellEditor",
-      cellEditorParams: {values: ["chat", "responses", "responses+conv", "messages", "NONE"]},
+      cellEditorParams: {values: ["chat", "responses", "responses+conv", "messages"]},
+      cellStyle: params => (params.data?.llm === "NONE" ? {color: "#bbb", fontStyle: "italic"} : null),
+      valueFormatter: params => (params.data?.llm === "NONE" ? "—" : params.value),
       width: 140,
     },
     {headerName: "Stream", field: "stream", editable: true, cellDataType: "boolean", width: 80},
@@ -70,16 +74,17 @@ function buildColumnDefs() {
       cellEditor: "agSelectCellEditor",
       cellEditorParams: {values: ["via_agw", "direct"]},
       width: 100,
+      flex: 1,  // absorb leftover horizontal space, no empty gap before Status
     },
     {
-      headerName: "Status", field: "status", pinned: "right", width: 100,
+      headerName: "Status", field: "status", width: 110,
       cellRenderer: params => {
         const v = params.value || "idle";
         return `<span class="status-pill ${v}">${v}</span>`;
       },
     },
     {
-      headerName: "Verdicts", field: "verdicts", pinned: "right", width: 140,
+      headerName: "Verdicts", field: "verdicts", width: 140,
       cellRenderer: params => {
         const v = params.value || {};
         return ["a", "b", "c", "d", "e"].map(lvl => {
@@ -90,11 +95,14 @@ function buildColumnDefs() {
       },
     },
     {
-      headerName: "Actions", pinned: "right", width: 140,
-      cellRenderer: params => `
-        <button class="btn-run" data-row-id="${params.data.row_id}">▶</button>
-        <button class="btn-delete" data-row-id="${params.data.row_id}">✕</button>
-      `,
+      headerName: "Actions", width: 140,
+      cellRenderer: params => {
+        const running = params.data?.status === "running";
+        const runBtn = running
+          ? `<button class="btn-pause" data-row-id="${params.data.row_id}" disabled title="abort not implemented in Plan A">⏸</button>`
+          : `<button class="btn-run" data-row-id="${params.data.row_id}" title="run trial">▶</button>`;
+        return `${runBtn}<button class="btn-delete" data-row-id="${params.data.row_id}" title="delete row">✕</button>`;
+      },
     },
   ];
 }
@@ -140,8 +148,7 @@ async function onCellValueChanged(event) {
 async function onRowClicked(event) {
   // If click was on a button, don't open drawer
   if (event.event?.target?.tagName === "BUTTON") return;
-  const trialId = event.data.last_trial_id;
-  if (trialId) openDrawer(trialId);
+  openDrawer(event.data.last_trial_id, event.data);
 }
 
 async function onCellClicked(event) {
@@ -158,6 +165,10 @@ async function onCellClicked(event) {
 
 async function runRow(rowId) {
   const r = await fetch(`${API_BASE}/trials/${rowId}/run`, {method: "POST"});
+  if (!r.ok) {
+    alert(`Failed to start trial: ${r.status} ${await r.text()}`);
+    return;
+  }
   const j = await r.json();
   const trialId = j.trial_id;
 
@@ -166,20 +177,37 @@ async function runRow(rowId) {
   rowNode.setDataValue("status", "running");
   rowNode.setDataValue("last_trial_id", trialId);
 
+  // Persist last_trial_id so drawer works after page reload
+  await fetch(`${API_BASE}/matrix/row/${rowId}`, {
+    method: "PATCH",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({last_trial_id: trialId}),
+  }).catch(() => {});
+
+  // Open drawer immediately so the user can watch progress
+  openDrawer(trialId, rowNode.data);
+
   // Subscribe to SSE
   const es = new EventSource(`${API_BASE}/trials/${trialId}/stream`);
+  es.onerror = () => {
+    console.warn("SSE connection error for trial", trialId);
+  };
   es.onmessage = async (e) => {
-    const data = JSON.parse(e.data);
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
     if (data.event === "trial_done") {
       es.close();
-      // Reload trial to pull verdicts
+      // Reload trial to pull verdicts + final status
       const tr = await fetch(`${API_BASE}/trials/${trialId}`);
       const trial = await tr.json();
       rowNode.setDataValue("status", trial.status);
       rowNode.setDataValue("verdicts", trial.verdicts || {});
+      // force re-render of the Actions column (play/pause swap)
+      gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
       refreshDrawer(trialId);
     } else if (data.event === "status") {
       rowNode.setDataValue("status", data.status);
+      gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
     }
   };
 }
