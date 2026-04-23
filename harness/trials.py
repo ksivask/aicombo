@@ -50,6 +50,10 @@ class AuditEntry:
     cid: str | None
     backend: str | None
     raw: dict[str, Any]
+    # captured_at is the cidgar log line's ISO-8601 'timestamp' string
+    # at persist time. audit_tail.py uses a separate float-based field
+    # for in-memory window queries; the two systems never compare
+    # directly. Don't unify naively without checking both consumers.
     captured_at: str = ""
 
 
@@ -71,7 +75,11 @@ class Trial:
     finished_at: str | None = None
     turns: list[Turn] = field(default_factory=list)
     audit_entries: list[AuditEntry] = field(default_factory=list)
-    verdicts: dict[str, Verdict] = field(default_factory=dict)
+    # Plain dicts (not Verdict dataclasses) so JSON persistence and UI
+    # consumers can subscript without import gymnastics. compute_verdicts()
+    # in efficacy.py constructs Verdict instances which get .__dict__'d
+    # at save time.
+    verdicts: dict[str, dict] = field(default_factory=dict)
     error_reason: str | None = None
 
     def __post_init__(self):

@@ -82,6 +82,10 @@ def parse_log_line(line: str) -> dict[str, Any] | None:
             "trial_id": trial_id,
             "turn_id": turn_id,
             "raw": obj,
+            # captured_at here is a wall-clock float (time.time()) used for
+            # audit_tail's internal time-window buffer queries. The persisted
+            # AuditEntry in trials.py uses the cidgar log's ISO-8601 'timestamp'
+            # field instead — see api.py::audit_provider for the conversion.
             "captured_at": time.time(),
         }
 
