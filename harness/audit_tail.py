@@ -15,13 +15,11 @@ Correlation: cidgar's governance log does NOT include HTTP headers, so
 we cannot demux directly by X-Harness-Trial-ID. Instead, audit_tail
 buffers the last N governance entries with captured_at timestamps, and
 callers (the runner at trial-completion) claim entries in their
-[started_at, finished_at] window. This is lossy under concurrency, but
-Plan A is serial (MAX_CONCURRENT_TRIALS=1) so it's sufficient.
-
-If MAX_CONCURRENT_TRIALS > 1 at some point, either:
-- cidgar needs to include request headers in governance log, OR
-- we add a stateful correlation layer (trial currently-running flag on
-  top of time-window).
+[started_at, finished_at] window. This is lossy under concurrency; the
+harness runs trials serially today. If concurrent trials are ever
+introduced, either cidgar needs to include request headers in the
+governance log, or we add a stateful correlation layer (trial
+currently-running flag on top of time-window).
 """
 from __future__ import annotations
 
