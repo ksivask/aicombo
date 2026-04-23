@@ -70,7 +70,30 @@ function buildColumnDefs() {
       width: 140,
     },
     {headerName: "Stream", field: "stream", editable: true, cellDataType: "boolean", width: 80},
-    {headerName: "State", field: "state", editable: true, cellDataType: "boolean", width: 80},
+    {
+      headerName: "State", field: "state", cellDataType: "boolean", width: 80,
+      // Editable only when (api, llm) supports state (chatgpt + responses). All
+      // other combos disable + force F via validator. Reflects the rule client-side.
+      editable: params => {
+        const r = params.data || {};
+        const api = r.api;
+        const llm = r.llm;
+        if (api === "responses" && llm === "chatgpt") return true;
+        return false;  // chat / messages / responses+conv (forced) / non-chatgpt
+      },
+      cellStyle: params => {
+        const r = params.data || {};
+        const editable = (r.api === "responses" && r.llm === "chatgpt");
+        return editable ? null : {color: "#bbb", background: "#f5f5f5"};
+      },
+      tooltipValueGetter: params => {
+        const r = params.data || {};
+        if (r.api === "responses+conv") return "responses+conv forces state=true";
+        if (r.api !== "responses") return `state only meaningful for api=responses (current api=${r.api})`;
+        if (r.llm !== "chatgpt") return `llm=${r.llm} does not implement Responses-API state — pick chatgpt`;
+        return null;
+      },
+    },
     {
       headerName: "LLM", field: "llm", editable: true,
       cellEditor: "agSelectCellEditor",
@@ -176,11 +199,17 @@ async function onCellValueChanged(event) {
       }
       event.api.getRowNode(row.row_id).setData(row);
     }
-    // Force re-render of Actions (Run button) + row styling when llm/mcp changed —
-    // isRowRunnable depends on those two fields.
-    if (event.column?.getColId() === "llm" || event.column?.getColId() === "mcp") {
-      gridApi.refreshCells({rowNodes: [event.api.getRowNode(row.row_id)], columns: ["Actions"], force: true});
+    // Cells whose styling/editability depends on other columns must redraw
+    // when those source columns change.
+    const colId = event.column?.getColId();
+    if (colId === "llm" || colId === "mcp") {
+      // Actions + State both depend on llm; redraw the whole row to refresh
+      // .row-not-runnable class + State cell editability/style.
       event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
+    }
+    if (colId === "api") {
+      // State editability depends on api too
+      gridApi.refreshCells({rowNodes: [event.api.getRowNode(row.row_id)], columns: ["state"], force: true});
     }
     // Persist
     await fetch(`${API_BASE}/matrix/row/${row.row_id}`, {

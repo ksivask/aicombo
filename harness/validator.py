@@ -25,6 +25,10 @@ PROVIDER_TO_KEY = {
     "gemini": "google",
 }
 
+# Which LLM providers actually implement OpenAI Responses API + state
+# (previous_response_id semantics). Only chatgpt today; copilot etc come in Plan B.
+LLM_SUPPORTS_RESPONSES_STATE = {"chatgpt"}
+
 
 def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None) -> dict[str, Any]:
     """Validate a row config. Returns disabled_cells, forced_values, runnable, disabled_dropdown_options."""
@@ -54,12 +58,25 @@ def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None)
             "disabled_dropdown_options": disabled_dropdown_options,
         }
 
-    # Rule 3: Per-API state constraints
+    # Rule 3a: Per-API state constraints (chat/messages → F forced; responses+conv → T forced)
     if llm != "NONE":
         rules = API_VALID_STATE.get(api, {})
         if rules.get("disabled"):
             disabled.append("state")
             forced["state"] = rules.get("forced")
+
+    # Rule 3b: LLM-level state support — even if API allows state (e.g. responses),
+    # the selected LLM may not implement it. Disable + force F in that case so the
+    # checkbox doesn't claim an unsupported config.
+    if llm != "NONE" and api in ("responses", "responses+conv"):
+        if llm not in LLM_SUPPORTS_RESPONSES_STATE:
+            if "state" not in disabled:
+                disabled.append("state")
+            forced["state"] = False
+            warnings.append(
+                f"llm={llm} does not implement Responses API state — "
+                f"select chatgpt to enable state. Row will not be runnable as-is."
+            )
 
     # Rule 4: provider availability (keys detected)
     for provider, env_key in PROVIDER_TO_KEY.items():
@@ -71,10 +88,22 @@ def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None)
                 "reason": f"{env_key.upper()}_API_KEY not set in .env",
             })
 
+    # Rule 5: API ↔ LLM compatibility (using API_TO_PROVIDERS).
+    # If the selected LLM isn't in the API's supported list, mark unrunnable.
+    runnable = True
+    if llm != "NONE":
+        api_providers = API_TO_PROVIDERS.get(api, [])
+        if api_providers and llm not in api_providers:
+            runnable = False
+            warnings.append(
+                f"api={api} is not supported by llm={llm} "
+                f"(supported: {', '.join(api_providers)})"
+            )
+
     return {
         "disabled_cells": disabled,
         "forced_values": forced,
-        "runnable": True,
+        "runnable": runnable,
         "warnings": warnings,
         "disabled_dropdown_options": disabled_dropdown_options,
     }
