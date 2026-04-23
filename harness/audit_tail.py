@@ -255,3 +255,18 @@ class AuditTail:
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self.run())
+
+    async def stop(self) -> None:
+        """Cancel the background run() task and await its termination.
+
+        Safe to call multiple times; becomes a no-op after the task is gone.
+        """
+        task = self._task
+        if task is None:
+            return
+        task.cancel()
+        # Gather swallows the CancelledError and any other exception the
+        # task may raise on teardown. We don't care about the outcome here
+        # beyond "task has actually stopped".
+        await asyncio.gather(task, return_exceptions=True)
+        self._task = None

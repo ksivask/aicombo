@@ -15,16 +15,21 @@ from audit_tail import AuditTail
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Start audit tail
-    container_name = os.environ.get("AGW_CONTAINER_NAME", "agentgateway")
-    tail = AuditTail(container_name=container_name)
-    tail.start()
-    api.AUDIT_TAIL = tail
+    # Start audit tail unless explicitly disabled (tests set this so they
+    # don't spawn `docker ps` / `docker logs -f` subprocesses).
+    tail: AuditTail | None = None
+    if os.environ.get("AIPLAY_DISABLE_AUDIT_TAIL") != "1":
+        container_name = os.environ.get("AGW_CONTAINER_NAME", "agentgateway")
+        tail = AuditTail(container_name=container_name)
+        tail.start()
+        api.AUDIT_TAIL = tail
 
     yield
 
-    # Shutdown — nothing to explicitly close; subprocess exits with process
-    pass
+    # Cancel the background tail task cleanly so the subprocess tree
+    # (docker ps / docker logs -f) is torn down with the app.
+    if tail is not None:
+        await tail.stop()
 
 
 app = FastAPI(title="aiplay — cidgar Harness C", lifespan=lifespan)

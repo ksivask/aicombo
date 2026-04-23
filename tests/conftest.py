@@ -17,6 +17,12 @@ if not os.environ.get("DATA_DIR"):
     _default_tmp.mkdir(parents=True, exist_ok=True)
     os.environ["DATA_DIR"] = str(_default_tmp)
 
+# Prevent harness/main.py's lifespan from spawning docker ps / docker logs -f
+# subprocesses when tests exercise it via `with TestClient(app) as client:`.
+# The gate is consumed in main.lifespan; api.AUDIT_TAIL stays None so the
+# rest of api.py short-circuits cleanly.
+os.environ["AIPLAY_DISABLE_AUDIT_TAIL"] = "1"
+
 
 @pytest.fixture
 def tmp_data_dir(monkeypatch):
