@@ -4,14 +4,20 @@ import sys
 from pathlib import Path
 
 _ADAPTER_DIR = str(Path(__file__).resolve().parent.parent / "adapters" / "langchain")
+_DIRECT_MCP_DIR = str(Path(__file__).resolve().parent.parent / "adapters" / "direct-mcp")
 
 
 def _ensure_adapter_on_path():
     # Make the adapter module importable. Kept inside the test functions
     # (not at module level) to avoid shadowing harness/main.py during full
     # test suite collection.
-    if _ADAPTER_DIR not in sys.path:
-        sys.path.insert(0, _ADAPTER_DIR)
+    # Evict direct-mcp's framework_bridge (same module name) so our import wins.
+    while _DIRECT_MCP_DIR in sys.path:
+        sys.path.remove(_DIRECT_MCP_DIR)
+    while _ADAPTER_DIR in sys.path:
+        sys.path.remove(_ADAPTER_DIR)
+    sys.path.insert(0, _ADAPTER_DIR)
+    sys.modules.pop("framework_bridge", None)
 
 
 def test_pick_llm_base_url_via_agw_ollama(monkeypatch):

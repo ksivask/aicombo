@@ -7,6 +7,7 @@ import httpx
 
 ADAPTER_URLS = {
     "langchain": os.environ.get("ADAPTER_LANGCHAIN_URL", "http://adapter-langchain:5001"),
+    "direct-mcp": os.environ.get("ADAPTER_DIRECT_MCP_URL", "http://adapter-direct-mcp:5010"),
 }
 
 

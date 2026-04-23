@@ -125,6 +125,12 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
             expected_cids = all_audit_cids
 
         body = (t.response or {}).get("body", {}) or {}
+        # MCP responses may surface as SSE strings or JSON-RPC dicts (not
+        # OpenAI-shaped). Verdict B's openai-shape probes only apply to
+        # actual chat-completions payloads — anything else becomes a no-op
+        # on that turn (verdict_a handles the audit-log presence check).
+        if not isinstance(body, dict):
+            continue
         choices = body.get("choices", []) or []
         has_tool_calls = any(
             (ch.get("message", {}) or {}).get("tool_calls")

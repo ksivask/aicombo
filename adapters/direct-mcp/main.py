@@ -1,0 +1,94 @@
+"""FastAPI adapter service wrapping direct MCP tool calls (no LLM).
+
+Plan A v1: deterministic keyword-based routing. Same HTTP contract as
+adapters/langchain/main.py — harness/adapters_registry.py treats them
+interchangeably.
+"""
+from __future__ import annotations
+
+import logging
+import os
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel
+
+from framework_bridge import Trial
+
+log = logging.getLogger("aiplay.adapter.direct-mcp")
+
+app = FastAPI(title="aiplay-adapter-direct-mcp")
+
+TRIALS: dict[str, Trial] = {}
+
+
+class Config(BaseModel):
+    api: str = "NONE"
+    stream: bool = False
+    state: bool = False
+    llm: str = "NONE"
+    mcp: str
+    routing: str = "via_agw"
+    model: str | None = None
+
+
+class CreateTrialReq(BaseModel):
+    trial_id: str
+    config: Config
+
+
+class TurnReq(BaseModel):
+    turn_id: str
+    user_msg: str
+
+
+@app.get("/info")
+def info():
+    return {
+        "framework": "direct-mcp",
+        "version": "1.0",
+        "supports": {
+            "apis": [],
+            "mcps": ["weather", "news", "library", "fetch"],
+            "streaming": False,
+            "state_modes": ["stateless"],
+            "compact_strategies": [],
+        },
+    }
+
+
+@app.get("/health")
+def health():
+    return {"status": "ok"}
+
+
+@app.post("/trials")
+def create_trial(req: CreateTrialReq):
+    if req.config.mcp == "NONE":
+        raise HTTPException(400, "unsupported_combination: direct-mcp adapter requires a concrete MCP")
+    try:
+        TRIALS[req.trial_id] = Trial(req.trial_id, req.config.model_dump())
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "trial_id": req.trial_id}
+
+
+@app.post("/trials/{trial_id}/turn")
+async def drive_turn(trial_id: str, req: TurnReq):
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial.turn(req.turn_id, req.user_msg)
+
+
+@app.delete("/trials/{trial_id}")
+async def delete_trial(trial_id: str):
+    trial = TRIALS.pop(trial_id, None)
+    if trial is not None:
+        await trial.aclose()
+    return {"ok": True}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    port = int(os.environ.get("ADAPTER_PORT", "5010"))
+    uvicorn.run(app, host="0.0.0.0", port=port)

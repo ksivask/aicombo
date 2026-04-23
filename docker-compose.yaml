@@ -73,6 +73,30 @@ services:
     networks: [aiplay-network]
     restart: unless-stopped
 
+  # ── Adapter: direct-mcp (llm=NONE rows) ──
+  #   Drives MCP tool calls directly via deterministic keyword routing;
+  #   no LLM in the loop. Exercises cidgar's Channel 3 tool-result rewrite
+  #   + f1/f4/f5 governance on the MCP path.
+  adapter-direct-mcp:
+    build: ./adapters/direct-mcp
+    image: aiplay-adapter-direct-mcp:local
+    environment:
+      - ADAPTER_PORT=5010
+      - AGW_MCP_WEATHER=http://agentgateway:8080/mcp/weather
+      - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
+      - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
+      - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - DIRECT_MCP_WEATHER=http://mcp-weather:8000/mcp
+      - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
+      - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
+      - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+    extra_hosts:
+      - "host.docker.internal:192.168.64.1"
+    depends_on:
+      - agentgateway
+    networks: [aiplay-network]
+    restart: unless-stopped
+
   # ── MCP servers (all 4 imported from demo; all on aiplay-network) ──
   mcp-weather:
     build: ./mcp/weather

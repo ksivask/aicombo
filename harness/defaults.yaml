@@ -42,5 +42,23 @@ turn_plan_templates:
 
   direct_mcp:
     turns:
-      - {kind: direct_mcp_tools_list}
-      - {kind: direct_mcp_tools_call}
+      - {kind: user_msg, content: "{mcp_specific_query}"}
+      - {kind: user_msg, content: "{mcp_followup_query}"}
+
+# Per-MCP query substitutions for the direct_mcp template (llm=NONE rows).
+# The direct-mcp adapter uses deterministic keyword routing — these queries
+# are chosen so the adapter can pick the right tool and extract reasonable
+# args via simple regex. Plan B will make this richer + per-row editable.
+mcp_query_substitutions:
+  weather:
+    mcp_specific_query: "What's the weather in Paris?"
+    mcp_followup_query: "What about London?"
+  news:
+    mcp_specific_query: "Get news about AI."
+    mcp_followup_query: "News about space."
+  library:
+    mcp_specific_query: "Find books about Testing."
+    mcp_followup_query: "More books about Python."
+  fetch:
+    mcp_specific_query: "Fetch https://example.com"
+    mcp_followup_query: "Fetch https://httpbin.org/uuid"

@@ -14,6 +14,16 @@ def _load_defaults() -> dict[str, Any]:
         return yaml.safe_load(f)
 
 
+def _subst(s: str, subs: dict[str, str]) -> str:
+    """Substitute {placeholder} tokens using subs. Unknown tokens are left intact."""
+    if not s or "{" not in s:
+        return s
+    out = s
+    for k, v in subs.items():
+        out = out.replace("{" + k + "}", v)
+    return out
+
+
 def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     """Pick a turn plan template based on the row config."""
     data = _load_defaults()
@@ -23,7 +33,16 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     mcp = row.get("mcp", "NONE")
 
     if llm == "NONE":
-        return templates["direct_mcp"]
+        plan = templates["direct_mcp"]
+        subs_map = data.get("mcp_query_substitutions", {}) or {}
+        subs = subs_map.get(mcp, {}) or {}
+        return {
+            "turns": [
+                ({**t, "content": _subst(t.get("content", ""), subs)}
+                 if t.get("kind") == "user_msg" else t)
+                for t in plan["turns"]
+            ]
+        }
 
     if mcp == "NONE":
         return templates["no_mcp_chat"]

@@ -186,8 +186,14 @@ async def trial_run(row_id: str):
         )
 
     trial_id = str(uuid.uuid4())
+    # When llm=NONE, the direct-mcp adapter drives the trial regardless of
+    # the framework the user picked in the matrix row (that dropdown is
+    # irrelevant for llm=NONE — the runner picks the adapter for us).
+    framework = row["framework"]
+    if row.get("llm", "NONE") == "NONE":
+        framework = "direct-mcp"
     cfg = TrialConfig(
-        framework=row["framework"], api=row["api"],
+        framework=framework, api=row["api"],
         stream=row.get("stream", False), state=row.get("state", False),
         llm=row["llm"], mcp=row["mcp"], routing=row.get("routing", "via_agw"),
     )
