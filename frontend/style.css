@@ -152,6 +152,14 @@ main { padding: 10px; }
   padding: 4px 6px; background: #fff8e1; border-left: 2px solid #ffd54f;
   border-radius: 2px; word-break: break-word;
 }
+.step-benign {
+  display: inline-block; padding: 1px 8px; margin-left: 6px;
+  background: #e8f5e9; color: #1b5e20;
+  border: 1px solid #81c784; border-radius: 10px;
+  font-size: 10px; font-family: ui-monospace, monospace;
+  cursor: help;
+}
+.step-benign:hover { background: #c8e6c9; }
 .step-summary code { background: transparent; }
 
 table.kv {

@@ -140,15 +140,28 @@ function pickAudits(trial, turn) {
     return ts >= start && ts <= end;
   });
 }
+// Known-benign event types with explanatory tooltips.
+// Shown as a small ⓘ info badge next to the phase label; hover shows the note.
+const BENIGN_EVENT_NOTES = {
+  "mcp_sse_open":
+    "Optional MCP server→client SSE push channel (streamable-http protocol). " +
+    "The fastmcp servers in this harness don't push events, so the stream " +
+    "closes idle and AGW wraps the close in a cosmetic JSON-RPC -32603 error. " +
+    "The POST channel — where tool calls actually execute — is unaffected.",
+  "mcp_session_close":
+    "MCP session-close (DELETE) at end of tool execution. The response body " +
+    "may contain an SSE-framed JSON-RPC error from AGW wrapping the stream " +
+    "termination — benign. The POST tool_call before this event carried the " +
+    "actual result.",
+};
+
 function renderEventStepCard(ev, idx) {
-  // ev is a single framework_events[i] dict — usually one of:
-  //   {t: "tools_list", tool_count, tool_names, request, response}
-  //   {t: "llm_hop_<n>", request, response}
-  //   {t: "mcp_tool_call", tool_name, args, request, response, result_summary}
-  //   {t: "hop_limit_reached", max_hops}
+  // ev is a single framework_events[i] dict. See BENIGN_EVENT_NOTES for types
+  // where the "error" in the response body is expected.
   const phase = ev.t || ev.kind || "unknown";
   const req = ev.request || {};
   const resp = ev.response || {};
+  const benignNote = BENIGN_EVENT_NOTES[phase];
   const detailBits = [];
   if (ev.tool_name) detailBits.push(`tool=${escapeHtml(ev.tool_name)}`);
   if (ev.tool_count !== undefined) detailBits.push(`tools=${ev.tool_count}`);
@@ -156,6 +169,9 @@ function renderEventStepCard(ev, idx) {
   if (ev.error) detailBits.push(`<span class="step-error">err=${escapeHtml(ev.error)}</span>`);
   if (ev.max_hops !== undefined) detailBits.push(`max_hops=${ev.max_hops}`);
   const detailStr = detailBits.length ? ` <span class="step-detail">${detailBits.join(" · ")}</span>` : "";
+  const benignBadge = benignNote
+    ? ` <span class="step-benign" title="${escapeHtml(benignNote)}">ⓘ benign</span>`
+    : "";
 
   const reqBlock = req.url ? `
     <details><summary>Step request — <code>${escapeHtml(req.method || 'POST')}</code> ${escapeHtml(req.url || '')}</summary>
@@ -179,7 +195,7 @@ function renderEventStepCard(ev, idx) {
     <div class="step-summary"><strong>Result preview</strong>: <code>${escapeHtml(ev.result_summary)}</code></div>` : "";
   return `
     <div class="step-card">
-      <div class="step-head"><span class="step-idx">#${idx}</span> <span class="step-phase">${escapeHtml(phase)}</span>${detailStr}</div>
+      <div class="step-head"><span class="step-idx">#${idx}</span> <span class="step-phase">${escapeHtml(phase)}</span>${benignBadge}${detailStr}</div>
       ${summaryBlock}
       ${reqBlock}
       ${respBlock}
