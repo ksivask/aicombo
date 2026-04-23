@@ -27,6 +27,27 @@ def test_chat_with_weather_mcp_includes_weather_queries():
     assert "weather" in contents.lower() or "paris" in contents.lower()
 
 
+def test_with_force_state_ref_row_selects_force_ref_template():
+    """Plan B T11 — with_force_state_ref=true selects the
+    `with_responses_state_force_ref` template regardless of MCP setting.
+    Plan has a user_msg → user_msg → force_state_ref → user_msg shape.
+    """
+    plan = default_turn_plan({
+        "framework": "autogen", "api": "responses",
+        "stream": False, "state": True,
+        "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+        "with_force_state_ref": True,
+    })
+    kinds = [t.get("kind") for t in plan["turns"]]
+    assert "force_state_ref" in kinds, kinds
+    # The force_state_ref turn spec should carry a lookback hint.
+    fsr = next(t for t in plan["turns"] if t.get("kind") == "force_state_ref")
+    assert fsr.get("lookback") == 2, fsr
+    # Should also have enough user_msg turns before and after for the
+    # verdict-e window correlation to land.
+    assert kinds.count("user_msg") >= 2
+
+
 def test_none_llm_with_mcp_produces_direct_mcp_plan():
     """LLM=NONE + MCP=weather → user_msg turns driven by the direct-mcp adapter.
 

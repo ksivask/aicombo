@@ -50,7 +50,12 @@ async def run_trial(
                 if resp.get("turn_id"):
                     turn.turn_id = resp["turn_id"]
                 turn.request = resp.get("request_captured", {})
-                turn.response = resp.get("response_captured", {})
+                turn.response = resp.get("response_captured", {}) or {}
+                # T11 — also surface the Responses-API response id at the
+                # turn.response level so a subsequent force_state_ref turn
+                # can lookup a target_response_id from this turn.
+                if resp.get("_response_id"):
+                    turn.response["_response_id"] = resp["_response_id"]
                 turn.framework_events = resp.get("framework_events", [])
             elif kind == "compact":
                 # Plan B T10 — ask the adapter to mutate its internal history
@@ -66,13 +71,84 @@ async def run_trial(
                     turn.response = {"body": compact_resp}
                 except Exception as e:
                     turn.error = {"reason": f"compact failed: {e}"}
+            elif kind == "force_state_ref":
+                # Plan B T11 — force a Responses-API state-mode jump by
+                # telling the adapter to use previous_response_id from an
+                # EARLIER turn (N-lookback) instead of the immediate prior.
+                # Verdict (e) then reads whether the CID survived that jump.
+                lookback = int(turn_spec.get("lookback", 2))
+                text = turn_spec.get(
+                    "content", turn_spec.get("text", "What did we discuss earlier?"),
+                )
+                # Find a completed user_msg turn at N-lookback that has a
+                # captured _response_id (set by the supporting adapters'
+                # _build_turn_response).
+                completed_user = [
+                    t for t in trial.turns
+                    if t.kind == "user_msg" and (t.response or {}).get("_response_id")
+                ]
+                target_response_id = None
+                if len(completed_user) >= lookback:
+                    target_response_id = completed_user[-lookback].response.get(
+                        "_response_id",
+                    )
+                elif completed_user:
+                    # Fallback: use the oldest available id (still exercises a
+                    # non-immediate-prior reference even if the plan was too
+                    # short for the requested lookback).
+                    target_response_id = completed_user[0].response.get(
+                        "_response_id",
+                    )
+                if not target_response_id:
+                    turn.error = {
+                        "reason": (
+                            f"force_state_ref: no prior user_msg turn carries "
+                            f"_response_id (lookback={lookback}); supporting "
+                            f"adapters are autogen + llamaindex on "
+                            f"api=responses with state=True"
+                        ),
+                    }
+                else:
+                    try:
+                        turn_resp = await adapter_client.drive_turn(
+                            trial_id=trial_id,
+                            turn_id=turn_id,
+                            user_msg=text,
+                            turn_kind="force_state_ref",
+                            target_response_id=target_response_id,
+                        )
+                        if turn_resp.get("turn_id"):
+                            turn.turn_id = turn_resp["turn_id"]
+                        turn.request = {
+                            "user_msg": text,
+                            "turn_kind": "force_state_ref",
+                            "target_response_id": target_response_id,
+                            "lookback": lookback,
+                        }
+                        # Preserve the same shape as user_msg turns so verdict
+                        # (e) can use the existing time-window helpers.
+                        turn.response = turn_resp.get("response_captured", {}) or {}
+                        # Also keep the top-level envelope's _response_id so
+                        # chained force_state_ref turns can target this one.
+                        if turn_resp.get("_response_id"):
+                            turn.response["_response_id"] = turn_resp["_response_id"]
+                        turn.framework_events = turn_resp.get("framework_events", [])
+                    except Exception as e:
+                        turn.error = {
+                            "reason": f"force_state_ref turn failed: {e}",
+                        }
             else:
-                # Remaining kinds (force_state_ref, inject_ambient_cid) land
-                # in future tasks (T11+). Mark as no-op rather than error so
-                # templates carrying them don't block trial completion.
+                # Remaining kinds (inject_ambient_cid) land in future tasks.
+                # Mark as no-op rather than error so templates carrying them
+                # don't block trial completion.
                 turn.error = {"reason": f"turn kind {kind!r} not implemented"}
 
             turn.finished_at = datetime.now(timezone.utc).isoformat()
+            # Keep the in-memory trial.turns list in sync with the persisted
+            # one so subsequent turn iterations (e.g. force_state_ref looking
+            # up a prior turn's _response_id via `trial.turns`) can see what
+            # came before without round-tripping through the store.
+            trial.turns.append(turn)
             store.append_turn(trial_id, turn)
 
         # Grace period for audit log stragglers

@@ -39,10 +39,32 @@ class AdapterClient:
         r.raise_for_status()
         return r.json()
 
-    async def drive_turn(self, trial_id: str, turn_id: str, user_msg: str) -> dict:
+    async def drive_turn(
+        self,
+        trial_id: str,
+        turn_id: str,
+        user_msg: str,
+        turn_kind: str | None = None,
+        target_response_id: str | None = None,
+    ) -> dict:
+        """Drive one turn through the adapter.
+
+        T11 — optional `turn_kind` + `target_response_id` forward through to
+        the adapter's /trials/{id}/turn endpoint. When `turn_kind` is None or
+        "user_msg" the body matches the pre-T11 contract (default path).
+        When `turn_kind == "force_state_ref"` the adapter is expected to set
+        `previous_response_id = target_response_id` on the NEXT Responses-API
+        call; supporting adapters are autogen + llamaindex, the rest return
+        HTTP 400.
+        """
+        body: dict = {"turn_id": turn_id, "user_msg": user_msg}
+        if turn_kind:
+            body["turn_kind"] = turn_kind
+        if target_response_id:
+            body["target_response_id"] = target_response_id
         r = await self.client.post(
             f"/trials/{trial_id}/turn",
-            json={"turn_id": turn_id, "user_msg": user_msg},
+            json=body,
         )
         r.raise_for_status()
         return r.json()

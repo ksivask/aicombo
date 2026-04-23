@@ -44,6 +44,15 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
             ]
         }
 
+    # Plan B T11 — row requests a force_state_ref plan. This overrides BOTH
+    # the per-MCP default and the no-MCP default because verdict (e)'s design
+    # doesn't depend on MCP presence — only on Responses-API state-mode
+    # chaining. Check for the template BEFORE the mcp=NONE fast-path below
+    # so this plan is selected even for MCP=NONE autogen rows.
+    if (row.get("with_force_state_ref")
+            and "with_responses_state_force_ref" in templates):
+        return templates["with_responses_state_force_ref"]
+
     if mcp == "NONE":
         return templates["no_mcp_chat"]
 

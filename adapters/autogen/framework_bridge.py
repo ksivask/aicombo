@@ -660,6 +660,13 @@ class Trial:
             "request_captured": request_captured,
             "response_captured": response_captured,
             "framework_events": self._events,
+            # T11 — expose the Responses-API response id at the envelope top
+            # level so the runner can pick a target_response_id for a
+            # subsequent force_state_ref turn. None for non-responses modes.
+            "_response_id": (
+                self._response_history[-1]
+                if self._response_history else None
+            ),
         }
 
     async def compact(self, strategy: str) -> dict:

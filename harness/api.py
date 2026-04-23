@@ -49,7 +49,13 @@ def _load_matrix() -> list[dict]:
 
 
 def _seed_matrix_from_defaults() -> list[dict]:
-    """Load matrix_seed_rows from harness/defaults.yaml (Plan A: langchain row)."""
+    """Load matrix_seed_rows from harness/defaults.yaml.
+
+    Seeds only rows for adapters the harness can actually drive:
+      * Plan A  — langchain, direct-mcp (NONE routing)
+      * Plan B  — extends to autogen (T5), llamaindex (T6) for the
+                  force_state_ref/verdict-e seed row.
+    """
     try:
         import yaml
         defaults_path = Path(__file__).with_name("defaults.yaml")
@@ -58,11 +64,10 @@ def _seed_matrix_from_defaults() -> list[dict]:
         with defaults_path.open() as f:
             data = yaml.safe_load(f) or {}
         rows_spec = data.get("matrix_seed_rows", [])
+        allowed = {"langchain", "autogen", "llamaindex", "NONE"}
         seeded = []
         for idx, spec in enumerate(rows_spec):
-            # Plan A only runs langchain. Seed just langchain rows (+ the NONE direct-MCP
-            # row) — the other frameworks become available in Plan B.
-            if spec.get("framework") not in ("langchain", "NONE"):
+            if spec.get("framework") not in allowed:
                 continue
             seeded.append({
                 "row_id": f"row-seed-{idx:02d}",
@@ -92,6 +97,11 @@ class RowConfig(BaseModel):
     # Plan B T10 — opt-in flag that switches the row's default turn plan to
     # `with_mcp_with_compact` so verdict (d) has a compact turn to bracket.
     with_compact: bool = False
+    # Plan B T11 — opt-in flag that switches the row's default turn plan to
+    # `with_responses_state_force_ref` so verdict (e) has a force_state_ref
+    # turn to bracket. Only meaningful for api in responses/responses+conv
+    # with state=True + a supporting framework (autogen / llamaindex).
+    with_force_state_ref: bool = False
 
 
 # ── Routes ──

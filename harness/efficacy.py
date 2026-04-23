@@ -460,10 +460,92 @@ def verdict_d_resilience(trial: Trial) -> Verdict:
     )
 
 
+def verdict_e_state_mode_gap(trial: Trial) -> Verdict:
+    """(e) state-mode gap — when adapter uses Responses-API `previous_response_id`
+    state mode, does cidgar's CID survive across the state chain?
+
+    Only meaningful for trials that:
+      * run on api=responses / api=responses+conv, AND
+      * have state=True (so `previous_response_id` is actually chained), AND
+      * include at least one `force_state_ref` turn in their plan.
+
+    Pass: the CID observed in the audit window of the user_msg turn
+    IMMEDIATELY before the forced state-ref is also observed in the audit
+    window of the forced-ref turn itself (intersection non-empty).
+    Fail: disjoint sets — CID was lost when the framework switched to
+    state-mode against an older response id.
+    na:   any of the prerequisites above don't hold.
+    """
+    turns = trial.turns
+
+    # Prerequisite 1 — API family
+    if trial.config.api not in ("responses", "responses+conv"):
+        return Verdict(
+            "na",
+            f"verdict (e) only meaningful for api in responses/responses+conv, "
+            f"got api={trial.config.api}",
+        )
+
+    # Prerequisite 2 — state must be enabled for previous_response_id chain
+    # to exist. api=responses+conv implies state at the runner layer; if the
+    # config explicitly sets state=False for a bare api=responses row, no
+    # chain exists for a gap to span.
+    chain_active = trial.config.state or trial.config.api == "responses+conv"
+    if not chain_active:
+        return Verdict(
+            "na",
+            "verdict (e) requires state=True (or api=responses+conv) so "
+            "previous_response_id chaining is in effect",
+        )
+
+    # Prerequisite 3 — a force_state_ref turn must be in the plan
+    fsr_idx = next(
+        (i for i, t in enumerate(turns) if t.kind == "force_state_ref"), None,
+    )
+    if fsr_idx is None:
+        return Verdict("na", "no force_state_ref turn in this trial's plan")
+
+    fsr_turn = turns[fsr_idx]
+
+    # The user_msg turn IMMEDIATELY before the force_state_ref is the
+    # "CID-established" anchor; we compare its audit cid set against the
+    # forced-ref turn's audit cid set.
+    pre_user = next(
+        (t for t in reversed(turns[:fsr_idx]) if t.kind == "user_msg"), None,
+    )
+    if pre_user is None:
+        return Verdict(
+            "na",
+            "force_state_ref turn has no preceding user_msg to compare against",
+        )
+
+    pre_cids = _cids_for_turn_window(trial, pre_user)
+    forced_cids = _cids_for_turn_window(trial, fsr_turn)
+
+    if not pre_cids or not forced_cids:
+        return Verdict(
+            "error",
+            f"missing audit cids: pre={sorted(pre_cids)} "
+            f"forced={sorted(forced_cids)}",
+        )
+
+    survivors = pre_cids & forced_cids
+    if survivors:
+        return Verdict(
+            "pass",
+            f"CID survived state-mode jump ({sorted(survivors)})",
+        )
+    return Verdict(
+        "fail",
+        f"CID lost on state-mode jump: pre={sorted(pre_cids)} "
+        f"→ forced={sorted(forced_cids)}",
+    )
+
+
 def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
     """Return {a, b, c, d, e, f} verdicts.
 
-    Plan A computed a+b+f; Plan B T9 added c; Plan B T10 adds d. e still na.
+    Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 adds e.
     """
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
@@ -476,6 +558,6 @@ def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
         "b": verdict_b_channel_structure(trial),
         "c": verdict_c_continuity(trial),
         "d": verdict_d_resilience(trial),
-        "e": Verdict("na", "deferred to Plan B"),
+        "e": verdict_e_state_mode_gap(trial),
         "f": verdict_f_gar_richness(trial),
     }

@@ -3,12 +3,18 @@ from trials import Trial, TrialConfig, TurnPlan, Turn, AuditEntry, Verdict
 from efficacy import compute_verdicts
 
 
-def _trial_with(turns, audit_entries, routing="via_agw", api="chat"):
-    cfg = TrialConfig(
-        framework="langchain", api=api,
-        stream=False, state=False,
-        llm="ollama", mcp="NONE", routing=routing,
-    )
+def _trial_with(turns, audit_entries, routing="via_agw", api="chat",
+                cfg=None):
+    """Build a Trial for tests. Callers can pass `cfg=TrialConfig(...)` to
+    control framework/api/state/llm; otherwise a default langchain/chat
+    stateless config is used.
+    """
+    if cfg is None:
+        cfg = TrialConfig(
+            framework="langchain", api=api,
+            stream=False, state=False,
+            llm="ollama", mcp="NONE", routing=routing,
+        )
     return Trial(
         trial_id="t", config=cfg, turn_plan=TurnPlan(turns=[]),
         turns=turns, audit_entries=audit_entries,
@@ -111,13 +117,14 @@ def test_direct_mode_skips_all_verdicts():
         assert v[lvl].verdict == "na"
 
 
-def test_plan_b_verdicts_de_return_na():
-    """Plan B through T10: (e) still returns na with 'deferred to Plan B'.
+def test_plan_b_verdicts_cd_return_na_no_special_turns():
+    """After T11, verdict (c), (d), and (e) all return na on a 1-turn chat
+    trial with no special turn kinds.
 
-    Verdict (c) is implemented as of T9 — with only 1 turn, it returns na
-    with a different reason (needs ≥2 turns for continuity).
-    Verdict (d) is implemented as of T10 — with no compact turn, it returns
-    na with 'no compact turn' reason (still within spec).
+    * (c) needs ≥2 user_msg turns for continuity — 1 turn → na.
+    * (d) needs a compact turn — none in plan → na.
+    * (e) only applies to api=responses+state=True trials — a chat/stateless
+          row short-circuits to na on the api/state prerequisite.
     """
     turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
     audit = [
@@ -126,15 +133,15 @@ def test_plan_b_verdicts_de_return_na():
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
-    # (e) still deferred
-    assert v["e"].verdict == "na"
-    assert "plan b" in v["e"].reason.lower() or "deferred" in v["e"].reason.lower()
     # (c) should be na for a 1-turn trial (needs ≥2 turns).
     assert v["c"].verdict == "na"
     assert "≥2" in v["c"].reason or "user_msg turns" in v["c"].reason
     # (d) na with "no compact" reason when no compact turn in plan.
     assert v["d"].verdict == "na"
     assert "no compact" in v["d"].reason.lower()
+    # (e) na with "responses" or "state" reason when trial uses chat/stateless.
+    assert v["e"].verdict == "na"
+    assert "responses" in v["e"].reason.lower() or "state" in v["e"].reason.lower()
 
 
 # ── Verdict (f) GAR richness tests ─────────────────────────────────────
@@ -361,3 +368,96 @@ def test_verdict_d_na_when_compact_lacks_post_turn():
     v = compute_verdicts(trial)
     assert v["d"].verdict == "na"
     assert "can't measure" in v["d"].reason.lower() or "before and after" in v["d"].reason.lower()
+
+
+# ── Verdict (e) state-mode gap tests ───────────────────────────────────
+
+def _responses_state_cfg():
+    """TrialConfig for a typical verdict-e row (autogen + responses + state)."""
+    return TrialConfig(
+        framework="autogen", api="responses", stream=False, state=True,
+        llm="chatgpt", mcp="NONE", routing="via_agw",
+    )
+
+
+def test_verdict_e_pass_when_cid_survives_state_ref():
+    """user_msg → force_state_ref share the same cid in audit → pass."""
+    cfg = _responses_state_cfg()
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="force_state_ref",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc", backend="chatgpt", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc", backend="chatgpt", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit, cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["e"].verdict == "pass", v["e"].reason
+
+
+def test_verdict_e_fail_when_cid_lost_on_state_ref():
+    """Turn 0 cid_X, force_state_ref carries cid_Y → continuity broken → fail."""
+    cfg = _responses_state_cfg()
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="force_state_ref",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaa", backend="chatgpt", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_bbb", backend="chatgpt", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit, cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["e"].verdict == "fail", v["e"].reason
+
+
+def test_verdict_e_na_when_api_not_responses():
+    """api=chat row → verdict (e) na on the api prerequisite."""
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, [], cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["e"].verdict == "na"
+    assert "responses" in v["e"].reason.lower()
+
+
+def test_verdict_e_na_when_state_false():
+    """api=responses but state=False → verdict (e) na (no chain exists to jump)."""
+    cfg = TrialConfig(
+        framework="autogen", api="responses", stream=False, state=False,
+        llm="chatgpt", mcp="NONE", routing="via_agw",
+    )
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg"),
+        Turn(turn_id="t1", turn_idx=1, kind="force_state_ref"),
+    ]
+    trial = _trial_with(turns, [], cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["e"].verdict == "na"
+    assert "state" in v["e"].reason.lower()
+
+
+def test_verdict_e_na_when_no_force_state_ref_turn():
+    """No force_state_ref in plan → verdict (e) na on plan prerequisite."""
+    cfg = _responses_state_cfg()
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, [], cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["e"].verdict == "na"
+    assert "force_state_ref" in v["e"].reason.lower()

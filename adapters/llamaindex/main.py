@@ -60,6 +60,13 @@ class CreateTrialReq(BaseModel):
 class TurnReq(BaseModel):
     turn_id: str
     user_msg: str
+    # T11 — force_state_ref in-line support. If turn_kind == "force_state_ref"
+    # the adapter sets trial._forced_prev_id = target_response_id BEFORE the
+    # turn runs (the _turn_responses_direct path consumes + clears it).
+    # Default "user_msg" preserves existing behavior for callers that don't
+    # set these fields.
+    turn_kind: str = "user_msg"
+    target_response_id: str | None = None
 
 
 class ForceStateRefReq(BaseModel):
@@ -116,6 +123,23 @@ async def drive_turn(trial_id: str, req: TurnReq):
     trial = TRIALS.get(trial_id)
     if trial is None:
         raise HTTPException(404, "trial not found")
+    # T11 — if caller specifies turn_kind=force_state_ref, set the override
+    # previous_response_id before dispatching. _turn_responses_direct reads
+    # _forced_prev_id and clears it after the call.
+    if req.turn_kind == "force_state_ref":
+        if req.target_response_id is None:
+            raise HTTPException(
+                400, "force_state_ref requires target_response_id",
+            )
+        if trial.config.get("api") not in ("responses", "responses+conv"):
+            raise HTTPException(
+                400,
+                f"force_state_ref only valid for api in responses/responses+conv, "
+                f"got api={trial.config.get('api')}",
+            )
+        trial._forced_prev_id = req.target_response_id
+    elif req.turn_kind != "user_msg":
+        raise HTTPException(400, f"unknown turn_kind: {req.turn_kind!r}")
     return await trial.turn(req.turn_id, req.user_msg)
 
 

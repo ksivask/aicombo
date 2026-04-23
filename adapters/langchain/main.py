@@ -35,6 +35,10 @@ class CreateTrialReq(BaseModel):
 class TurnReq(BaseModel):
     turn_id: str
     user_msg: str
+    # T11 — accept the new fields but reject force_state_ref below (this
+    # adapter does not implement Responses-API state mode).
+    turn_kind: str = "user_msg"
+    target_response_id: str | None = None
 
 
 class CompactReq(BaseModel):
@@ -76,6 +80,17 @@ def create_trial(req: CreateTrialReq):
 
 @app.post("/trials/{trial_id}/turn")
 async def drive_turn(trial_id: str, req: TurnReq):
+    # T11 — the validator should never schedule force_state_ref for this
+    # adapter. Reject early (before trial lookup) so the harness gets a
+    # clear 400 even for a probe-style request with a bogus trial_id.
+    if req.turn_kind == "force_state_ref":
+        raise HTTPException(
+            400,
+            "adapter 'langchain' does not support force_state_ref "
+            "(no Responses-API state mode)",
+        )
+    if req.turn_kind != "user_msg":
+        raise HTTPException(400, f"unknown turn_kind: {req.turn_kind!r}")
     trial = TRIALS.get(trial_id)
     if trial is None:
         raise HTTPException(404, "trial not found")

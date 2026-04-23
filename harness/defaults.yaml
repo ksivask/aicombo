@@ -9,6 +9,10 @@ matrix_seed_rows:
   # Plan B T10 — verdict (d) compaction resilience. Compact turn between t2/t3
   # (with_compact=true selects the with_mcp_with_compact template).
   - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: weather, routing: via_agw, with_compact: true}
+  # Plan B T11 — verdict (e) state-mode gap. force_state_ref turn at idx 2
+  # references the response id from turn idx 0 (lookback=2). Only autogen +
+  # llamaindex implement Responses-API state mode; this row uses autogen.
+  - {framework: autogen, api: responses, stream: false, state: true, llm: chatgpt, mcp: NONE, routing: via_agw, with_force_state_ref: true}
   - {framework: NONE, api: NONE, stream: false, state: false, llm: NONE, mcp: weather, routing: via_agw}
 
 # Default turn-plan templates — keyed by (has_mcp, api_category)
@@ -54,6 +58,19 @@ turn_plan_templates:
       - {kind: user_msg, content: "What's the weather in Paris?"}
       - {kind: compact,  strategy: "drop_half"}
       - {kind: user_msg, content: "And in London?"}
+
+  # Plan B T11 — with_force_state_ref=true rows use this template.
+  # Drive 2 user_msg turns normally (builds a response-id chain), then a
+  # force_state_ref that the runner resolves to the response id from turn
+  # idx 0 (lookback=2 skips the immediate prior turn). The final user_msg
+  # is there so verdict (c) has ≥2 turns and verdict (e) has a well-defined
+  # "after-the-jump" audit window to inspect via _cids_for_turn_window().
+  with_responses_state_force_ref:
+    turns:
+      - {kind: user_msg, content: "Hi! Give me a one-line fact about testing."}
+      - {kind: user_msg, content: "Can you elaborate?"}
+      - {kind: force_state_ref, lookback: 2, content: "Refer back to the earlier fact."}
+      - {kind: user_msg, content: "Summarize what we discussed."}
 
   direct_mcp:
     turns:
