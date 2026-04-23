@@ -289,8 +289,7 @@ async function runRow(rowId) {
   const j = await r.json();
   const trialId = j.trial_id;
 
-  // Update row: status=running, last_trial_id=...
-  const rowNode = gridApi.getRowNode(rowId);
+  // Update row: status=running, last_trial_id=... (rowNode already bound above)
   rowNode.setDataValue("status", "running");
   rowNode.setDataValue("last_trial_id", trialId);
 
