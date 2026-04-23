@@ -12,6 +12,7 @@ ADAPTER_URLS = {
     "crewai":      os.environ.get("ADAPTER_CREWAI_URL",      "http://adapter-crewai:5012"),
     "pydantic-ai": os.environ.get("ADAPTER_PYDANTIC_AI_URL", "http://adapter-pydantic-ai:5013"),
     "autogen":     os.environ.get("ADAPTER_AUTOGEN_URL",     "http://adapter-autogen:5014"),
+    "llamaindex":  os.environ.get("ADAPTER_LLAMAINDEX_URL",  "http://adapter-llamaindex:5015"),
 }
 
 

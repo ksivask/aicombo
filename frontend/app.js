@@ -17,6 +17,7 @@ const ADAPTER_CAPABILITIES_JS = {
   "crewai":      ["chat", "messages"],              // Plan B T3
   "pydantic-ai": ["chat", "messages", "responses"], // Plan B T4
   "autogen":     ["chat", "messages", "responses", "responses+conv"], // Plan B T5
+  "llamaindex":  ["chat", "responses", "responses+conv"],              // Plan B T6
 };
 
 function isRowRunnable(row) {

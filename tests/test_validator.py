@@ -57,20 +57,25 @@ def test_none_llm_disables_api_stream_state():
         assert cell in result["disabled_cells"]
 
 
-def test_responses_state_combo_state_editable_but_unrunnable_in_plan_a():
+def test_responses_state_combo_state_editable_but_unrunnable_when_no_adapter():
     """api=responses + state=T + llm=chatgpt: state cell is editable (api+llm
     support state), but the row is unrunnable when the framework has no
-    adapter that implements the Responses API. llamaindex is still unbuilt
-    as of Plan B T5, so it's the canonical "no adapter yet" framework."""
+    adapter that implements the Responses API.
+
+    As of Plan B T6, ALL five planned framework adapters are built
+    (langchain, langgraph, crewai, pydantic-ai, autogen, llamaindex), so
+    this test uses a synthetic unknown framework to exercise the same
+    'no ADAPTER_CAPABILITIES entry → not runnable' branch of the validator.
+    """
     result = validate({
-        "framework": "llamaindex", "api": "responses",
+        "framework": "unknown_fw", "api": "responses",
         "stream": False, "state": True,
         "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
     })
     # State remains editable (api/llm rule does not disable it)
     assert "state" not in result["disabled_cells"]
     assert "state" not in result["forced_values"]
-    # But the row IS unrunnable: llamaindex adapter not yet built.
+    # But the row IS unrunnable: unknown_fw has no registered adapter.
     assert result["runnable"] is False
     assert any("adapter" in w.lower() for w in result["warnings"])
 

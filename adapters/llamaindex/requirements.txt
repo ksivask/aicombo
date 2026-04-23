@@ -1,0 +1,31 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+httpx>=0.27.0
+# llama-index: LlamaIndex is the last Plan B framework adapter. The OpenAI LLM
+# wrapper (`llama_index.llms.openai.OpenAI`) accepts `async_http_client=` so
+# we can inject our event-hooked httpx.AsyncClient for chat-completions
+# capture with no monkey-patching. `OpenAIResponses` also exists and accepts
+# `async_http_client=`, BUT for responses / responses+conv we instead bypass
+# llamaindex and call `openai.AsyncOpenAI(http_client=...).responses.create`
+# directly. Rationale (mirrors adapters/autogen): we need full control of
+# `previous_response_id` chaining + the force_state_ref override path for
+# verdict (e) testing in T11, and the direct SDK is strictly simpler than
+# navigating llamaindex's `track_previous_responses` / `previous_response_id`
+# state-tracking abstraction.
+llama-index-core>=0.11.0
+llama-index-llms-openai>=0.3.0
+# llama-index-llms-openai-like: wraps the same openai-compat wire protocol
+# but WITHOUT llamaindex's `openai_modelname_to_contextsize` catalog check,
+# which rejects unknown names like `qwen2.5:7b`. We pick OpenAILike for
+# ollama / mock / gemini (non-OpenAI-catalog) and OpenAI for chatgpt.
+llama-index-llms-openai-like>=0.3.0
+openai>=1.50.0
+# fastmcp: used for MCP integration. `llama-index-tools-mcp` does ship a
+# `McpToolSpec`, but it builds an mcp-sdk `streamablehttp_client` internally
+# which does NOT accept a custom httpx client — so we can't capture MCP
+# wire bytes through it. Same workaround as adapters/crewai and adapters/
+# autogen: wrap `fastmcp.Client` manually via a FunctionTool whose
+# httpx_client_factory funnels into our hooked client.
+fastmcp>=2.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
