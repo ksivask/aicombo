@@ -671,6 +671,48 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate `self._messages` per the requested strategy.
+
+        crewai's conversation history in this adapter is a list of plain
+        `{"role": str, "content": str}` dicts that we assemble and splice
+        into each Task description. The dicts don't carry tool_calls
+        metadata (crewai owns that internally during kickoff), so:
+
+          * drop_half — drop oldest 50% of messages.
+          * drop_tool_calls — falls back to drop_half (no tool_calls
+            metadata in our dict schema to filter on). Documented.
+          * summarize — drop_half + prepend a synthesized system summary.
+        """
+        before = len(self._messages)
+        if strategy == "drop_half":
+            self._messages = self._messages[before // 2:]
+            note = None
+        elif strategy == "drop_tool_calls":
+            self._messages = self._messages[before // 2:]
+            note = (
+                "crewai dict schema has no tool_calls metadata — "
+                "fell back to drop_half"
+            )
+        elif strategy == "summarize":
+            keep = self._messages[before // 2:]
+            dropped = before - len(keep)
+            self._messages = [
+                {"role": "system",
+                 "content": f"[summarized {dropped} earlier messages]"}
+            ] + keep
+            note = None
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        out: dict = {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._messages),
+        }
+        if note:
+            out["note"] = note
+        return out
+
     async def aclose(self) -> None:
         try:
             await self._http_client.aclose()

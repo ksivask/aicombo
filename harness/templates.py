@@ -47,6 +47,12 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     if mcp == "NONE":
         return templates["no_mcp_chat"]
 
+    # Plan B T10 — row requests a compact-between-turns plan. This overrides
+    # the per-MCP default because verdict (d) wants deterministic positioning
+    # of the compact turn regardless of which MCP is bound.
+    if row.get("with_compact") and "with_mcp_with_compact" in templates:
+        return templates["with_mcp_with_compact"]
+
     # Active MCP — pick per-MCP template
     key = f"with_mcp_{mcp}"
     if key in templates:

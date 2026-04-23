@@ -6,6 +6,9 @@ matrix_seed_rows:
   # Full agent-loop demo: langchain binds MCP tools, LLM chooses tool, adapter
   # round-trips. Exercises cidgar f1+f2+f3+f4+f5 in a single trial.
   - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: fetch, routing: via_agw}
+  # Plan B T10 — verdict (d) compaction resilience. Compact turn between t2/t3
+  # (with_compact=true selects the with_mcp_with_compact template).
+  - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: weather, routing: via_agw, with_compact: true}
   - {framework: NONE, api: NONE, stream: false, state: false, llm: NONE, mcp: weather, routing: via_agw}
 
 # Default turn-plan templates — keyed by (has_mcp, api_category)
@@ -42,6 +45,15 @@ turn_plan_templates:
       - {kind: user_msg, content: "Hello, what tools do you have available?"}
       - {kind: user_msg, content: "Fetch https://example.com and summarize it."}
       - {kind: user_msg, content: "Fetch https://httpbin.org/uuid and tell me what it returns."}
+
+  # Plan B T10 — with_compact=true rows use this template. Compact turn sits
+  # between two user_msg turns so verdict (d) can bracket pre/post CID sets.
+  with_mcp_with_compact:
+    turns:
+      - {kind: user_msg, content: "Hello, what tools do you have available?"}
+      - {kind: user_msg, content: "What's the weather in Paris?"}
+      - {kind: compact,  strategy: "drop_half"}
+      - {kind: user_msg, content: "And in London?"}
 
   direct_mcp:
     turns:

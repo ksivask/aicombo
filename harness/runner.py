@@ -52,9 +52,25 @@ async def run_trial(
                 turn.request = resp.get("request_captured", {})
                 turn.response = resp.get("response_captured", {})
                 turn.framework_events = resp.get("framework_events", [])
+            elif kind == "compact":
+                # Plan B T10 — ask the adapter to mutate its internal history
+                # per the requested strategy. No LLM call; no audit entry
+                # expected. Verdict (d) reads this turn's position in the
+                # turn list to bracket pre/post CID windows.
+                strategy = turn_spec.get("strategy", "drop_half")
+                try:
+                    compact_resp = await adapter_client.compact(
+                        trial_id=trial_id, strategy=strategy,
+                    )
+                    turn.request = {"strategy": strategy}
+                    turn.response = {"body": compact_resp}
+                except Exception as e:
+                    turn.error = {"reason": f"compact failed: {e}"}
             else:
-                # Plan A supports only user_msg; others are documented in design as Plan B.
-                turn.error = {"reason": f"turn kind {kind!r} not implemented in Plan A"}
+                # Remaining kinds (force_state_ref, inject_ambient_cid) land
+                # in future tasks (T11+). Mark as no-op rather than error so
+                # templates carrying them don't block trial completion.
+                turn.error = {"reason": f"turn kind {kind!r} not implemented"}
 
             turn.finished_at = datetime.now(timezone.utc).isoformat()
             store.append_turn(trial_id, turn)

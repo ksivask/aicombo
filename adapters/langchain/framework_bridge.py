@@ -488,6 +488,54 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate `self.messages` per the requested strategy.
+
+        Strategies (spec §10):
+          * drop_half — keep SystemMessages; drop oldest 50% of others.
+          * drop_tool_calls — drop every ToolMessage + every message carrying
+            tool_calls. Preserves user + plain assistant text only.
+          * summarize — drop_half + inject a SystemMessage summary marker at
+            the head of the kept (non-system) segment.
+
+        Returns a small envelope the runner captures as the compact turn's
+        response body.
+        """
+        # Lazy import matches the turn() path — tests don't need langchain
+        # until a real turn runs.
+        from langchain_core.messages import (
+            SystemMessage, ToolMessage,
+        )
+
+        before = len(self.messages)
+        if strategy == "drop_half":
+            sys_msgs = [m for m in self.messages if isinstance(m, SystemMessage)]
+            rest = [m for m in self.messages if not isinstance(m, SystemMessage)]
+            keep = rest[len(rest) // 2:]
+            self.messages = sys_msgs + keep
+        elif strategy == "drop_tool_calls":
+            self.messages = [
+                m for m in self.messages
+                if not isinstance(m, ToolMessage)
+                and not getattr(m, "tool_calls", None)
+            ]
+        elif strategy == "summarize":
+            sys_msgs = [m for m in self.messages if isinstance(m, SystemMessage)]
+            rest = [m for m in self.messages if not isinstance(m, SystemMessage)]
+            keep = rest[len(rest) // 2:]
+            dropped = len(rest) - len(keep)
+            summary = SystemMessage(
+                content=f"[summarized {dropped} earlier messages]"
+            )
+            self.messages = sys_msgs + [summary] + keep
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        return {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self.messages),
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

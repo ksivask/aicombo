@@ -404,8 +404,67 @@ def verdict_c_continuity(trial: Trial) -> Verdict:
         f"(unique CIDs: {sorted(cids_overall)})")
 
 
+def verdict_d_resilience(trial: Trial) -> Verdict:
+    """(d) compaction resilience — CID survives across a `compact` turn.
+
+    Inspect the turn list. Find any compact turn. Identify the user_msg
+    turn immediately before AND after the compact. Compare:
+      pre_cid  = cids observed in pre-compact turn's audit window
+      post_cid = cids observed in post-compact turn's audit window
+    Pass: pre_cid ∩ post_cid != ∅ (CID survived via at least one channel).
+    Fail: disjoint sets (CID lost; framework dropped all channels).
+    na: no compact turn in plan, or no post-compact user_msg turn.
+    """
+    turns = trial.turns
+    compact_idx = next(
+        (i for i, t in enumerate(turns) if t.kind == "compact"), None
+    )
+    if compact_idx is None:
+        return Verdict("na", "no compact turn in this trial's plan")
+
+    # Nearest user_msg before the compact (walk backwards) and the first
+    # user_msg after (walk forwards).
+    pre_user = next(
+        (t for t in reversed(turns[:compact_idx]) if t.kind == "user_msg"),
+        None,
+    )
+    post_user = next(
+        (t for t in turns[compact_idx + 1:] if t.kind == "user_msg"),
+        None,
+    )
+
+    if pre_user is None or post_user is None:
+        return Verdict(
+            "na",
+            "compact turn lacks user_msg turn before AND after — can't measure",
+        )
+
+    pre_cids = _cids_for_turn_window(trial, pre_user)
+    post_cids = _cids_for_turn_window(trial, post_user)
+
+    if not pre_cids or not post_cids:
+        return Verdict(
+            "error",
+            f"missing audit cids: pre={sorted(pre_cids)} post={sorted(post_cids)}",
+        )
+
+    survivors = pre_cids & post_cids
+    if survivors:
+        return Verdict(
+            "pass",
+            f"CID survived compact ({sorted(survivors)})",
+        )
+    return Verdict(
+        "fail",
+        f"CID lost across compact: pre={sorted(pre_cids)} → post={sorted(post_cids)}",
+    )
+
+
 def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f} verdicts. Plan A computes a+b+f; d/e na."""
+    """Return {a, b, c, d, e, f} verdicts.
+
+    Plan A computed a+b+f; Plan B T9 added c; Plan B T10 adds d. e still na.
+    """
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
         return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
@@ -416,7 +475,7 @@ def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
         "c": verdict_c_continuity(trial),
-        "d": Verdict("na", "deferred to Plan B"),
+        "d": verdict_d_resilience(trial),
         "e": Verdict("na", "deferred to Plan B"),
         "f": verdict_f_gar_richness(trial),
     }

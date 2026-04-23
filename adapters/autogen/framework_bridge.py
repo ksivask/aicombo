@@ -662,6 +662,136 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate the framework's internal conversation history.
+
+        autogen has two separate state models depending on mode:
+
+          * `agent` mode (api=chat / api=messages) — AssistantAgent keeps a
+            `_model_context` with a private `_messages` list. There's no
+            public trim API in autogen 0.7; we poke the private attribute,
+            which is the same path autogen's own example code uses in the
+            absence of a first-class "compact" method. If the agent isn't
+            built yet (happens when compact fires before any turn), the
+            op is a no-op (nothing to drop).
+          * `responses_direct` mode — there's no per-message history; only
+            a chain of response ids. compact = clear the older half of
+            `_response_history` so subsequent turns start a fresh chain,
+            which approximates "forget earlier context".
+
+        Strategies are honored where the shape permits:
+          * drop_half — keep oldest 50% of system + newest 50% of rest
+          * drop_tool_calls — drop FunctionExecutionResultMessage /
+            messages whose `content` is a list of FunctionCall objects
+          * summarize — drop_half + inject a SystemMessage summary
+        """
+        if self._mode == "agent":
+            return await self._compact_agent(strategy)
+        if self._mode == "responses_direct":
+            return self._compact_responses(strategy)
+        raise RuntimeError(f"unknown mode: {self._mode}")
+
+    async def _compact_agent(self, strategy: str) -> dict:
+        """Compact the AssistantAgent's model_context message list."""
+        agent = self._agent
+        if agent is None:
+            # Agent hasn't been lazily built yet — there's no history to trim.
+            return {
+                "strategy": strategy,
+                "history_len_before": 0,
+                "history_len_after": 0,
+                "note": "agent not yet constructed; nothing to compact",
+            }
+        ctx = getattr(agent, "_model_context", None) or getattr(
+            agent, "model_context", None,
+        )
+        if ctx is None:
+            return {
+                "strategy": strategy,
+                "history_len_before": 0,
+                "history_len_after": 0,
+                "note": "no model_context on agent; nothing to compact",
+            }
+
+        # autogen 0.7 exposes `_messages` on BufferedChatCompletionContext /
+        # UnboundedChatCompletionContext. Some builds provide `get_messages()`
+        # async; we only need the concrete list to rewrite it.
+        msgs = getattr(ctx, "_messages", None)
+        if msgs is None:
+            # Best-effort via public get_messages() coroutine, but we still
+            # can't write back; treat as "nothing compacted".
+            return {
+                "strategy": strategy,
+                "history_len_before": 0,
+                "history_len_after": 0,
+                "note": "autogen model_context has no writable _messages; no-op",
+            }
+
+        before = len(msgs)
+        note: str | None = None
+
+        if strategy == "drop_half":
+            sys_msgs, rest = _split_autogen_system(msgs)
+            keep = rest[len(rest) // 2:]
+            ctx._messages = sys_msgs + keep
+        elif strategy == "drop_tool_calls":
+            ctx._messages = [m for m in msgs if not _is_autogen_tool_msg(m)]
+        elif strategy == "summarize":
+            sys_msgs, rest = _split_autogen_system(msgs)
+            keep = rest[len(rest) // 2:]
+            dropped = len(rest) - len(keep)
+            summary = _make_autogen_system_msg(
+                f"[summarized {dropped} earlier messages]"
+            )
+            if summary is None:
+                # Couldn't synthesize a SystemMessage — fall back to drop_half.
+                ctx._messages = sys_msgs + keep
+                note = "autogen SystemMessage ctor unavailable; fell back to drop_half"
+            else:
+                ctx._messages = sys_msgs + [summary] + keep
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+
+        out: dict = {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(ctx._messages),
+        }
+        if note:
+            out["note"] = note
+        return out
+
+    def _compact_responses(self, strategy: str) -> dict:
+        """Compact the responses_direct response-id history.
+
+        No per-message list exists on this path; the only continuity
+        artifact is `_last_response_id` + `_response_history`. "drop_half"
+        drops older half; "drop_tool_calls" / "summarize" also drop half
+        since there are no tool-call messages or text to summarize at this
+        layer.
+        """
+        before = len(self._response_history)
+        if strategy in ("drop_half", "drop_tool_calls", "summarize"):
+            half = before // 2
+            self._response_history = self._response_history[half:]
+            # Keep _last_response_id consistent: if we dropped it, reset.
+            if self._last_response_id not in self._response_history:
+                self._last_response_id = (
+                    self._response_history[-1] if self._response_history else None
+                )
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        note = (
+            "responses_direct mode has no per-message history; "
+            "compacted _response_history chain instead"
+        )
+        return {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._response_history),
+            "note": note,
+        }
+
     async def aclose(self) -> None:
         # Close autogen model client first (releases its own resources).
         client = getattr(self, "_model_client", None)
@@ -733,6 +863,60 @@ def _extract_text_from_responses_obj(resp: Any) -> str:
                     if v:
                         chunks.append(str(v))
     return "\n".join(chunks)
+
+
+def _split_autogen_system(msgs: list[Any]) -> tuple[list[Any], list[Any]]:
+    """Split an autogen model_context message list by system-role.
+
+    autogen-core's LLMMessage class hierarchy uses SystemMessage subclass;
+    we detect by class name for version resilience (the class moves between
+    autogen_core and autogen_agentchat across 0.4 → 0.7). Everything that
+    isn't a SystemMessage ends up in the "rest" list.
+    """
+    sys_msgs: list[Any] = []
+    rest: list[Any] = []
+    for m in msgs:
+        if m.__class__.__name__ == "SystemMessage":
+            sys_msgs.append(m)
+        else:
+            rest.append(m)
+    return sys_msgs, rest
+
+
+def _is_autogen_tool_msg(msg: Any) -> bool:
+    """True if `msg` is a tool-use artifact in an autogen message context.
+
+    FunctionExecutionResultMessage holds tool_result payloads. AssistantMessage
+    with a content list full of FunctionCall objects is the tool-call emission.
+    Both should go when the user asks for `drop_tool_calls`.
+    """
+    cls = msg.__class__.__name__
+    if cls == "FunctionExecutionResultMessage":
+        return True
+    if cls == "AssistantMessage":
+        content = getattr(msg, "content", None)
+        if isinstance(content, list) and content and all(
+            c.__class__.__name__ == "FunctionCall" for c in content
+        ):
+            return True
+    return False
+
+
+def _make_autogen_system_msg(text: str) -> Any:
+    """Construct an autogen SystemMessage with `text` content, or None.
+
+    Returns None if the expected SystemMessage class can't be imported;
+    callers fall back to drop_half behavior in that case.
+    """
+    try:
+        from autogen_core.models import SystemMessage  # autogen 0.7+
+        return SystemMessage(content=text)
+    except Exception:
+        try:
+            from autogen_agentchat.messages import SystemMessage  # fallback
+            return SystemMessage(content=text)
+        except Exception:
+            return None
 
 
 def _extract_tool_calls_from_response(response_snap: dict) -> list[dict]:

@@ -112,10 +112,12 @@ def test_direct_mode_skips_all_verdicts():
 
 
 def test_plan_b_verdicts_de_return_na():
-    """Plan A/B (through T9): d/e still return na with 'deferred to Plan B'.
+    """Plan B through T10: (e) still returns na with 'deferred to Plan B'.
 
     Verdict (c) is implemented as of T9 — with only 1 turn, it returns na
-    with a different reason (needs ≥2 turns for continuity), still within spec.
+    with a different reason (needs ≥2 turns for continuity).
+    Verdict (d) is implemented as of T10 — with no compact turn, it returns
+    na with 'no compact turn' reason (still within spec).
     """
     turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
     audit = [
@@ -124,12 +126,15 @@ def test_plan_b_verdicts_de_return_na():
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
-    for lvl in ("d", "e"):
-        assert v[lvl].verdict == "na"
-        assert "plan b" in v[lvl].reason.lower() or "deferred" in v[lvl].reason.lower()
+    # (e) still deferred
+    assert v["e"].verdict == "na"
+    assert "plan b" in v["e"].reason.lower() or "deferred" in v["e"].reason.lower()
     # (c) should be na for a 1-turn trial (needs ≥2 turns).
     assert v["c"].verdict == "na"
     assert "≥2" in v["c"].reason or "user_msg turns" in v["c"].reason
+    # (d) na with "no compact" reason when no compact turn in plan.
+    assert v["d"].verdict == "na"
+    assert "no compact" in v["d"].reason.lower()
 
 
 # ── Verdict (f) GAR richness tests ─────────────────────────────────────
@@ -289,3 +294,70 @@ def test_verdict_c_pass_with_header_demux():
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
     assert v["c"].verdict == "pass"
+
+
+# ── Verdict (d) compaction resilience tests ────────────────────────────
+
+def test_verdict_d_pass_when_cid_survives_compact():
+    """user_msg → compact → user_msg with same cid in both → pass."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="compact"),
+        Turn(turn_id="t2", turn_idx=2, kind="user_msg",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["d"].verdict == "pass", v["d"].reason
+
+
+def test_verdict_d_fail_when_cid_lost_post_compact():
+    """CID before compact differs from CID after → fail."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="compact"),
+        Turn(turn_id="t2", turn_idx=2, kind="user_msg",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaa", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_bbb", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["d"].verdict == "fail", v["d"].reason
+
+
+def test_verdict_d_na_when_no_compact_turn():
+    """No compact turn in the plan → verdict (d) na."""
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["d"].verdict == "na"
+    assert "no compact" in v["d"].reason.lower()
+
+
+def test_verdict_d_na_when_compact_lacks_post_turn():
+    """compact turn without a following user_msg → can't measure → na."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg"),
+        Turn(turn_id="t1", turn_idx=1, kind="compact"),
+    ]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["d"].verdict == "na"
+    assert "can't measure" in v["d"].reason.lower() or "before and after" in v["d"].reason.lower()

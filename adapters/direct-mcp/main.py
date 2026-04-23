@@ -41,6 +41,10 @@ class TurnReq(BaseModel):
     user_msg: str
 
 
+class CompactReq(BaseModel):
+    strategy: str = "drop_half"
+
+
 @app.get("/info")
 def info():
     return {
@@ -51,7 +55,7 @@ def info():
             "mcps": ["weather", "news", "library", "fetch"],
             "streaming": False,
             "state_modes": ["stateless"],
-            "compact_strategies": [],
+            "compact_strategies": ["noop"],
         },
     }
 
@@ -78,6 +82,20 @@ async def drive_turn(trial_id: str, req: TurnReq):
     if trial is None:
         raise HTTPException(404, "trial not found")
     return await trial.turn(req.turn_id, req.user_msg)
+
+
+@app.post("/trials/{trial_id}/compact")
+async def compact_trial(trial_id: str, req: CompactReq):
+    """Plan B T10 — no-op for direct-mcp (no LLM history to compact).
+
+    Kept on the endpoint surface for contract parity with the other six
+    adapters, so the runner can issue a uniform compact call regardless of
+    framework. Returns an informative envelope.
+    """
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial.compact(req.strategy)
 
 
 @app.delete("/trials/{trial_id}")

@@ -478,6 +478,52 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate `self._messages` per the requested strategy.
+
+        pydantic-ai's message history is a list of `ModelMessage` objects
+        (ModelRequest / ModelResponse with a `parts` list). Walking `parts`
+        to selectively strip tool-use blocks is fragile across pydantic-ai
+        minor versions, so `drop_tool_calls` falls back to `drop_half` here.
+        `summarize` also falls back to drop_half because manufacturing a
+        synthetic ModelMessage without importing internal part classes
+        would be worse than a simple slice. Return-envelope carries a
+        `note` in those fallback cases.
+        """
+        before = len(self._messages)
+        if strategy == "drop_half":
+            self._messages = self._messages[before // 2:]
+            note = None
+        elif strategy == "drop_tool_calls":
+            # pydantic-ai: tool_calls live inside ModelResponse.parts as
+            # tool_call_part objects; filtering them without breaking the
+            # req/resp pair structure is risky. Drop_half is the safest
+            # approximation of "forget tool activity".
+            self._messages = self._messages[before // 2:]
+            note = (
+                "pydantic-ai ModelMessage parts filter is fragile — "
+                "fell back to drop_half"
+            )
+        elif strategy == "summarize":
+            # Same fallback as drop_half; synthesizing a ModelMessage with
+            # a text-only summary would require importing internal part
+            # classes which shift across versions.
+            self._messages = self._messages[before // 2:]
+            note = (
+                "pydantic-ai lacks a simple public summary-message ctor — "
+                "fell back to drop_half"
+            )
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        out: dict = {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._messages),
+        }
+        if note:
+            out["note"] = note
+        return out
+
     async def aclose(self) -> None:
         try:
             await self._http_client.aclose()

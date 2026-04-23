@@ -701,6 +701,80 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate `self._messages` per the requested strategy.
+
+        For api=chat: `_messages` is a list of `ChatMessage` objects
+        (llama_index.core.base.llms.types). MessageRole enum carries SYSTEM /
+        USER / ASSISTANT / TOOL. Strategies:
+          * drop_half — keep SYSTEM, drop oldest 50% of rest
+          * drop_tool_calls — drop role=TOOL messages
+          * summarize — drop_half + prepend a SYSTEM summary marker
+
+        For api=responses / responses+conv: `_messages` is unused; compact
+        trims the `_response_history` chain instead (same approach as the
+        autogen responses_direct path).
+        """
+        if self._mode == "chat":
+            return self._compact_chat(strategy)
+        if self._mode == "responses_direct":
+            return self._compact_responses(strategy)
+        raise RuntimeError(f"unknown mode: {self._mode}")
+
+    def _compact_chat(self, strategy: str) -> dict:
+        """Compact the ChatMessage list used by the llama_index chat path."""
+        from llama_index.core.base.llms.types import ChatMessage, MessageRole
+
+        before = len(self._messages)
+        if strategy == "drop_half":
+            sys_msgs = [m for m in self._messages if m.role == MessageRole.SYSTEM]
+            rest = [m for m in self._messages if m.role != MessageRole.SYSTEM]
+            keep = rest[len(rest) // 2:]
+            self._messages = sys_msgs + keep
+        elif strategy == "drop_tool_calls":
+            self._messages = [
+                m for m in self._messages if m.role != MessageRole.TOOL
+            ]
+        elif strategy == "summarize":
+            sys_msgs = [m for m in self._messages if m.role == MessageRole.SYSTEM]
+            rest = [m for m in self._messages if m.role != MessageRole.SYSTEM]
+            keep = rest[len(rest) // 2:]
+            dropped = len(rest) - len(keep)
+            summary = ChatMessage(
+                role=MessageRole.SYSTEM,
+                content=f"[summarized {dropped} earlier messages]",
+            )
+            self._messages = sys_msgs + [summary] + keep
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        return {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._messages),
+        }
+
+    def _compact_responses(self, strategy: str) -> dict:
+        """Compact `_response_history` (responses_direct mode)."""
+        before = len(self._response_history)
+        if strategy in ("drop_half", "drop_tool_calls", "summarize"):
+            half = before // 2
+            self._response_history = self._response_history[half:]
+            if self._last_response_id not in self._response_history:
+                self._last_response_id = (
+                    self._response_history[-1] if self._response_history else None
+                )
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        return {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._response_history),
+            "note": (
+                "responses_direct mode has no per-message history; "
+                "compacted _response_history chain instead"
+            ),
+        }
+
     async def aclose(self) -> None:
         # Close the shared httpx client.
         try:

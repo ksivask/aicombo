@@ -473,6 +473,47 @@ class Trial:
             "framework_events": self._events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — mutate `self._messages` per the requested strategy.
+
+        Same semantics as the langchain adapter: the message list holds
+        langchain-core BaseMessage objects (HumanMessage / AIMessage /
+        ToolMessage / SystemMessage), so the strategy implementations are
+        identical. See adapters/langchain/framework_bridge.py::Trial.compact.
+        """
+        from langchain_core.messages import (
+            SystemMessage, ToolMessage,
+        )
+
+        before = len(self._messages)
+        if strategy == "drop_half":
+            sys_msgs = [m for m in self._messages if isinstance(m, SystemMessage)]
+            rest = [m for m in self._messages if not isinstance(m, SystemMessage)]
+            keep = rest[len(rest) // 2:]
+            self._messages = sys_msgs + keep
+        elif strategy == "drop_tool_calls":
+            self._messages = [
+                m for m in self._messages
+                if not isinstance(m, ToolMessage)
+                and not getattr(m, "tool_calls", None)
+            ]
+        elif strategy == "summarize":
+            sys_msgs = [m for m in self._messages if isinstance(m, SystemMessage)]
+            rest = [m for m in self._messages if not isinstance(m, SystemMessage)]
+            keep = rest[len(rest) // 2:]
+            dropped = len(rest) - len(keep)
+            summary = SystemMessage(
+                content=f"[summarized {dropped} earlier messages]"
+            )
+            self._messages = sys_msgs + [summary] + keep
+        else:
+            raise ValueError(f"unknown strategy: {strategy}")
+        return {
+            "strategy": strategy,
+            "history_len_before": before,
+            "history_len_after": len(self._messages),
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

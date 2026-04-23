@@ -390,6 +390,22 @@ class Trial:
             "framework_events": framework_events,
         }
 
+    async def compact(self, strategy: str) -> dict:
+        """Plan B T10 — no-op.
+
+        direct-mcp has no LLM conversation history: every turn is a fresh
+        `tools/list` + `tools/call` with no prior-turn context. The compact
+        endpoint exists only for HTTP-contract parity with the other six
+        adapters (so the runner's `adapter_client.compact(...)` call works
+        uniformly). Returns an informative envelope.
+        """
+        return {
+            "strategy": strategy,
+            "note": "direct-mcp has no LLM history to compact",
+            "history_len_before": 0,
+            "history_len_after": 0,
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

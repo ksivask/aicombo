@@ -47,6 +47,20 @@ class AdapterClient:
         r.raise_for_status()
         return r.json()
 
+    async def compact(self, trial_id: str, strategy: str) -> dict:
+        """Plan B T10 — ask the adapter to mutate internal conversation history.
+
+        Duck-typed: every framework adapter exposes this endpoint. Returns the
+        adapter's {strategy, history_len_before, history_len_after, ...}
+        envelope, which the runner stores as the compact turn's response body.
+        """
+        r = await self.client.post(
+            f"/trials/{trial_id}/compact",
+            json={"strategy": strategy},
+        )
+        r.raise_for_status()
+        return r.json()
+
     async def delete_trial(self, trial_id: str) -> dict:
         r = await self.client.delete(f"/trials/{trial_id}")
         r.raise_for_status()

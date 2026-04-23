@@ -89,6 +89,9 @@ class RowConfig(BaseModel):
     llm: str
     mcp: str
     routing: str = "via_agw"
+    # Plan B T10 — opt-in flag that switches the row's default turn plan to
+    # `with_mcp_with_compact` so verdict (d) has a compact turn to bracket.
+    with_compact: bool = False
 
 
 # ── Routes ──

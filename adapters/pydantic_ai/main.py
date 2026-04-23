@@ -48,6 +48,10 @@ class TurnReq(BaseModel):
     user_msg: str
 
 
+class CompactReq(BaseModel):
+    strategy: str = "drop_half"
+
+
 @app.get("/info")
 def info():
     return {
@@ -59,7 +63,7 @@ def info():
             "agent_loop": True,
             "streaming": False,
             "state_modes": ["stateless"],
-            "compact_strategies": [],
+            "compact_strategies": ["drop_half", "drop_tool_calls", "summarize"],
         },
         "default_ollama_model": os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b"),
     }
@@ -91,6 +95,15 @@ async def drive_turn(trial_id: str, req: TurnReq):
     if trial is None:
         raise HTTPException(404, "trial not found")
     return await trial.turn(req.turn_id, req.user_msg)
+
+
+@app.post("/trials/{trial_id}/compact")
+async def compact_trial(trial_id: str, req: CompactReq):
+    """Plan B T10 — mutate the framework's internal conversation history."""
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial.compact(req.strategy)
 
 
 @app.delete("/trials/{trial_id}")
