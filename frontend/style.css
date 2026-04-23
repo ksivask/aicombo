@@ -123,6 +123,28 @@ main { padding: 10px; }
 .turn-card details > summary { cursor: pointer; padding: 4px 0; }
 .turn-card details[open] > summary { font-weight: 600; }
 
+/* Multi-step framework_events rendering (langchain MCP agent loop, etc.) */
+.steps-list { display: flex; flex-direction: column; gap: 8px; }
+.step-card {
+  border: 1px dashed #c0c0c0; border-radius: 3px; padding: 6px 10px;
+  background: #fafbfc;
+}
+.step-head { font-size: 12px; margin-bottom: 4px; }
+.step-idx { font-family: ui-monospace, monospace; color: #888; margin-right: 6px; }
+.step-phase {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  background: #e3f2fd; color: #0d47a1; font-weight: 600;
+  font-family: ui-monospace, monospace;
+}
+.step-detail { color: #555; font-family: ui-monospace, monospace; font-size: 11px; }
+.step-error { color: #dc3545; }
+.step-summary {
+  font-size: 11px; color: #444; margin: 4px 0;
+  padding: 4px 6px; background: #fff8e1; border-left: 2px solid #ffd54f;
+  border-radius: 2px; word-break: break-word;
+}
+.step-summary code { background: transparent; }
+
 table.kv {
   border-collapse: collapse; font-size: 11px; width: 100%;
   font-family: ui-monospace, "SF Mono", monospace;

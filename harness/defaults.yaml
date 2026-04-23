@@ -3,6 +3,9 @@
 matrix_seed_rows:
   - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: NONE, routing: via_agw}
   - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: weather, routing: via_agw}
+  # Full agent-loop demo: langchain binds MCP tools, LLM chooses tool, adapter
+  # round-trips. Exercises cidgar f1+f2+f3+f4+f5 in a single trial.
+  - {framework: langchain, api: chat, stream: false, state: false, llm: ollama, mcp: fetch, routing: via_agw}
   - {framework: NONE, api: NONE, stream: false, state: false, llm: NONE, mcp: weather, routing: via_agw}
 
 # Default turn-plan templates — keyed by (has_mcp, api_category)

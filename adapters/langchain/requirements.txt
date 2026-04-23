@@ -3,4 +3,10 @@ uvicorn[standard]>=0.27.0
 httpx>=0.27.0
 langchain>=0.2.0
 langchain-openai>=0.1.0
+# MCP tool-calling: convert MCP tools → LangChain tools, bind to ChatOpenAI
+# so the LLM can emit tool_calls that the adapter dispatches over MCP.
+# Also pulls in `mcp` (the official Python SDK) which provides
+# StreamableHttpConnection → ClientSession plumbing with httpx_client_factory
+# support, so our wire-bytes capture hooks fire on every MCP call.
+langchain-mcp-adapters>=0.2.0
 pytest>=8.0.0

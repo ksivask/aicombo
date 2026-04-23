@@ -44,6 +44,11 @@ def info():
         "version": getattr(langchain, "__version__", "unknown"),
         "supports": {
             "apis": ["chat"],
+            # MCP tool-calling supported via langchain-mcp-adapters; the
+            # adapter binds tools from /mcp/<name>/tools/list to ChatOpenAI
+            # and runs an iterative agent loop (max 3 LLM hops per turn).
+            "mcps": ["weather", "news", "library", "fetch"],
+            "agent_loop": True,
             "streaming": False,  # Plan A
             "state_modes": ["stateless"],
             "compact_strategies": [],  # Plan B

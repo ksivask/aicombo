@@ -103,14 +103,68 @@ function pickAudits(trial, turn) {
     return ts >= start && ts <= end;
   });
 }
+function renderEventStepCard(ev, idx) {
+  // ev is a single framework_events[i] dict — usually one of:
+  //   {t: "tools_list", tool_count, tool_names, request, response}
+  //   {t: "llm_hop_<n>", request, response}
+  //   {t: "mcp_tool_call", tool_name, args, request, response, result_summary}
+  //   {t: "hop_limit_reached", max_hops}
+  const phase = ev.t || ev.kind || "unknown";
+  const req = ev.request || {};
+  const resp = ev.response || {};
+  const detailBits = [];
+  if (ev.tool_name) detailBits.push(`tool=${escapeHtml(ev.tool_name)}`);
+  if (ev.tool_count !== undefined) detailBits.push(`tools=${ev.tool_count}`);
+  if (ev.args !== undefined) detailBits.push(`args=${escapeHtml(JSON.stringify(ev.args))}`);
+  if (ev.error) detailBits.push(`<span class="step-error">err=${escapeHtml(ev.error)}</span>`);
+  if (ev.max_hops !== undefined) detailBits.push(`max_hops=${ev.max_hops}`);
+  const detailStr = detailBits.length ? ` <span class="step-detail">${detailBits.join(" · ")}</span>` : "";
+
+  const reqBlock = req.url ? `
+    <details><summary>Step request — <code>${escapeHtml(req.method || 'POST')}</code> ${escapeHtml(req.url || '')}</summary>
+      <div class="section">
+        <div class="subhead">Headers</div>
+        ${renderHeaders(req.headers)}
+        <div class="subhead">Body ${req.body_bytes_len ? `(${req.body_bytes_len} bytes)` : ''}</div>
+        ${renderBody(req.body)}
+      </div>
+    </details>` : "";
+  const respBlock = (resp.status !== undefined) ? `
+    <details><summary>Step response — <strong>HTTP ${escapeHtml(String(resp.status || '?'))}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</summary>
+      <div class="section">
+        <div class="subhead">Headers</div>
+        ${renderHeaders(resp.headers)}
+        <div class="subhead">Body ${resp.body_bytes_len ? `(${resp.body_bytes_len} bytes)` : ''}</div>
+        ${renderBody(resp.body)}
+      </div>
+    </details>` : "";
+  const summaryBlock = ev.result_summary ? `
+    <div class="step-summary"><strong>Result preview</strong>: <code>${escapeHtml(ev.result_summary)}</code></div>` : "";
+  return `
+    <div class="step-card">
+      <div class="step-head"><span class="step-idx">#${idx}</span> <span class="step-phase">${escapeHtml(phase)}</span>${detailStr}</div>
+      ${summaryBlock}
+      ${reqBlock}
+      ${respBlock}
+    </div>
+  `;
+}
+
 function renderTurnCard(trial, t, i) {
   const req = t.request || {};
   const resp = t.response || {};
   const audits = pickAudits(trial, t);
+  const events = Array.isArray(t.framework_events) ? t.framework_events : [];
+  const stepsBlock = events.length ? `
+      <details open><summary><strong>Steps</strong> — multi-step framework flow (${events.length} events)</summary>
+        <div class="section steps-list">
+          ${events.map((ev, idx) => renderEventStepCard(ev, idx)).join("")}
+        </div>
+      </details>` : "";
   return `
     <div class="turn-card">
       <h4>Turn ${i}: ${escapeHtml(t.kind)} <span class="turn-id">${escapeHtml(t.turn_id || '')}</span></h4>
-      <details open><summary><strong>Request</strong> — what the adapter sent (pre-cidgar mutation)</summary>
+      <details open><summary><strong>Request</strong> — what the adapter sent (pre-cidgar mutation, summary: first hop)</summary>
         <div class="section">
           <div class="http-line"><strong>${escapeHtml(req.method || 'POST')}</strong> ${escapeHtml(req.url || '')}</div>
           <div class="subhead">Headers</div>
@@ -119,7 +173,7 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(req.body)}
         </div>
       </details>
-      <details open><summary><strong>Response</strong> — what AGW returned (post-cidgar mutation)</summary>
+      <details open><summary><strong>Response</strong> — what AGW returned (post-cidgar mutation, summary: last hop)</summary>
         <div class="section">
           <div class="http-line"><strong>HTTP ${escapeHtml(String(resp.status || '?'))}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</div>
           <div class="subhead">Headers</div>
@@ -128,6 +182,7 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(resp.body)}
         </div>
       </details>
+      ${stepsBlock}
       <details open><summary><strong>Governance audit</strong> — AGW-side view of this turn (${audits.length} entries)</summary>
         <div class="section">${renderAudit(audits)}</div>
       </details>

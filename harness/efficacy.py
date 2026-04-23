@@ -103,6 +103,33 @@ def _find_c2_marker_openai(body: dict[str, Any]) -> str | None:
     return None
 
 
+def _all_response_bodies(turn) -> list[dict]:
+    """All response bodies relevant to a turn — top-level + every event.
+
+    Adapters that drive a multi-step flow (e.g. langchain MCP agent loop)
+    surface intermediate LLM hops + MCP tool exchanges in
+    `framework_events`. Each event may carry its own `response.body` —
+    cidgar markers can appear in ANY of those (e.g. C1 in a tool_call body
+    from hop 0, C2 in a final text body from hop 1). Verdict B must scan
+    them all and accept a turn if ANY body satisfies the channel
+    expectation.
+    """
+    bodies: list[dict] = []
+    top = (turn.response or {}).get("body")
+    if isinstance(top, dict):
+        bodies.append(top)
+    for ev in (turn.framework_events or []):
+        if not isinstance(ev, dict):
+            continue
+        ev_resp = ev.get("response") or {}
+        if not isinstance(ev_resp, dict):
+            continue
+        body = ev_resp.get("body")
+        if isinstance(body, dict):
+            bodies.append(body)
+    return bodies
+
+
 def verdict_b_channel_structure(trial: Trial) -> Verdict:
     """(b) channel structure — response bodies carry CIDs matching audit log."""
     user_turns = _user_msg_turns(trial)
@@ -124,35 +151,62 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
             # Time-window correlation — any CID seen in audit is acceptable
             expected_cids = all_audit_cids
 
-        body = (t.response or {}).get("body", {}) or {}
-        # MCP responses may surface as SSE strings or JSON-RPC dicts (not
-        # OpenAI-shaped). Verdict B's openai-shape probes only apply to
-        # actual chat-completions payloads — anything else becomes a no-op
-        # on that turn (verdict_a handles the audit-log presence check).
-        if not isinstance(body, dict):
+        bodies = _all_response_bodies(t)
+        if not bodies:
+            # Non-OpenAI / SSE / dict-less body — verdict_a already covered
+            # the audit-log presence check. Skip channel-structure scan.
             continue
-        choices = body.get("choices", []) or []
-        has_tool_calls = any(
-            (ch.get("message", {}) or {}).get("tool_calls")
-            for ch in choices
-        )
-        has_text = any(
-            (ch.get("message", {}) or {}).get("content")
-            for ch in choices
-        )
 
-        if has_tool_calls:
-            c1_cids = set(_find_cid_in_tool_calls_openai(body))
-            if not (c1_cids & expected_cids):
-                issues.append(f"Turn {t.turn_idx}: C1 missing — no tool_calls cid "
-                              f"matched audit (found={c1_cids}, expected one of={expected_cids})")
-        elif has_text:
-            c2_cid = _find_c2_marker_openai(body)
-            if c2_cid is None:
+        # Track what we observed across ALL bodies in this turn so we
+        # only flag a turn if NO body carries an expected CID.
+        observed_c1: set[str] = set()
+        observed_c2: set[str] = set()
+        any_tool_calls_seen = False
+        any_text_seen = False
+
+        for body in bodies:
+            choices = body.get("choices", []) or []
+            has_tool_calls = any(
+                (ch.get("message", {}) or {}).get("tool_calls")
+                for ch in choices
+            )
+            has_text = any(
+                (ch.get("message", {}) or {}).get("content")
+                for ch in choices
+            )
+            if has_tool_calls:
+                any_tool_calls_seen = True
+                observed_c1.update(_find_cid_in_tool_calls_openai(body))
+            if has_text:
+                any_text_seen = True
+                c2 = _find_c2_marker_openai(body)
+                if c2:
+                    observed_c2.add(c2)
+
+        # Pass condition for this turn: at least one expected CID showed
+        # up via either Channel 1 or Channel 2 across the turn's bodies.
+        match_c1 = bool(observed_c1 & expected_cids)
+        match_c2 = bool(observed_c2 & expected_cids)
+        if match_c1 or match_c2:
+            continue
+        # No match — describe what we saw vs expected.
+        if any_tool_calls_seen and not any_text_seen:
+            issues.append(f"Turn {t.turn_idx}: C1 missing — no tool_calls cid "
+                          f"matched audit (found={observed_c1 or '∅'}, "
+                          f"expected one of={expected_cids})")
+        elif any_text_seen and not any_tool_calls_seen:
+            if not observed_c2:
                 issues.append(f"Turn {t.turn_idx}: C2 text marker absent from response content")
-            elif c2_cid not in expected_cids:
-                issues.append(f"Turn {t.turn_idx}: C2 marker cid={c2_cid} "
+            else:
+                issues.append(f"Turn {t.turn_idx}: C2 marker cid={observed_c2} "
                               f"not in audit CIDs {expected_cids}")
+        elif any_tool_calls_seen or any_text_seen:
+            issues.append(
+                f"Turn {t.turn_idx}: neither C1 (tool_calls cid {observed_c1 or '∅'}) "
+                f"nor C2 (content marker {observed_c2 or '∅'}) matched "
+                f"audit cids {expected_cids}"
+            )
+        # If no choices anywhere, treat as no-op (audit covers presence).
 
     if issues:
         return Verdict("fail", " | ".join(issues))
