@@ -313,3 +313,35 @@ body.trial-page { background: #f7f7f7; margin: 0; font-family: system-ui, sans-s
 .ag-row.row-not-runnable { opacity: 0.55; background: #f5f5f5 !important; }
 .ag-row.row-not-runnable button.btn-run { cursor: not-allowed; color: #bbb; }
 button[disabled] { opacity: 0.5; cursor: not-allowed; }
+
+/* ── Plan B T12 — row drawer (turn-plan editor) ── */
+/* Drawer modal is wider than the settings modal since CodeMirror needs room. */
+.drawer-modal-content { max-width: 900px; width: 95%; }
+.drawer-section {
+  margin: 12px 0; padding: 12px;
+  border: 1px solid #ddd; border-radius: 4px; background: #fafafa;
+}
+.drawer-section-header {
+  display: flex; justify-content: space-between; align-items: center;
+  margin-bottom: 8px;
+}
+.drawer-section-header h3 { font-size: 14px; color: #555; }
+.drawer-section-actions button {
+  margin-left: 6px; padding: 4px 10px; font-size: 12px;
+  background: #555; color: white; border: none; border-radius: 3px;
+  cursor: pointer;
+}
+.drawer-section-actions button:hover { background: #666; }
+.tp-status {
+  font-family: ui-monospace, "SF Mono", monospace;
+  white-space: pre-wrap;
+  padding: 6px 8px; margin-bottom: 6px; min-height: 1em;
+  border-radius: 3px; font-size: 11px;
+}
+.tp-status-ok { color: #155724; background: #d4edda; }
+.tp-status-error { color: #721c24; background: #f8d7da; }
+.tp-status-info { color: #495057; background: transparent; }
+.CodeMirror {
+  height: 320px; border: 1px solid #444; border-radius: 3px;
+  font-size: 12px;
+}

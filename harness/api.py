@@ -102,6 +102,11 @@ class RowConfig(BaseModel):
     # turn to bracket. Only meaningful for api in responses/responses+conv
     # with state=True + a supporting framework (autogen / llamaindex).
     with_force_state_ref: bool = False
+    # Plan B T12 — when present, takes precedence over default_turn_plan(row).
+    # Shape: {"turns": [...]} matching TurnPlan. Edited via the row drawer's
+    # CodeMirror JSON editor; persisted via PATCH /matrix/row/{id}; cleared
+    # via DELETE /matrix/row/{id}/turn_plan_override.
+    turn_plan_override: dict | None = None
 
 
 # ── Routes ──
@@ -192,6 +197,51 @@ def matrix_delete(row_id: str):
     return {"ok": True}
 
 
+@router.delete("/matrix/row/{row_id}/turn_plan_override")
+def matrix_clear_override(row_id: str):
+    """T12 — remove a row's saved turn_plan_override so the runner falls back
+    to default_turn_plan(row). Cleaner than PATCH-ing {turn_plan_override:null}."""
+    rows = _load_matrix()
+    for r in rows:
+        if r["row_id"] == row_id:
+            r.pop("turn_plan_override", None)
+            _save_matrix(rows)
+            return {"ok": True}
+    raise HTTPException(404, "row not found")
+
+
+@router.post("/templates/validate")
+def templates_validate(payload: dict = Body(...)):
+    """T12 — validate a turn_plan dict. Returns {ok, errors}.
+
+    Checks the shape the runner expects (turns list of dicts with kind + turn_id;
+    user_msg requires text; force_state_ref requires lookback). The drawer's
+    Validate button hits this before Save so users get a clear error list
+    without having to trigger a trial first.
+    """
+    errors: list[str] = []
+    plan = payload.get("turn_plan", {})
+    turns = plan.get("turns")
+    if not isinstance(turns, list) or not turns:
+        errors.append("turns must be a non-empty list")
+    else:
+        for i, t in enumerate(turns):
+            if not isinstance(t, dict):
+                errors.append(f"turn {i}: must be object")
+                continue
+            if "kind" not in t:
+                errors.append(f"turn {i}: missing 'kind'")
+            elif t["kind"] not in ("user_msg", "compact", "force_state_ref"):
+                errors.append(f"turn {i}: invalid kind '{t['kind']}'")
+            if "turn_id" not in t:
+                errors.append(f"turn {i}: missing 'turn_id'")
+            if t.get("kind") == "user_msg" and "text" not in t:
+                errors.append(f"turn {i}: user_msg requires 'text'")
+            if t.get("kind") == "force_state_ref" and "lookback" not in t:
+                errors.append(f"turn {i}: force_state_ref requires 'lookback' (int)")
+    return {"ok": not errors, "errors": errors}
+
+
 @router.delete("/matrix")
 def matrix_clear():
     """Delete all matrix rows. Persists an empty list so the seed-on-first-boot
@@ -234,7 +284,8 @@ async def trial_run(row_id: str):
         stream=row.get("stream", False), state=row.get("state", False),
         llm=row["llm"], mcp=row["mcp"], routing=row.get("routing", "via_agw"),
     )
-    plan_dict = default_turn_plan(row)
+    # T12 — prefer per-row override when the user has saved one via the drawer.
+    plan_dict = row.get("turn_plan_override") or default_turn_plan(row)
     plan = TurnPlan(turns=plan_dict["turns"])
     trial = Trial(trial_id=trial_id, config=cfg, turn_plan=plan, status="running")
     STORE.save(trial)

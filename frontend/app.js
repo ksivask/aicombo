@@ -1,4 +1,5 @@
 import { API_BASE, VALIDATE_DEBOUNCE_MS, PROVIDERS_REFRESH_MS } from "/config.js";
+import { openTurnPlanDrawer } from "/drawer.js";
 
 // Row + trial detail now opens in a new tab at /trial.html?id=X (not an inline drawer).
 function openTrialTab(trialId) {
@@ -323,58 +324,14 @@ async function onCellClicked(event) {
 }
 
 async function previewPlan(rowId) {
+  // Plan B T12 — the old read-only "preview" modal is replaced by an editable
+  // CodeMirror drawer (see drawer.js). Same entry point (📋 row button), same
+  // GET of /templates/preview when no override exists, but now the user can
+  // edit + save the turn_plan_override on the row.
   const rows = await fetchMatrix();
   const row = rows.find(r => r.row_id === rowId);
   if (!row) return;
-  const r = await fetch(`${API_BASE}/templates/preview`, {
-    method: "POST",
-    headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(row),
-  });
-  if (!r.ok) {
-    showToast(`Preview failed: ${r.status}`);
-    return;
-  }
-  const data = await r.json();
-  const plan = data.turn_plan || {turns: []};
-  const turns = plan.turns || [];
-  const escape = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-
-  const turnItems = turns.map((t, i) => {
-    const kind = t.kind || "user_msg";
-    if (kind === "user_msg") {
-      return `<li class="plan-turn">
-        <span class="plan-turn-idx">${i}</span>
-        <span class="plan-turn-kind">user_msg</span>
-        <span class="plan-turn-content">${escape(t.content || "")}</span>
-      </li>`;
-    }
-    // compact / force_state_ref / inject_ambient_cid / direct_mcp_*
-    const params_summary = Object.entries(t).filter(([k]) => k !== "kind")
-      .map(([k, v]) => `<code>${escape(k)}=${escape(JSON.stringify(v))}</code>`).join(" ");
-    return `<li class="plan-turn">
-      <span class="plan-turn-idx">${i}</span>
-      <span class="plan-turn-kind control">${escape(kind)}</span>
-      <span class="plan-turn-content">${params_summary}</span>
-    </li>`;
-  }).join("");
-
-  const body = `
-    <h3>Row config</h3>
-    <div class="row-summary">
-      ${["framework","api","llm","mcp","routing"].map(k =>
-        `<span class="chip"><span class="chip-k">${k}</span>${escape(row[k] || "")}</span>`
-      ).join("")}
-      ${row.stream ? '<span class="chip"><span class="chip-k">stream</span>on</span>' : ""}
-      ${row.state  ? '<span class="chip"><span class="chip-k">state</span>on</span>'  : ""}
-    </div>
-    <h3>Turn plan (${turns.length} turn${turns.length === 1 ? "" : "s"})</h3>
-    <ol class="plan-list">${turnItems || '<li><em>(empty plan)</em></li>'}</ol>
-    <h3>Raw JSON</h3>
-    <pre>${escape(JSON.stringify(plan, null, 2))}</pre>
-    <p class="plan-note">Read-only in Plan A. Plan B will add an inline JSON editor here + a per-row <code>[Reset to default]</code> + <code>[+ Add turn]</code> actions per design §5.3.</p>
-  `;
-  openSettingsModal(body);
+  await openTurnPlanDrawer(row);
 }
 
 async function runRow(rowId) {
