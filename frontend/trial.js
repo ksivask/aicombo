@@ -164,7 +164,7 @@ function renderTurnCard(trial, t, i) {
   return `
     <div class="turn-card">
       <h4>Turn ${i}: ${escapeHtml(t.kind)} <span class="turn-id">${escapeHtml(t.turn_id || '')}</span></h4>
-      <details open><summary><strong>Request</strong> — what the adapter sent (pre-cidgar mutation, summary: first hop)</summary>
+      <details open><summary><strong>Summary: First request</strong> — what the adapter sent on the first HTTP call of this turn (pre-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>${escapeHtml(req.method || 'POST')}</strong> ${escapeHtml(req.url || '')}</div>
           <div class="subhead">Headers</div>
@@ -173,7 +173,7 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(req.body)}
         </div>
       </details>
-      <details open><summary><strong>Response</strong> — what AGW returned (post-cidgar mutation, summary: last hop)</summary>
+      <details open><summary><strong>Summary: Final response</strong> — what AGW returned on the last HTTP call of this turn (post-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>HTTP ${escapeHtml(String(resp.status || '?'))}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</div>
           <div class="subhead">Headers</div>
