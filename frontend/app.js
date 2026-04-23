@@ -194,10 +194,10 @@ function buildColumnDefs() {
       },
     },
     {
-      headerName: "Verdicts", field: "verdicts", width: 160,
+      headerName: "Verdicts", field: "verdicts", width: 180,
       cellRenderer: params => {
         const v = params.value || {};
-        const pills = ["a", "b", "c", "d", "e"].map(lvl => {
+        const pills = ["a", "b", "c", "d", "e", "f"].map(lvl => {
           const cls = (v[lvl]?.verdict) || "na";
           const glyph = cls === "pass" ? "✓" : cls === "fail" ? "✗" : "—";
           return `<span class="verdict-pill ${cls}" title="${v[lvl]?.reason || ""}">${glyph}</span>`;

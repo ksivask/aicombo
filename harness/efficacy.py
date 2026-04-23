@@ -215,18 +215,139 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
         f"channels carry expected CID across {len(user_turns)} turns ({mode})")
 
 
+GAR_REQUIRED_KEYS = {"goal", "need", "impact", "dspm", "alt"}
+
+
+def _extract_gar_strings_from_body(body: dict) -> list[str]:
+    """Pull out _ib_gar values from openai-shape tool_calls[].function.arguments."""
+    out: list[str] = []
+    choices = body.get("choices", []) or []
+    for ch in choices:
+        msg = ch.get("message", {}) or {}
+        for tc in msg.get("tool_calls", []) or []:
+            fn = tc.get("function", {}) or {}
+            args_str = fn.get("arguments", "")
+            try:
+                args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                if isinstance(args, dict) and "_ib_gar" in args:
+                    out.append(args["_ib_gar"])
+            except (ValueError, AttributeError):
+                continue
+    return out
+
+
+def verdict_f_gar_richness(trial: Trial) -> Verdict:
+    """(f) GAR richness — did the LLM populate _ib_gar with the 5-key structure?
+
+    Cidgar spec §3.2 defines _ib_gar as a JSON string with keys
+    {goal, need, impact, dspm, alt}. Spec §9.2 acknowledges LLMs may omit it
+    (governance logs gar:null + proceeds). This verdict distinguishes:
+
+      pass   — at least one tool_call carries a well-formed GAR object with
+               all 5 required keys.
+      fail   — GAR is present but malformed (missing keys, not JSON).
+      na     — LLM omitted GAR in all tool_calls (spec §9.2 compliant).
+      na     — no tool_calls in any turn (verdict doesn't apply; C2-only flow).
+    """
+    user_turns = _user_msg_turns(trial)
+    if not user_turns:
+        return Verdict("na", "no user_msg turns in trial")
+
+    tool_call_turns = 0
+    gar_valid = 0
+    gar_malformed_reasons: list[str] = []
+    gar_omitted = 0
+
+    for t in user_turns:
+        bodies = _all_response_bodies(t)
+        turn_had_tool_call = False
+        for body in bodies:
+            tcs_args = _extract_gar_strings_from_body(body)
+            # Separately count turns with ANY tool_call (even if _ib_gar omitted)
+            if not turn_had_tool_call:
+                choices = body.get("choices", []) or []
+                if any((ch.get("message", {}) or {}).get("tool_calls") for ch in choices):
+                    turn_had_tool_call = True
+
+            for gar_val in tcs_args:
+                if gar_val is None or gar_val == "":
+                    gar_omitted += 1
+                    continue
+                # Try parsing per spec §3.2.1 (transmitted as JSON-string)
+                parsed: Any = gar_val
+                if isinstance(gar_val, str):
+                    try:
+                        parsed = json.loads(gar_val)
+                    except (ValueError, TypeError):
+                        gar_malformed_reasons.append(
+                            f"Turn {t.turn_idx}: _ib_gar is a string but not valid JSON "
+                            f"(first 60 chars: {gar_val[:60]!r})"
+                        )
+                        continue
+                if not isinstance(parsed, dict):
+                    gar_malformed_reasons.append(
+                        f"Turn {t.turn_idx}: _ib_gar parsed to {type(parsed).__name__}, expected object"
+                    )
+                    continue
+                missing_keys = GAR_REQUIRED_KEYS - set(parsed.keys())
+                if missing_keys:
+                    gar_malformed_reasons.append(
+                        f"Turn {t.turn_idx}: _ib_gar missing keys: {sorted(missing_keys)}"
+                    )
+                    continue
+                # Has all 5 keys + is a dict — valid
+                gar_valid += 1
+
+            # Count tool_calls that had NO _ib_gar in their args
+            choices = body.get("choices", []) or []
+            for ch in choices:
+                msg = ch.get("message", {}) or {}
+                for tc in msg.get("tool_calls", []) or []:
+                    fn = tc.get("function", {}) or {}
+                    args_str = fn.get("arguments", "")
+                    try:
+                        args = json.loads(args_str) if isinstance(args_str, str) else args_str
+                        if isinstance(args, dict) and "_ib_gar" not in args:
+                            gar_omitted += 1
+                    except (ValueError, AttributeError):
+                        pass
+
+        if turn_had_tool_call:
+            tool_call_turns += 1
+
+    if tool_call_turns == 0:
+        return Verdict("na",
+            "no tool_calls in any turn — GAR richness only applies to C1 (tool_use) flows")
+
+    if gar_valid > 0 and not gar_malformed_reasons:
+        return Verdict("pass",
+            f"LLM populated _ib_gar with valid {{goal, need, impact, dspm, alt}} in "
+            f"{gar_valid} tool_call(s); omitted in {gar_omitted}.")
+
+    if gar_malformed_reasons:
+        return Verdict("fail",
+            f"_ib_gar present but malformed ({len(gar_malformed_reasons)} case(s)): "
+            + "; ".join(gar_malformed_reasons[:3]))
+
+    # All tool_calls omitted _ib_gar — spec §9.2 compliant but weak signal
+    return Verdict("na",
+        f"LLM omitted _ib_gar in all {gar_omitted} tool_call(s) (spec §9.2-compliant). "
+        f"For richer GAR, try a stricter schema-follower: chatgpt, llama3.1:8b.")
+
+
 def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e} verdicts. Plan A computes a+b; c/d/e na."""
+    """Return {a, b, c, d, e, f} verdicts. Plan A computes a+b+f; c/d/e na."""
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
     if trial.status == "aborted":
         na = Verdict("na", "trial aborted before completion")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
     return {
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
         "c": Verdict("na", "deferred to Plan B"),
         "d": Verdict("na", "deferred to Plan B"),
         "e": Verdict("na", "deferred to Plan B"),
+        "f": verdict_f_gar_richness(trial),
     }

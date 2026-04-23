@@ -123,3 +123,70 @@ def test_plan_b_verdicts_cde_return_na():
     for lvl in ("c", "d", "e"):
         assert v[lvl].verdict == "na"
         assert "plan b" in v[lvl].reason.lower() or "deferred" in v[lvl].reason.lower()
+
+
+# ── Verdict (f) GAR richness tests ─────────────────────────────────────
+
+def test_verdict_f_pass_when_gar_populated_with_all_5_keys():
+    """(f) GAR richness — valid 5-key GAR in tool_call args → pass."""
+    import json as _json
+    gar = _json.dumps({
+        "goal": "find weather",
+        "need": "user asked about Paris",
+        "impact": "read-only",
+        "dspm": "none",
+        "alt": "web search",
+    })
+    args_inner = _json.dumps({"city": "Paris", "_ib_cid": "ib_abc", "_ib_gar": gar})
+    turns = [Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        response={"body": {"choices": [{"message": {"tool_calls": [{
+            "function": {"name": "get_weather", "arguments": args_inner}
+        }]}}]}},
+    )]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "pass", v["f"].reason
+
+
+def test_verdict_f_na_when_gar_omitted_spec_92_compliant():
+    """(f) GAR richness — LLM omitted _ib_gar entirely → na (spec §9.2)."""
+    turns = [Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        response={"body": {"choices": [{"message": {"tool_calls": [{
+            "function": {"name": "get_weather",
+                         "arguments": '{"city":"Paris","_ib_cid":"ib_abc"}'}
+        }]}}]}},
+    )]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "na", v["f"].reason
+    assert "omit" in v["f"].reason.lower() or "§9.2" in v["f"].reason
+
+
+def test_verdict_f_fail_when_gar_malformed():
+    """(f) GAR richness — _ib_gar present but missing keys → fail."""
+    turns = [Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        response={"body": {"choices": [{"message": {"tool_calls": [{
+            "function": {"name": "get_weather",
+                         "arguments": '{"city":"Paris","_ib_cid":"ib_abc","_ib_gar":"{\\"goal\\":\\"x\\"}"}'}
+        }]}}]}},
+    )]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "fail", v["f"].reason
+
+
+def test_verdict_f_na_when_no_tool_calls():
+    """(f) GAR richness — chat-only (no tool_calls) → na."""
+    turns = [Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        response={"body": {"choices": [{
+            "message": {"content": "hi!<!-- ib:cid=ib_abc123def456 -->"}
+        }]}},
+    )]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "na", v["f"].reason
+    assert "no tool" in v["f"].reason.lower()

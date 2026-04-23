@@ -62,6 +62,7 @@ Plan A is the MVP: **one framework adapter (langchain) + one "no-LLM" adapter (d
 | (c) Multi-turn continuity | ⏸ `na — deferred to Plan B` |
 | (d) Compaction resilience | ⏸ `na — deferred to Plan B` |
 | (e) Server-state-mode gap | ⏸ `na — deferred to Plan B` |
+| (f) GAR richness — _ib_gar present with {goal, need, impact, dspm, alt} | ✅ computed (pass/fail/na — na if LLM omits per spec §9.2) |
 
 ### UI features
 

@@ -345,8 +345,11 @@ function renderPlanTab(plan, executedCount) {
 }
 
 function renderVerdictsTab(verdicts) {
-  const labels = {a: "Presence", b: "Channel structure", c: "Continuity", d: "Resilience", e: "State-mode gap"};
-  return ["a","b","c","d","e"].map(lvl => {
+  const labels = {
+    a: "Presence", b: "Channel structure", c: "Continuity",
+    d: "Resilience", e: "State-mode gap", f: "GAR richness"
+  };
+  return ["a","b","c","d","e","f"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     return `
       <div class="verdict-card ${v.verdict}">
