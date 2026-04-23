@@ -101,31 +101,58 @@ class Trial:
         # Per-turn multi-step events (LLM hops + MCP tool calls).
         self._events: list[dict] = []
 
+        # Full log of HTTP exchanges captured by the event hooks — used to
+        # reconstruct per-MCP-operation event snapshots. A single MCP
+        # "operation" (tools/list or tools/call) involves MULTIPLE HTTP
+        # calls (initialize, notifications/initialized, GET SSE, POST method,
+        # DELETE). We grab the slice that corresponds to the current op.
+        self._http_exchanges: list[dict] = []
+        self._exchange_mark: int = 0  # index into _http_exchanges at start of current op
+
         base_url = pick_llm_base_url(routing=config["routing"], llm=config["llm"])
         model = config.get("model") or os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
 
         # httpx client with event hooks that capture real wire bytes.
+        # Writes to BOTH _last_* (back-compat for simple cases) AND the
+        # _http_exchanges list (used to demux the MCP multi-call session).
         async def log_req(request: httpx.Request) -> None:
             body_bytes = request.content or b""
-            self._last_request = {
+            req_snap = {
                 "method": request.method,
                 "url": str(request.url),
                 "headers": {k: v for k, v in request.headers.items()},
                 "body": _safe_json(body_bytes),
                 "body_bytes_len": len(body_bytes),
+                "_req_id": id(request),  # match with response later
             }
+            self._last_request = req_snap
+            self._http_exchanges.append({"req": req_snap, "resp": None})
 
         async def log_resp(response: httpx.Response) -> None:
             # Read the body now so it's captured before returning
             await response.aread()
             body_bytes = response.content or b""
-            self._last_response = {
+            resp_snap = {
                 "status": response.status_code,
                 "headers": {k: v for k, v in response.headers.items()},
                 "body": _safe_json(body_bytes),
                 "body_bytes_len": len(body_bytes),
                 "elapsed_ms": int(response.elapsed.total_seconds() * 1000),
             }
+            self._last_response = resp_snap
+            # Attach to the matching request entry (by id(request))
+            req_id = id(response.request)
+            for ex in reversed(self._http_exchanges):
+                if ex["resp"] is None and ex["req"].get("_req_id") == req_id:
+                    ex["resp"] = resp_snap
+                    break
+            else:
+                # Fallback: attach to last unfilled entry (preserves order for
+                # transports that don't expose response.request symmetrically)
+                for ex in reversed(self._http_exchanges):
+                    if ex["resp"] is None:
+                        ex["resp"] = resp_snap
+                        break
 
         self._log_req = log_req
         self._log_resp = log_resp
@@ -221,6 +248,91 @@ class Trial:
         ev.update(extra)
         return ev
 
+    def _mark_exchange_start(self) -> None:
+        """Remember where in _http_exchanges the next MCP operation starts."""
+        self._exchange_mark = len(self._http_exchanges)
+
+    def _exchanges_since_mark(self) -> list[dict]:
+        """Slice of exchanges captured since the last mark (this op)."""
+        return list(self._http_exchanges[self._exchange_mark:])
+
+    @staticmethod
+    def _rpc_method(exchange: dict) -> str | None:
+        """Extract JSON-RPC method from an HTTP exchange's request body.
+
+        MCP streamable-http uses JSON-RPC POST bodies. Returns the method
+        (e.g. 'tools/list', 'tools/call', 'initialize') or None if not
+        a JSON-RPC POST."""
+        req = exchange.get("req") or {}
+        body = req.get("body")
+        if isinstance(body, dict):
+            return body.get("method")
+        return None
+
+    def _capture_mcp_op_events(self, base_kind: str, **extra) -> list[dict]:
+        """Convert every HTTP exchange of an MCP operation into labeled events.
+
+        Rather than collapsing the entire MCP session into one event that
+        may snapshot the wrong call (DELETE instead of tools/list — the
+        bug this method fixes), emit one event per HTTP exchange with a
+        specific label:
+          - mcp_initialize, mcp_notif_initialized, mcp_sse, mcp_tools_list,
+            mcp_tools_call, mcp_session_close, mcp_other
+        """
+        method_to_kind = {
+            "initialize": "mcp_initialize",
+            "notifications/initialized": "mcp_notif_initialized",
+            "tools/list": "mcp_tools_list",
+            "tools/call": "mcp_tools_call",
+        }
+        out = []
+        exchanges = self._exchanges_since_mark()
+        for ex in exchanges:
+            req = ex.get("req") or {}
+            method = req.get("method", "")
+            rpc_method = self._rpc_method(ex)
+            if method == "DELETE":
+                kind = "mcp_session_close"
+            elif method == "GET" and "text/event-stream" in str(req.get("headers", {}).get("accept", "")):
+                kind = "mcp_sse_open"
+            elif rpc_method and rpc_method in method_to_kind:
+                kind = method_to_kind[rpc_method]
+            elif rpc_method:
+                kind = f"mcp_rpc_{rpc_method.replace('/', '_')}"
+            else:
+                kind = "mcp_http"
+            ev = {
+                "t": kind,
+                "rpc_method": rpc_method,
+                "request": copy.deepcopy(ex.get("req") or {}),
+                "response": copy.deepcopy(ex.get("resp") or {}),
+            }
+            # Annotate the primary events with the caller's context
+            if kind == f"mcp_{base_kind}" or kind == base_kind:
+                ev.update(extra)
+            out.append(ev)
+
+        # Fallback: if no HTTP exchanges were captured in this window (e.g.
+        # the tool was mocked out, or fastmcp failed before issuing a
+        # request), emit one synthetic event carrying the operation
+        # metadata so the drawer + tests see SOMETHING for the op.
+        # Named with singular suffix (mcp_tools_list → mcp_tool_list, etc.)
+        # so it's distinct from the "real HTTP" variant.
+        if not exchanges:
+            synthetic_kind = "mcp_tool_call" if base_kind == "tools_call" else (
+                "mcp_tool_list" if base_kind == "tools_list" else f"mcp_{base_kind}"
+            )
+            synth = {
+                "t": synthetic_kind,
+                "rpc_method": None,
+                "request": None,
+                "response": None,
+                "_synthetic": True,
+            }
+            synth.update(extra)
+            out.append(synth)
+        return out
+
     @staticmethod
     def _extract_tool_calls(resp: Any) -> list[dict]:
         """Normalize tool_calls off a langchain AIMessage (best-effort)."""
@@ -267,16 +379,18 @@ class Trial:
         self._last_response = None
         self._events = []
 
-        # Set up MCP tools once if needed (captures the tools/list event).
-        await self._setup_mcp_tools(headers)
-        if self._mcp_tools is not None and self._last_request is not None:
-            # The most recent request was the tools/list call (only fires once
-            # per trial — subsequent turns skip _setup_mcp_tools).
-            self._events.append(self._snapshot_event(
+        # Set up MCP tools once if needed. Captures every HTTP call of the
+        # MCP session (initialize → notif → SSE → tools/list → DELETE) as
+        # separate events, NOT collapsed into one.
+        if self.mcp_url and self._mcp_tools is None:
+            self._mark_exchange_start()
+            await self._setup_mcp_tools(headers)
+            mcp_events = self._capture_mcp_op_events(
                 "tools_list",
-                tool_count=len(self._mcp_tools),
-                tool_names=[t.name for t in self._mcp_tools],
-            ))
+                tool_count=len(self._mcp_tools or []),
+                tool_names=[t.name for t in (self._mcp_tools or [])],
+            )
+            self._events.extend(mcp_events)
 
         self.messages.append(HumanMessage(content=user_msg))
 
@@ -311,6 +425,7 @@ class Trial:
             # Execute each tool call against MCP.
             for tc in tool_calls:
                 tool = next((t for t in (self._mcp_tools or []) if t.name == tc["name"]), None)
+                self._mark_exchange_start()  # new MCP op window
                 if tool is None:
                     tool_result_text = f"unknown tool: {tc['name']}"
                     err = "unknown_tool"
@@ -320,23 +435,23 @@ class Trial:
                         # which (since we passed connection= not session=)
                         # opens a fresh MCP session via our httpx factory.
                         raw_result = await tool.ainvoke(tc.get("args", {}) or {})
-                        # langchain_mcp_adapters returns either str / list /
-                        # ToolMessage / Command depending on content shape.
                         tool_result_text = _stringify_tool_result(raw_result)
                         err = None
                     except Exception as e:  # noqa: BLE001
                         tool_result_text = f"tool error: {e}"
                         err = str(e)
-                # Snapshot the MCP exchange. _last_request/_last_response
-                # were just overwritten by the tool's MCP call.
-                ev_extra = {
-                    "tool_name": tc["name"],
-                    "args": tc.get("args", {}),
-                    "result_summary": tool_result_text[:500],
-                }
-                if err:
-                    ev_extra["error"] = err
-                self._events.append(self._snapshot_event("mcp_tool_call", **ev_extra))
+                # Emit one event per HTTP exchange in the MCP session, with
+                # labels like mcp_initialize / mcp_notif_initialized /
+                # mcp_sse_open / mcp_tools_call / mcp_session_close. The
+                # tools_call event carries the tool_name / args / result.
+                mcp_events = self._capture_mcp_op_events(
+                    "tools_call",
+                    tool_name=tc["name"],
+                    args=tc.get("args", {}),
+                    result_summary=tool_result_text[:500],
+                    **({"error": err} if err else {}),
+                )
+                self._events.extend(mcp_events)
 
                 self.messages.append(ToolMessage(
                     content=tool_result_text,

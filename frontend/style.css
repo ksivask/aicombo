@@ -99,7 +99,16 @@ main { padding: 10px; }
 .turn-card h4 { margin: 0 0 6px 0; font-size: 14px; }
 .turn-card pre {
   background: #f5f5f5; padding: 8px; border-radius: 3px;
-  font-size: 11px; overflow-x: auto; max-height: 200px;
+  font-size: 11px; max-height: 400px; overflow-y: auto;
+  /* Word-wrap long lines so body dumps don't require horizontal scroll */
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+}
+
+/* Also wrap pre blocks inside step cards + audit entries + any drawer pre */
+.step-card pre, .audit-entry pre, .tab-content pre,
+.modal-body pre {
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  max-height: 500px; overflow-y: auto;
 }
 
 .verdict-card {

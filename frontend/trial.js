@@ -54,7 +54,44 @@ function renderHeaders(h) {
 }
 function renderBody(b) {
   if (b === null || b === undefined) return "<em>(empty)</em>";
+  // If body is a string, it may be SSE ("data: {...}\n\n" chunks). Try to
+  // extract JSON payloads from data: lines and render a "Parsed" view
+  // alongside the raw string.
+  if (typeof b === "string") {
+    const parsed = tryParseSSE(b);
+    if (parsed !== null) {
+      return `
+        <details open><summary><strong>Parsed</strong> — JSON payload(s) from SSE data: lines</summary>
+          <pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>
+        </details>
+        <details><summary><strong>Raw</strong> — wire bytes (${b.length} chars)</summary>
+          <pre>${escapeHtml(b)}</pre>
+        </details>`;
+    }
+    // Plain string, not SSE — show as raw string
+    return `<pre>${escapeHtml(b)}</pre>`;
+  }
+  // Dict/list: pretty JSON
   return `<pre>${escapeHtml(JSON.stringify(b, null, 2))}</pre>`;
+}
+
+function tryParseSSE(s) {
+  // Match `data: {json}` lines; tolerate multi-event streams.
+  if (!s || typeof s !== "string" || !s.includes("data:")) return null;
+  const payloads = [];
+  for (const line of s.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("data:")) continue;
+    const payload = trimmed.slice(5).trim();
+    if (!payload) continue;
+    try {
+      payloads.push(JSON.parse(payload));
+    } catch {
+      payloads.push({ _raw: payload });
+    }
+  }
+  if (!payloads.length) return null;
+  return payloads.length === 1 ? payloads[0] : payloads;
 }
 function renderAudit(entries) {
   if (!entries.length) return "<em>(no audit entries captured in this turn's time window)</em>";
