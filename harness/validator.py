@@ -49,8 +49,8 @@ ADAPTER_CAPABILITIES = {
     "direct-mcp":  set(),  # MCP-only adapter, no LLM API
     "langgraph":   {"chat"},  # Plan B T2: create_react_agent, chat-completions only
     "crewai":      {"chat", "messages"},  # Plan B T3: Crew+Agent+Task via native SDKs
+    "pydantic-ai": {"chat", "messages", "responses"},  # Plan B T4: typed Agent + Model + Toolset
     # Plan B (not yet built):
-    # "pydantic-ai":{"chat", "messages", "responses"},
     # "autogen":    {"chat", "messages", "responses", "responses+conv"},
     # "llamaindex": {"chat", "responses", "responses+conv"},
 }

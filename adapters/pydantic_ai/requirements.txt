@@ -1,0 +1,15 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+httpx>=0.27.0
+# pydantic-ai: typed agent framework. Each Model accepts a Provider which
+# accepts http_client= — we hand it our event-hook'd httpx.AsyncClient so
+# LLM wire bytes flow through the same capture path as langchain/crewai.
+# MCPServerStreamableHTTP(url=..., http_client=...) lets us wire MCP calls
+# through the same client too — no monkey-patching needed.
+pydantic-ai>=1.0.0
+# OpenAI + Anthropic SDKs are transitive deps of pydantic-ai, but pin them
+# explicitly so we know what wire format we're testing against.
+openai>=1.50.0
+anthropic>=0.40.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

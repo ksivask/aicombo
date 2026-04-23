@@ -6,10 +6,11 @@ import os
 import httpx
 
 ADAPTER_URLS = {
-    "langchain": os.environ.get("ADAPTER_LANGCHAIN_URL", "http://adapter-langchain:5001"),
-    "direct-mcp": os.environ.get("ADAPTER_DIRECT_MCP_URL", "http://adapter-direct-mcp:5010"),
-    "langgraph": os.environ.get("ADAPTER_LANGGRAPH_URL", "http://adapter-langgraph:5011"),
-    "crewai":    os.environ.get("ADAPTER_CREWAI_URL",    "http://adapter-crewai:5012"),
+    "langchain":   os.environ.get("ADAPTER_LANGCHAIN_URL",   "http://adapter-langchain:5001"),
+    "direct-mcp":  os.environ.get("ADAPTER_DIRECT_MCP_URL",  "http://adapter-direct-mcp:5010"),
+    "langgraph":   os.environ.get("ADAPTER_LANGGRAPH_URL",   "http://adapter-langgraph:5011"),
+    "crewai":      os.environ.get("ADAPTER_CREWAI_URL",      "http://adapter-crewai:5012"),
+    "pydantic-ai": os.environ.get("ADAPTER_PYDANTIC_AI_URL", "http://adapter-pydantic-ai:5013"),
 }
 
 

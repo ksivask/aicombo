@@ -175,6 +175,47 @@ services:
     networks: [aiplay-network]
     restart: unless-stopped
 
+  # ── Adapter: pydantic-ai (Plan B T4) — typed Agent + Model + Toolset ──
+  #   pydantic-ai's OpenAIChatModel / OpenAIResponsesModel / AnthropicModel
+  #   each take a Provider that accepts `http_client=httpx.AsyncClient`, and
+  #   MCPServerStreamableHTTP is itself a Toolset that takes `http_client=`.
+  #   So a SINGLE hooked httpx.AsyncClient captures both LLM + MCP wire
+  #   bytes — no monkey-patching, no SDK client rebuilds. Supports api=chat
+  #   (ollama/chatgpt/gemini/mock), api=messages (claude), AND api=responses
+  #   (chatgpt) via one adapter.
+  adapter-pydantic-ai:
+    build: ./adapters/pydantic_ai
+    image: aiplay-adapter-pydantic-ai:local
+    environment:
+      - ADAPTER_PORT=5013
+      - AGW_LLM_BASE_URL_OLLAMA=http://agentgateway:8080/llm/ollama/v1
+      - AGW_LLM_BASE_URL_MOCK=http://agentgateway:8080/llm/mock/v1
+      - AGW_LLM_BASE_URL_OPENAI=http://agentgateway:8080/llm/chatgpt/v1
+      - AGW_LLM_BASE_URL_GEMINI=http://agentgateway:8080/llm/gemini/v1beta/openai
+      # Anthropic SDK appends /v1/messages itself — don't include /v1 suffix here.
+      - AGW_LLM_BASE_URL_ANTHROPIC=http://agentgateway:8080/llm/claude
+      - AGW_MCP_WEATHER=http://agentgateway:8080/mcp/weather
+      - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
+      - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
+      - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
+      - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
+      - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
+      - DIRECT_LLM_BASE_URL_GEMINI=https://generativelanguage.googleapis.com/v1beta/openai
+      - DIRECT_LLM_BASE_URL_ANTHROPIC=https://api.anthropic.com
+      - DIRECT_MCP_WEATHER=http://mcp-weather:8000/mcp
+      - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
+      - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
+      - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
+    env_file: [.env]
+    extra_hosts:
+      - "host.docker.internal:192.168.64.1"
+    depends_on:
+      - agentgateway
+    networks: [aiplay-network]
+    restart: unless-stopped
+
   # ── MCP servers (all 4 imported from demo; all on aiplay-network) ──
   mcp-weather:
     build: ./mcp/weather
