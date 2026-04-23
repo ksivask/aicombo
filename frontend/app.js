@@ -137,11 +137,13 @@ function buildColumnDefs() {
           const glyph = cls === "pass" ? "✓" : cls === "fail" ? "✗" : "—";
           return `<span class="verdict-pill ${cls}" title="${v[lvl]?.reason || ""}">${glyph}</span>`;
         }).join("");
-        const trialId = params.data?.last_trial_id;
-        if (trialId) {
-          return `<a class="verdict-link" href="/trial.html?id=${encodeURIComponent(trialId)}" target="_blank" rel="noopener" title="open trial detail in new tab">${pills}<span class="verdict-link-icon">↗</span></a>`;
+        // Always link by row_id (works from row creation; trial page handles
+        // both "no trial yet" and "live streaming during run" cases).
+        const rowId = params.data?.row_id;
+        if (rowId) {
+          return `<a class="verdict-link" href="/trial.html?row_id=${encodeURIComponent(rowId)}" target="_blank" rel="noopener" title="open trial detail in new tab">${pills}<span class="verdict-link-icon">↗</span></a>`;
         }
-        return `<span class="verdict-link disabled" title="no trial yet — click ▶ to run">${pills}</span>`;
+        return `<span class="verdict-link disabled">${pills}</span>`;
       },
     },
     {

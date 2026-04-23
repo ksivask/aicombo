@@ -151,6 +151,15 @@ def matrix_create(row: RowConfig):
     return {"row_id": rid}
 
 
+@router.get("/matrix/row/{row_id}")
+def matrix_get(row_id: str):
+    rows = _load_matrix()
+    row = next((r for r in rows if r["row_id"] == row_id), None)
+    if not row:
+        raise HTTPException(404, "row not found")
+    return row
+
+
 @router.patch("/matrix/row/{row_id}")
 def matrix_update(row_id: str, updates: dict = Body(...)):
     rows = _load_matrix()

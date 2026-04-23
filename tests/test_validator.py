@@ -69,6 +69,40 @@ def test_invalid_combo_api_responses_stream_off_state_on_is_valid():
     assert "state" not in result["disabled_cells"]
 
 
+def test_state_disabled_when_llm_does_not_support_responses_state():
+    """api=responses + llm=ollama → state is disabled+forced F + warning issued.
+    Only chatgpt implements Responses API state in v1."""
+    result = validate({
+        "framework": "langchain", "api": "responses",
+        "stream": False, "state": True,
+        "llm": "ollama", "mcp": "NONE", "routing": "via_agw",
+    })
+    assert "state" in result["disabled_cells"]
+    assert result["forced_values"]["state"] is False
+    assert any("ollama" in w for w in result["warnings"])
+
+
+def test_state_enabled_when_llm_supports_responses_state():
+    """api=responses + llm=chatgpt → state remains editable."""
+    result = validate({
+        "framework": "autogen", "api": "responses",
+        "stream": False, "state": True,
+        "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+    })
+    assert "state" not in result["disabled_cells"]
+    assert "state" not in result["forced_values"]
+
+
+def test_api_llm_mismatch_marks_unrunnable():
+    """api=responses + llm=ollama is not runnable (ollama doesn't have responses)."""
+    result = validate({
+        "framework": "langchain", "api": "responses",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is False
+
+
 def test_missing_provider_key_disables_option():
     """If env shows chatgpt key missing, chatgpt option is in disabled_dropdown_options."""
     available_keys = {"openai": False, "anthropic": True, "google": True}

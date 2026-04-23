@@ -1,9 +1,18 @@
-// Full-page trial view. Fetches /trials/{id}, renders row-config 1-liner + details.
-// Subscribes to SSE for live updates while trial is running.
+// Full-page trial view.
+//
+// URL forms:
+//   /trial.html?id=<trial_id>     → directly view a specific trial
+//   /trial.html?row_id=<row_id>   → resolve row → its latest trial; show row config
+//                                   even if no trial exists yet; auto-pick up
+//                                   newly-started trials via polling.
+//
+// Live updates: SSE subscription refreshes the page on every status tick (1s)
+// during running so turn cards appear as they execute, not only at completion.
 
 const API_BASE = "";
 const params = new URLSearchParams(location.search);
-const trialId = params.get("id");
+const explicitTrialId = params.get("id");
+const rowId = params.get("row_id");
 
 const elTitle = document.getElementById("trial-title");
 const elStatus = document.getElementById("trial-status-pill");
@@ -23,14 +32,17 @@ tabBtns.forEach(btn => btn.addEventListener("click", () => {
   tabContents[btn.dataset.tab].classList.add("active");
 }));
 
-if (!trialId) {
+if (!explicitTrialId && !rowId) {
   elTitle.textContent = "Error";
-  document.body.innerHTML = "<p style='padding:20px;'>No trial ID in URL. Expected <code>?id=&lt;trial_id&gt;</code>.</p>";
-  throw new Error("no trial id");
+  document.body.innerHTML = "<p style='padding:20px;'>Expected <code>?id=&lt;trial_id&gt;</code> or <code>?row_id=&lt;row_id&gt;</code> in URL.</p>";
+  throw new Error("no trial id or row id");
 }
 
-elTitle.textContent = `Trial ${trialId.slice(0, 8)}…`;
-document.title = `aiplay — ${trialId.slice(0, 8)}`;
+// Mutable: starts with whatever was in URL; row_id mode resolves it from /matrix
+let currentTrialId = explicitTrialId || null;
+let currentRow = null;     // populated when row_id mode
+let sseSource = null;      // currently-attached EventSource (null if none)
+let pollFallbackTimer = null;
 
 // ── Render helpers ──
 
@@ -40,12 +52,10 @@ function renderHeaders(h) {
     `<tr><td class="k">${escapeHtml(k)}</td><td class="v">${escapeHtml(String(v))}</td></tr>`
   ).join("")}</tbody></table>`;
 }
-
 function renderBody(b) {
   if (b === null || b === undefined) return "<em>(empty)</em>";
   return `<pre>${escapeHtml(JSON.stringify(b, null, 2))}</pre>`;
 }
-
 function renderAudit(entries) {
   if (!entries.length) return "<em>(no audit entries captured in this turn's time window)</em>";
   return entries.map(a => `
@@ -58,19 +68,15 @@ function renderAudit(entries) {
     </div>
   `).join("");
 }
-
 function shortenBackend(b) {
   if (!b) return "?";
   const parts = b.split("/");
   return parts[parts.length - 2] || b;
 }
-
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
-
-function renderRowSummary(trial) {
-  const c = trial.config || {};
+function renderRowChips(c) {
   const chips = [
     ["framework", c.framework],
     ["api", c.api],
@@ -81,10 +87,9 @@ function renderRowSummary(trial) {
     ["routing", c.routing],
   ].filter(Boolean);
   return chips.map(([k, v]) =>
-    `<span class="chip"><span class="chip-k">${escapeHtml(k)}</span>${escapeHtml(v)}</span>`
+    `<span class="chip"><span class="chip-k">${escapeHtml(k)}</span>${escapeHtml(v || "")}</span>`
   ).join("");
 }
-
 function pickAudits(trial, turn) {
   const all = trial.audit_entries || [];
   const headerDemux = all.some(a => a.turn_id);
@@ -98,7 +103,6 @@ function pickAudits(trial, turn) {
     return ts >= start && ts <= end;
   });
 }
-
 function renderTurnCard(trial, t, i) {
   const req = t.request || {};
   const resp = t.response || {};
@@ -106,7 +110,6 @@ function renderTurnCard(trial, t, i) {
   return `
     <div class="turn-card">
       <h4>Turn ${i}: ${escapeHtml(t.kind)} <span class="turn-id">${escapeHtml(t.turn_id || '')}</span></h4>
-
       <details open><summary><strong>Request</strong> — what the adapter sent (pre-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>${escapeHtml(req.method || 'POST')}</strong> ${escapeHtml(req.url || '')}</div>
@@ -116,7 +119,6 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(req.body)}
         </div>
       </details>
-
       <details open><summary><strong>Response</strong> — what AGW returned (post-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>HTTP ${escapeHtml(String(resp.status || '?'))}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</div>
@@ -126,7 +128,6 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(resp.body)}
         </div>
       </details>
-
       <details open><summary><strong>Governance audit</strong> — AGW-side view of this turn (${audits.length} entries)</summary>
         <div class="section">${renderAudit(audits)}</div>
       </details>
@@ -134,27 +135,91 @@ function renderTurnCard(trial, t, i) {
   `;
 }
 
-async function refresh() {
-  const r = await fetch(`${API_BASE}/trials/${trialId}`);
+// ── State machine for the page ──
+//
+// On load:
+//   1. If explicitTrialId → render trial; subscribe SSE if running.
+//   2. If row_id only → fetch row; if last_trial_id present → switch to that
+//      trial; else render row-config-only page; poll /matrix/row/{id} every
+//      2s for a newly-started trial, switch to it when one appears.
+
+async function fetchAndRender() {
+  if (currentTrialId) {
+    return renderTrial(currentTrialId);
+  } else if (rowId) {
+    return renderRowOnly();
+  }
+}
+
+async function renderTrial(tid) {
+  const r = await fetch(`${API_BASE}/trials/${tid}`);
   if (!r.ok) {
     tabContents.turns.innerHTML = `<p>Error loading trial: ${r.status} ${await r.text()}</p>`;
-    return;
+    return null;
   }
   const trial = await r.json();
 
-  // Header
+  elTitle.textContent = `Trial ${tid.slice(0, 8)}…`;
+  document.title = `aiplay — ${tid.slice(0, 8)}`;
   elStatus.textContent = trial.status || "idle";
   elStatus.className = `status-pill ${trial.status || "idle"}`;
-  elRowSummary.innerHTML = renderRowSummary(trial);
+  elRowSummary.innerHTML = renderRowChips(trial.config || {});
 
-  // Tabs
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
-    || "<p>No turns yet.</p>";
+    || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
-  // Turn Plan tab — read-only list with side-by-side "planned vs executed" note
   const plan = trial.turn_plan || {turns: []};
+  tabContents.plan.innerHTML = renderPlanTab(plan, (trial.turns || []).length);
+
+  const verdicts = trial.verdicts || {};
+  tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts);
+
+  document.getElementById("raw-json").textContent = JSON.stringify(trial, null, 2);
+  return trial.status;
+}
+
+async function renderRowOnly() {
+  // No trial yet — show the row's planned config and an explanation.
+  const r = await fetch(`${API_BASE}/matrix/row/${rowId}`);
+  if (!r.ok) {
+    tabContents.turns.innerHTML = `<p>Error loading row: ${r.status} ${await r.text()}</p>`;
+    return null;
+  }
+  currentRow = await r.json();
+
+  elTitle.textContent = `Row ${rowId.slice(0, 12)}… (no trial yet)`;
+  document.title = `aiplay — ${rowId.slice(0, 12)}`;
+  elStatus.textContent = "no trial";
+  elStatus.className = `status-pill idle`;
+  elRowSummary.innerHTML = renderRowChips(currentRow);
+
+  tabContents.turns.innerHTML = `
+    <div class="empty-state">
+      <p>This row has no completed trial yet.</p>
+      <p>Click <strong>▶ Run</strong> on this row in the matrix; this page will auto-update once the trial starts.</p>
+      <p>Watching <code>/matrix/row/${rowId}</code> for a new trial every 2s…</p>
+    </div>`;
+
+  // Render the planned turn template using /templates/preview
+  try {
+    const presp = await fetch(`${API_BASE}/templates/preview`, {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify(currentRow),
+    });
+    if (presp.ok) {
+      const data = await presp.json();
+      tabContents.plan.innerHTML = renderPlanTab(data.turn_plan || {turns: []}, 0);
+    }
+  } catch {}
+
+  tabContents.verdicts.innerHTML = "<p><em>No trial run yet — verdicts will appear after the first run.</em></p>";
+  document.getElementById("raw-json").textContent = JSON.stringify(currentRow, null, 2);
+  return null;
+}
+
+function renderPlanTab(plan, executedCount) {
   const planTurns = plan.turns || [];
-  const executedCount = (trial.turns || []).length;
   const planItems = planTurns.map((t, i) => {
     const kind = t.kind || "user_msg";
     const isExecuted = i < executedCount;
@@ -178,17 +243,18 @@ async function refresh() {
       ${executedBadge}
     </li>`;
   }).join("");
-  tabContents.plan.innerHTML = `
+  return `
     <h3 style="margin-top:0">Planned turns</h3>
     <ol class="plan-list">${planItems || '<li><em>(empty plan)</em></li>'}</ol>
     <h3>Raw turn_plan JSON</h3>
     <pre>${escapeHtml(JSON.stringify(plan, null, 2))}</pre>
     <p class="plan-note">Read-only in Plan A. Plan B will add inline JSON editor + reset-to-default + add-turn controls per design §5.3.</p>
   `;
+}
 
-  const verdicts = trial.verdicts || {};
+function renderVerdictsTab(verdicts) {
   const labels = {a: "Presence", b: "Channel structure", c: "Continuity", d: "Resilience", e: "State-mode gap"};
-  tabContents.verdicts.innerHTML = ["a","b","c","d","e"].map(lvl => {
+  return ["a","b","c","d","e"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     return `
       <div class="verdict-card ${v.verdict}">
@@ -197,35 +263,63 @@ async function refresh() {
       </div>
     `;
   }).join("");
-
-  document.getElementById("raw-json").textContent = JSON.stringify(trial, null, 2);
-
-  return trial.status;
 }
 
-// Initial render + SSE subscription for live updates
-(async () => {
-  const initialStatus = await refresh();
-  if (initialStatus === "running") {
-    const es = new EventSource(`${API_BASE}/trials/${trialId}/stream`);
-    es.onmessage = async (e) => {
-      let data;
-      try { data = JSON.parse(e.data); } catch { return; }
-      if (data.event === "status") {
-        elStatus.textContent = data.status;
-        elStatus.className = `status-pill ${data.status}`;
-        if (data.status !== "running") {
-          await refresh();
-          if (["pass", "fail", "error", "aborted"].includes(data.status)) es.close();
-        }
-      } else if (data.event === "trial_done") {
-        await refresh();
-        es.close();
+function attachSSE(tid) {
+  if (sseSource) { sseSource.close(); sseSource = null; }
+  sseSource = new EventSource(`${API_BASE}/trials/${tid}/stream`);
+  sseSource.onmessage = async (e) => {
+    let data;
+    try { data = JSON.parse(e.data); } catch { return; }
+    // Refresh on EVERY message so turn cards appear as they complete
+    // (even when status stays "running" — we want partial state).
+    if (data.event === "status" || data.event === "trial_done") {
+      await renderTrial(tid);
+      if (data.event === "trial_done" || (data.status && !["running"].includes(data.status))) {
+        sseSource.close();
+        sseSource = null;
       }
-    };
-    es.onerror = () => {
-      // Fall back to polling
-      setInterval(refresh, 2000);
-    };
+    }
+  };
+  sseSource.onerror = () => {
+    if (sseSource) { sseSource.close(); sseSource = null; }
+    // Fall back to polling
+    if (!pollFallbackTimer) {
+      pollFallbackTimer = setInterval(async () => {
+        const status = await renderTrial(tid);
+        if (status && !["running"].includes(status)) {
+          clearInterval(pollFallbackTimer);
+          pollFallbackTimer = null;
+        }
+      }, 2000);
+    }
+  };
+}
+
+// Row-id mode: poll /matrix/row/{id} for a newly-attached trial.
+function startRowWatchPoll() {
+  if (!rowId || currentTrialId) return;
+  const t = setInterval(async () => {
+    try {
+      const r = await fetch(`${API_BASE}/matrix/row/${rowId}`);
+      if (!r.ok) return;
+      const row = await r.json();
+      if (row.last_trial_id && row.last_trial_id !== currentTrialId) {
+        currentTrialId = row.last_trial_id;
+        clearInterval(t);
+        const status = await renderTrial(currentTrialId);
+        if (status === "running") attachSSE(currentTrialId);
+      }
+    } catch {}
+  }, 2000);
+}
+
+// ── Bootstrap ──
+(async () => {
+  const initialStatus = await fetchAndRender();
+  if (currentTrialId && initialStatus === "running") {
+    attachSSE(currentTrialId);
+  } else if (rowId && !currentTrialId) {
+    startRowWatchPoll();
   }
 })();
