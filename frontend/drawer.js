@@ -88,6 +88,16 @@ export async function openTurnPlanDrawer(row) {
     ? '<span class="plan-executed-badge" title="row has a saved override">override</span>'
     : '<span class="plan-pending-badge" title="no override; runner will use default_turn_plan(row)">default</span>';
 
+  // T13 — surface baseline-pair pointer so the user can flip between
+  // the governed row and its no-governance twin.
+  const baselineHint = row.baseline_of
+    ? `<div class="plan-note" style="background:#fff3e0; border-left:3px solid #ff9800;">
+         Baseline pair — comparing against
+         <code>${escapeHtml(row.baseline_of)}</code>. This row is routed
+         <b>direct</b> (no AGW / no cidgar governance).
+       </div>`
+    : "";
+
   document.getElementById("drawer-body").innerHTML = `
     <div class="drawer-section">
       <div class="drawer-section-header">
@@ -95,6 +105,7 @@ export async function openTurnPlanDrawer(row) {
         <div>${overrideBadge}</div>
       </div>
       <div class="row-summary">${renderChips(row)}</div>
+      ${baselineHint}
     </div>
     <div class="drawer-section">
       <div class="drawer-section-header">

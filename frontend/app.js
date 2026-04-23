@@ -189,8 +189,20 @@ function buildColumnDefs() {
       headerName: "Routing", field: "routing", editable: true,
       cellEditor: "agSelectCellEditor",
       cellEditorParams: {values: ["via_agw", "direct"]},
-      width: 100,
+      width: 160,
       flex: 1,  // absorb leftover horizontal space, no empty gap before Status
+      // T13 — append a "← baseline of <short>" badge when row was cloned
+      // as a direct/baseline sibling. Purely informational; helps the user
+      // pair the governed row with its baseline in the grid.
+      cellRenderer: params => {
+        const routing = params.value || "via_agw";
+        const baselineOf = params.data?.baseline_of;
+        if (baselineOf) {
+          const short = String(baselineOf).replace(/^row-/, "").slice(0, 8);
+          return `${routing} <span class="baseline-badge" title="baseline clone of ${baselineOf}">← baseline of ${short}</span>`;
+        }
+        return routing;
+      },
     },
     {
       headerName: "Status", field: "status", width: 110,
@@ -218,7 +230,7 @@ function buildColumnDefs() {
       },
     },
     {
-      headerName: "Actions", width: 170,
+      headerName: "Actions", width: 200,
       cellRenderer: params => {
         const row = params.data || {};
         const running = row.status === "running";
@@ -233,8 +245,14 @@ function buildColumnDefs() {
           runBtn = `<button class="btn-run" data-row-id="${row.row_id}" title="run trial">▶</button>`;
         }
         const previewBtn = `<button class="btn-preview" data-row-id="${row.row_id}" title="preview turn plan">📋</button>`;
+        // T13 — 🔀 Baseline: clone this via_agw row as a direct/no-governance
+        // sibling for A/B comparison. Hidden on already-direct rows.
+        let baselineBtn = "";
+        if ((row.routing || "via_agw") !== "direct") {
+          baselineBtn = `<button class="btn-baseline" data-row-id="${row.row_id}" title="clone as direct/baseline row (no AGW) for A/B comparison">🔀</button>`;
+        }
         const deleteBtn = `<button class="btn-delete" data-row-id="${row.row_id}" title="delete row">✕</button>`;
-        return `${runBtn}${previewBtn}${deleteBtn}`;
+        return `${runBtn}${previewBtn}${baselineBtn}${deleteBtn}`;
       },
     },
   ];
@@ -320,6 +338,33 @@ async function onCellClicked(event) {
   } else if (target.classList.contains("btn-preview")) {
     const rowId = target.dataset.rowId;
     await previewPlan(rowId);
+  } else if (target.classList.contains("btn-baseline")) {
+    const rowId = target.dataset.rowId;
+    await cloneBaseline(rowId);
+  }
+}
+
+async function cloneBaseline(rowId) {
+  // T13 — POST /matrix/row/{id}/clone-baseline, then insert the new row
+  // into the grid so the user sees the A/B pair immediately without
+  // a full page reload.
+  const r = await fetch(`${API_BASE}/matrix/row/${rowId}/clone-baseline`, {
+    method: "POST",
+  });
+  if (!r.ok) {
+    showToast(`Clone failed: HTTP ${r.status}`);
+    return;
+  }
+  const j = await r.json();
+  // Fetch the freshly-created row so we render the full config (matrix
+  // response returns only the row_id + baseline_of pointer).
+  const rr = await fetch(`${API_BASE}/matrix/row/${j.row_id}`);
+  if (rr.ok) {
+    const newRow = await rr.json();
+    gridApi.applyTransaction({add: [newRow]});
+    showToast(`Baseline created: ${j.row_id} (← ${j.baseline_of})`);
+  } else {
+    showToast(`Baseline created but fetch failed: HTTP ${rr.status}`);
   }
 }
 

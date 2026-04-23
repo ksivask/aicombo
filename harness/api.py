@@ -107,6 +107,11 @@ class RowConfig(BaseModel):
     # CodeMirror JSON editor; persisted via PATCH /matrix/row/{id}; cleared
     # via DELETE /matrix/row/{id}/turn_plan_override.
     turn_plan_override: dict | None = None
+    # Plan B T13 — optional baseline-pairing metadata set by
+    # POST /matrix/row/{id}/clone-baseline. `baseline_of` points at the
+    # source row_id; `note` is a human-readable label rendered in the UI.
+    baseline_of: str | None = None
+    note: str | None = None
 
 
 # ── Routes ──
@@ -195,6 +200,52 @@ def matrix_delete(row_id: str):
     rows = [r for r in rows if r["row_id"] != row_id]
     _save_matrix(rows)
     return {"ok": True}
+
+
+@router.post("/matrix/row/{row_id}/clone-baseline")
+def matrix_clone_baseline(row_id: str):
+    """Clone a row as a 'baseline' — same config but routing=direct.
+
+    Used for A/B comparison: the governed row goes via AGW (cidgar hooks
+    fire), the baseline row hits the LLM/MCP directly (no governance).
+    Verdict comparison should show pass on the governed row and na/empty
+    on the baseline row — confirms the governed verdicts aren't false
+    positives from non-cidgar sources.
+    """
+    rows = _load_matrix()
+    src = next((r for r in rows if r["row_id"] == row_id), None)
+    if not src:
+        raise HTTPException(404, "row not found")
+    if src.get("routing") == "direct":
+        raise HTTPException(
+            400, "row is already a direct/baseline row — nothing to clone"
+        )
+
+    new_id = f"row-{uuid.uuid4().hex[:8]}"
+    clone = {
+        "row_id": new_id,
+        "framework": src["framework"],
+        "api": src["api"],
+        "stream": src.get("stream", False),
+        "state": src.get("state", False),
+        "llm": src["llm"],
+        "mcp": src["mcp"],
+        "routing": "direct",
+        "with_compact": src.get("with_compact", False),
+        "with_force_state_ref": src.get("with_force_state_ref", False),
+        # Carry the same turn_plan_override so the comparison runs the
+        # same exact prompts on both rows.
+        "turn_plan_override": src.get("turn_plan_override"),
+        # Pairing metadata so the UI can render an A/B link.
+        "baseline_of": row_id,
+        "note": f"Baseline (direct, no AGW) of {row_id}",
+    }
+    # Strip None turn_plan_override to keep JSON tidy when not set
+    if clone["turn_plan_override"] is None:
+        clone.pop("turn_plan_override")
+    rows.append(clone)
+    _save_matrix(rows)
+    return {"row_id": new_id, "baseline_of": row_id}
 
 
 @router.delete("/matrix/row/{row_id}/turn_plan_override")

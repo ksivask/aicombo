@@ -150,3 +150,82 @@ def test_matrix_row_clear_override_404_for_missing_row(tmp_data_dir, reset_api_s
     with TestClient(app) as client:
         r = client.delete("/matrix/row/does-not-exist/turn_plan_override")
         assert r.status_code == 404
+
+
+# ── Plan B T13 — clone-for-baseline row action ──
+
+def test_clone_baseline_creates_direct_row(tmp_data_dir, reset_api_state):
+    """POST /matrix/row/{id}/clone-baseline creates a sibling with routing=direct."""
+    with TestClient(app) as client:
+        # Create a source row (via_agw governed)
+        r1 = client.post("/matrix/row", json={
+            "framework": "langchain", "api": "chat",
+            "stream": False, "state": False,
+            "llm": "ollama", "mcp": "weather", "routing": "via_agw",
+        })
+        assert r1.status_code == 200
+        src_id = r1.json()["row_id"]
+
+        # Clone as baseline
+        r2 = client.post(f"/matrix/row/{src_id}/clone-baseline")
+        assert r2.status_code == 200
+        new_id = r2.json()["row_id"]
+        assert r2.json()["baseline_of"] == src_id
+        assert new_id != src_id
+
+        # Verify the new row exists with routing=direct + pairing metadata
+        r3 = client.get(f"/matrix/row/{new_id}")
+        assert r3.status_code == 200
+        new_row = r3.json()
+        assert new_row["routing"] == "direct"
+        assert new_row["baseline_of"] == src_id
+        assert new_row["framework"] == "langchain"
+        assert new_row["llm"] == "ollama"
+        assert new_row["mcp"] == "weather"
+        assert "note" in new_row
+
+
+def test_clone_baseline_carries_turn_plan_override(tmp_data_dir, reset_api_state):
+    """Override on the source carries to the baseline so they run identical prompts."""
+    with TestClient(app) as client:
+        r1 = client.post("/matrix/row", json={
+            "framework": "langchain", "api": "chat",
+            "stream": False, "state": False,
+            "llm": "ollama", "mcp": "NONE", "routing": "via_agw",
+        })
+        src_id = r1.json()["row_id"]
+
+        custom_plan = {"turns": [
+            {"turn_id": "t0", "kind": "user_msg", "text": "custom prompt"},
+        ]}
+        pr = client.patch(f"/matrix/row/{src_id}",
+                          json={"turn_plan_override": custom_plan})
+        assert pr.status_code == 200
+
+        r2 = client.post(f"/matrix/row/{src_id}/clone-baseline")
+        assert r2.status_code == 200
+        new_id = r2.json()["row_id"]
+
+        r3 = client.get(f"/matrix/row/{new_id}")
+        assert r3.status_code == 200
+        assert r3.json().get("turn_plan_override") == custom_plan
+
+
+def test_clone_baseline_404_on_missing_row(tmp_data_dir, reset_api_state):
+    with TestClient(app) as client:
+        r = client.post("/matrix/row/row-nonexistent/clone-baseline")
+        assert r.status_code == 404
+
+
+def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state):
+    with TestClient(app) as client:
+        r1 = client.post("/matrix/row", json={
+            "framework": "langchain", "api": "chat",
+            "stream": False, "state": False,
+            "llm": "ollama", "mcp": "NONE", "routing": "direct",
+        })
+        src_id = r1.json()["row_id"]
+
+        r2 = client.post(f"/matrix/row/{src_id}/clone-baseline")
+        assert r2.status_code == 400
+        assert "already" in r2.json().get("detail", "").lower()
