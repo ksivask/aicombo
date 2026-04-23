@@ -170,6 +170,15 @@ def matrix_delete(row_id: str):
     return {"ok": True}
 
 
+@router.delete("/matrix")
+def matrix_clear():
+    """Delete all matrix rows. Persists an empty list so the seed-on-first-boot
+    logic doesn't reintroduce them on the next /matrix call."""
+    prior = _load_matrix()
+    _save_matrix([])
+    return {"ok": True, "deleted_count": len(prior)}
+
+
 @router.post("/trials/{row_id}/run")
 async def trial_run(row_id: str):
     rows = _load_matrix()

@@ -357,6 +357,41 @@ document.getElementById("btn-run-all").addEventListener("click", async () => {
   }
 });
 
+// Delete-all uses click-twice-to-confirm (browser confirm() may be blocked)
+let _deleteAllArmed = false;
+let _deleteAllTimer = null;
+document.getElementById("btn-delete-all").addEventListener("click", async (e) => {
+  const btn = e.currentTarget;
+  if (!_deleteAllArmed) {
+    _deleteAllArmed = true;
+    btn.textContent = "⚠ Click again to confirm";
+    btn.classList.add("armed");
+    clearTimeout(_deleteAllTimer);
+    _deleteAllTimer = setTimeout(() => {
+      _deleteAllArmed = false;
+      btn.textContent = "⛌ Delete All";
+      btn.classList.remove("armed");
+    }, 3000);
+    return;
+  }
+  // Confirmed
+  clearTimeout(_deleteAllTimer);
+  _deleteAllArmed = false;
+  btn.textContent = "⛌ Delete All";
+  btn.classList.remove("armed");
+  const r = await fetch(`${API_BASE}/matrix`, {method: "DELETE"});
+  if (r.ok) {
+    const j = await r.json();
+    showToast(`Deleted ${j.deleted_count} row${j.deleted_count === 1 ? "" : "s"}`);
+    // Clear grid client-side
+    const allIds = [];
+    gridApi.forEachNode(n => allIds.push({row_id: n.data.row_id}));
+    gridApi.applyTransaction({remove: allIds});
+  } else {
+    showToast(`Delete-all failed: ${r.status}`);
+  }
+});
+
 // ── Settings modal ──
 document.getElementById("btn-settings").addEventListener("click", async () => {
   const [info, providersResp] = await Promise.all([

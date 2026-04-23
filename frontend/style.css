@@ -10,6 +10,15 @@ body { font-family: system-ui, sans-serif; margin: 0; background: #f7f7f7; }
   color: white; border: none; border-radius: 3px; cursor: pointer;
 }
 .toolbar-actions button:hover { background: #666; }
+.toolbar-actions button.btn-danger { background: #6c3030; }
+.toolbar-actions button.btn-danger:hover { background: #8a3a3a; }
+.toolbar-actions button.btn-danger.armed {
+  background: #d32f2f; animation: pulse 0.8s ease-in-out infinite;
+}
+@keyframes pulse {
+  0%, 100% { background: #d32f2f; }
+  50% { background: #b71c1c; }
+}
 
 main { padding: 10px; }
 
