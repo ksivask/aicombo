@@ -13,8 +13,6 @@ services:
       - "8000:8000"
     environment:
       - AIPLAY_DEFAULT_ROUTING=via_agw
-      - MAX_CONCURRENT_TRIALS=1
-      - TURN_CAP=10
       - AGW_CONTAINER_NAME=agentgateway
       - AGW_ADMIN_URL=http://agentgateway:15000
       - DATA_DIR=/data

@@ -454,27 +454,12 @@ async function runRow(rowId) {
     body: JSON.stringify({last_trial_id: trialId}),
   }).catch(() => {});
 
-  // Open trial detail page in a new tab — live updates there via SSE
+  // Open trial detail page in a new tab — live updates there via polling.
   openTrialTab(trialId);
 
-  // Grid-side SSE: just updates the row pill in the matrix view
-  const es = new EventSource(`${API_BASE}/trials/${trialId}/stream`);
-  es.onerror = () => {};
-  es.onmessage = async (e) => {
-    let data;
-    try { data = JSON.parse(e.data); } catch { return; }
-    if (data.event === "trial_done") {
-      es.close();
-      const tr = await fetch(`${API_BASE}/trials/${trialId}`);
-      const trial = await tr.json();
-      rowNode.setDataValue("status", trial.status);
-      rowNode.setDataValue("verdicts", trial.verdicts || {});
-      gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
-    } else if (data.event === "status") {
-      rowNode.setDataValue("status", data.status);
-      gridApi.refreshCells({rowNodes: [rowNode], columns: ["Actions"], force: true});
-    }
-  };
+  // Row pill updates (status, verdicts) flow through the 5s polling loop
+  // at the bottom of this file — simpler and more robust than SSE, which
+  // only emitted status pings anyway.
 }
 
 async function deleteRow(rowId) {
@@ -597,8 +582,9 @@ function openSettingsModal(bodyHtml) {
 initGrid();
 setInterval(fetchProviders, PROVIDERS_REFRESH_MS);
 
-// Polling fallback: every 5s refresh row status + verdicts from backend
-// so a dropped EventSource doesn't leave a row stuck at "running".
+// Row pill refresh: every 5s sync status + verdicts from backend so
+// running rows transition to their final pill once the background trial
+// completes. Canonical update path (the grid has no SSE subscription).
 setInterval(async () => {
   if (!gridApi) return;
   const rows = await fetchMatrix();

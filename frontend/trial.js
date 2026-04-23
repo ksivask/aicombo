@@ -63,8 +63,7 @@ if (!explicitTrialId && !rowId) {
 // Mutable: starts with whatever was in URL; row_id mode resolves it from /matrix
 let currentTrialId = explicitTrialId || null;
 let currentRow = null;     // populated when row_id mode
-let sseSource = null;      // currently-attached EventSource (null if none)
-let pollFallbackTimer = null;
+let pollTimer = null;      // setInterval handle for the live-update poll
 
 // ── Render helpers ──
 
@@ -429,35 +428,20 @@ function renderVerdictsTab(verdicts) {
   }).join("");
 }
 
-function attachSSE(tid) {
-  if (sseSource) { sseSource.close(); sseSource = null; }
-  sseSource = new EventSource(`${API_BASE}/trials/${tid}/stream`);
-  sseSource.onmessage = async (e) => {
-    let data;
-    try { data = JSON.parse(e.data); } catch { return; }
-    // Refresh on EVERY message so turn cards appear as they complete
-    // (even when status stays "running" — we want partial state).
-    if (data.event === "status" || data.event === "trial_done") {
-      await renderTrial(tid);
-      if (data.event === "trial_done" || (data.status && !["running"].includes(data.status))) {
-        sseSource.close();
-        sseSource = null;
-      }
+function attachPoll(tid) {
+  // Poll the regular trial GET every 2s so turn cards + verdicts appear
+  // as they get persisted. Clears itself once the trial reaches a
+  // terminal status. Replaced the SSE subscriber — the server-side
+  // /trials/{id}/stream endpoint only emitted status pings, so polling
+  // the same data directly is strictly simpler.
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null; }
+  pollTimer = setInterval(async () => {
+    const status = await renderTrial(tid);
+    if (status && !["running"].includes(status)) {
+      clearInterval(pollTimer);
+      pollTimer = null;
     }
-  };
-  sseSource.onerror = () => {
-    if (sseSource) { sseSource.close(); sseSource = null; }
-    // Fall back to polling
-    if (!pollFallbackTimer) {
-      pollFallbackTimer = setInterval(async () => {
-        const status = await renderTrial(tid);
-        if (status && !["running"].includes(status)) {
-          clearInterval(pollFallbackTimer);
-          pollFallbackTimer = null;
-        }
-      }, 2000);
-    }
-  };
+  }, 2000);
 }
 
 // Row-id mode: poll /matrix/row/{id} for a newly-attached trial.
@@ -472,7 +456,7 @@ function startRowWatchPoll() {
         currentTrialId = row.last_trial_id;
         clearInterval(t);
         const status = await renderTrial(currentTrialId);
-        if (status === "running") attachSSE(currentTrialId);
+        if (status === "running") attachPoll(currentTrialId);
       }
     } catch {}
   }, 2000);
@@ -482,7 +466,7 @@ function startRowWatchPoll() {
 (async () => {
   const initialStatus = await fetchAndRender();
   if (currentTrialId && initialStatus === "running") {
-    attachSSE(currentTrialId);
+    attachPoll(currentTrialId);
   } else if (rowId && !currentTrialId) {
     startRowWatchPoll();
   }

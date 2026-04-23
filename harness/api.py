@@ -5,12 +5,11 @@ import asyncio
 import json
 import os
 import uuid
-from collections import defaultdict, deque
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from audit_tail import AuditTail
@@ -31,7 +30,6 @@ STORE = TrialStore(DATA_DIR / "trials")
 MATRIX_PATH = DATA_DIR / "matrix.json"
 AUDIT_TAIL: AuditTail | None = None
 AUDIT_BUFFER_PER_TRIAL: dict[str, list[AuditEntry]] = defaultdict(list)
-SSE_QUEUES: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
 # Plan B T14 — cooperative abort registry. Populated when a trial starts,
 # set by POST /trials/{id}/abort, checked by runner.run_trial between turns,
@@ -417,10 +415,11 @@ async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, start
         ABORT_EVENTS.pop(trial_id, None)
         AUDIT_BUFFER_PER_TRIAL.pop(trial_id, None)
 
-    # Reconcile matrix row with final trial state so the UI can recover
-    # even if an SSE client disconnected mid-trial. Outside finally so it
-    # reads the persisted final state (run_trial sets trial.status in its
-    # own error/abort branches; the reconciler just reflects it).
+    # Reconcile matrix row with final trial state so the UI polling path
+    # can recover the row pill even if the user closed the trial tab. Outside
+    # finally so it reads the persisted final state (run_trial sets
+    # trial.status in its own error/abort branches; the reconciler just
+    # reflects it).
     if row_id:
         try:
             final = STORE.load(trial_id)
@@ -486,28 +485,3 @@ async def trial_abort(trial_id: str):
     return {"ok": True, "abort_requested": True, "trial_id": trial_id}
 
 
-@router.get("/trials/{trial_id}/stream")
-async def trial_stream(trial_id: str):
-    async def event_gen():
-        while True:
-            await asyncio.sleep(1.0)
-            try:
-                trial = STORE.load(trial_id)
-                yield f"data: {json.dumps({'event': 'status', 'status': trial.status})}\n\n"
-                if trial.status in ("pass", "fail", "error", "aborted"):
-                    yield f"data: {json.dumps({'event': 'trial_done', 'status': trial.status})}\n\n"
-                    break
-            except FileNotFoundError:
-                yield f"data: {json.dumps({'event': 'error', 'message': 'trial missing'})}\n\n"
-                break
-    return StreamingResponse(event_gen(), media_type="text/event-stream")
-
-
-@router.get("/audit/stream")
-async def audit_stream():
-    """Raw AGW audit stream — all trials."""
-    async def gen():
-        while True:
-            await asyncio.sleep(2.0)
-            yield f": keepalive\n\n"
-    return StreamingResponse(gen(), media_type="text/event-stream")
