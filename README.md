@@ -21,6 +21,98 @@ Complementary to Harness B (scripted curl harness inside `agw-gh`, 23/23 green).
 - Not a performance benchmark.
 - Not production-hosted; dev tool only.
 
+## Plan A — exhaustive support matrix
+
+Plan A is the MVP: **one framework adapter (langchain) + one "no-LLM" adapter (direct-mcp)**, chat-completions API only, verdicts (a)+(b). Everything else is Plan B.
+
+### Runnable row configs
+
+9 distinct shapes × 2 routings (`via_agw` / `direct`) = 18 configs.
+
+| # | framework | api | llm | mcp | cidgar hooks exercised | prerequisite |
+|---|---|---|---|---|---|---|
+| 1 | langchain | chat | ollama | NONE | f2+f3 (C2 marker) | Ollama on host |
+| 2 | langchain | chat | ollama | weather/news/library/fetch | **f1+f2+f3+f4+f5** (full agent loop) | Ollama, tool-capable model |
+| 3 | langchain | chat | mock | NONE | f2+f3 with mock LLM | none (compose-internal) |
+| 4 | langchain | chat | mock | weather/news/library/fetch | f1+f2+f3+f4+f5 with mock | none |
+| 5 | langchain | chat | chatgpt | NONE | f2+f3 via OpenAI | `OPENAI_API_KEY` |
+| 6 | langchain | chat | chatgpt | weather/news/library/fetch | f1+f2+f3+f4+f5 via OpenAI | `OPENAI_API_KEY` |
+| 7 | langchain | chat | gemini | NONE | f2+f3 via Google | `GOOGLE_API_KEY` |
+| 8 | langchain | chat | gemini | weather/news/library/fetch | f1+f2+f3+f4+f5 via Google | `GOOGLE_API_KEY` |
+| 9 | (any) | (any) | NONE | weather/news/library/fetch | f1+f4+f5 (direct-MCP deterministic routing, no LLM) | none |
+
+### What the validator BLOCKS in Plan A (Run button disabled, row greyed, HTTP 400 if forced via API)
+
+| Config | Blocked because |
+|---|---|
+| `llm=NONE + mcp=NONE` | Nothing to exercise |
+| `api=chat + llm=claude` | Anthropic has no chat-completions endpoint |
+| `api=responses + llm=anyone` | No Plan A adapter implements Responses API (Plan B: autogen/llamaindex) |
+| `api=responses+conv + llm=anyone` | Same — Responses API adapter needed |
+| `api=messages + llm=claude` | No Plan A adapter implements Messages API (Plan B: crewai/pydantic-ai) |
+| `api=messages + llm=anyone else` | Messages is claude-only AND no adapter |
+| `framework=langgraph/crewai/pydantic-ai/autogen/llamaindex` | Those adapters don't exist yet (Plan B) |
+
+### Verdicts
+
+| Level | Plan A |
+|---|---|
+| (a) Presence — CID appears in audit log per turn | ✅ computed |
+| (b) Channel structure — response bodies carry CID across all channels | ✅ computed (scans agent-loop intermediates too) |
+| (c) Multi-turn continuity | ⏸ `na — deferred to Plan B` |
+| (d) Compaction resilience | ⏸ `na — deferred to Plan B` |
+| (e) Server-state-mode gap | ⏸ `na — deferred to Plan B` |
+
+### UI features
+
+| Feature | Plan A |
+|---|---|
+| Matrix grid with cell editing | ✅ |
+| Validator-driven disable/force (state, LLM dropdown filtering by API, etc.) | ✅ |
+| Add Row / Delete / Delete All (click-twice-to-confirm) | ✅ |
+| ▶ Run per row + Run All | ✅ |
+| Verdict cell → opens trial in new tab (available from row creation) | ✅ |
+| Live-streaming turn cards during run (SSE + polling fallback) | ✅ |
+| Turn-plan preview (📋 button → read-only modal) | ✅ |
+| Settings modal showing provider availability | ✅ |
+| Per-turn HTTP request/response capture (real wire bytes via httpx event hooks) | ✅ |
+| Agent-loop multi-step cards (langchain + MCP) | ✅ |
+| AGW audit log per-turn with color-coded phase badges | ✅ |
+| Turn-plan editor (edit turns before Run) | ⏸ Plan B (CodeMirror) |
+| Clone-for-baseline action | ⏸ Plan B |
+| Abort running trial | ⏸ Plan B (⏸ button rendered disabled) |
+
+### Turn kinds
+
+| Kind | Plan A |
+|---|---|
+| `user_msg` — single user message, adapter handles agent loop if MCP present | ✅ |
+| `compact` — simulate history truncation between turns | ⏸ Plan B |
+| `force_state_ref` — override next turn's `previous_response_id` | ⏸ Plan B |
+| `inject_ambient_cid` — pre-seed a CID into framework state | ⏸ Plan B |
+
+### Stream / State reality check
+
+- **Stream toggle**: validator lets you set `stream=true`, but the langchain adapter doesn't pass it to ChatOpenAI in Plan A. No effect. Plan B wires it through.
+- **State toggle**: only editable when `api=responses + llm=chatgpt`. That combo is BLOCKED in Plan A (no Responses adapter). So **no runnable Plan A row has state=true**. Column is operationally F-only in Plan A.
+
+### Providers detected from `.env`
+
+| Provider | Detected from | Plan A runnable? |
+|---|---|---|
+| NONE | always | ✅ (direct-MCP rows) |
+| ollama | always | ✅ |
+| mock | always | ✅ |
+| chatgpt | `OPENAI_API_KEY` set | ✅ if key set |
+| claude | `ANTHROPIC_API_KEY` set | ❌ no chat-API support; Plan B adds messages |
+| gemini | `GOOGLE_API_KEY` set | ✅ if key set |
+
+### TL;DR
+
+**Plan A only exercises `api=chat` via langchain.** For each chat-capable provider (ollama/mock/chatgpt/gemini), pair with any MCP (or NONE), pick routing, and you get real cidgar traffic. For `llm=NONE`, direct-mcp adapter handles it. Anything else (responses, messages, other frameworks, state=true, compaction, abort, turn-plan editing, verdicts c/d/e) is Plan B.
+
+If a row is greyed out in the UI, the Run button tooltip tells you which rule blocks it.
+
 ## Requirements
 
 - Docker + docker compose
