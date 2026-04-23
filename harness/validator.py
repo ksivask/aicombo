@@ -47,8 +47,8 @@ LLM_SUPPORTS_RESPONSES_STATE = {"chatgpt"}
 ADAPTER_CAPABILITIES = {
     "langchain":   {"chat"},
     "direct-mcp":  set(),  # MCP-only adapter, no LLM API
+    "langgraph":   {"chat"},  # Plan B T2: create_react_agent, chat-completions only
     # Plan B (not yet built):
-    # "langgraph":  {"chat"},
     # "crewai":     {"chat", "messages"},
     # "pydantic-ai":{"chat", "messages", "responses"},
     # "autogen":    {"chat", "messages", "responses", "responses+conv"},

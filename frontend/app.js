@@ -13,6 +13,7 @@ const ADAPTER_CAPABILITIES_JS = {
   // Plan A: only langchain (chat-only). direct-mcp routes via llm=NONE.
   // Plan B will expand this as adapters are added.
   "langchain": ["chat"],
+  "langgraph": ["chat"],  // Plan B T2
 };
 
 function isRowRunnable(row) {
