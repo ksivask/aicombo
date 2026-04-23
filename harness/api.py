@@ -397,27 +397,30 @@ async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, start
                 ))
         return demuxed
 
-    await run_trial(
-        trial_id=trial_id,
-        store=STORE,
-        adapter_client=adapter,
-        audit_entries_provider=audit_provider,
-        # T14 — may be None if the event was already cleaned up by a sibling
-        # path, but in practice it's registered in trial_run before this bg
-        # task is scheduled.
-        abort_event=ABORT_EVENTS.get(trial_id),
-    )
-
-    # T14 — release the abort event once the trial is fully done (any terminal
-    # status). A second /abort hit after this point will now short-circuit to
-    # the "already finished" branch instead of silently setting a stale event.
-    ABORT_EVENTS.pop(trial_id, None)
-
-    if AUDIT_TAIL is not None:
-        AUDIT_TAIL.unsubscribe(trial_id)
+    try:
+        await run_trial(
+            trial_id=trial_id,
+            store=STORE,
+            adapter_client=adapter,
+            audit_entries_provider=audit_provider,
+            # T14 — may be None if the event was already cleaned up by a sibling
+            # path, but in practice it's registered in trial_run before this bg
+            # task is scheduled.
+            abort_event=ABORT_EVENTS.get(trial_id),
+        )
+    finally:
+        # F1 — cleanup is idempotent and MUST run even if run_trial raises so
+        # ABORT_EVENTS, AUDIT_BUFFER_PER_TRIAL, and the audit-tail subscription
+        # don't leak across trials.
+        if AUDIT_TAIL is not None:
+            AUDIT_TAIL.unsubscribe(trial_id)
+        ABORT_EVENTS.pop(trial_id, None)
+        AUDIT_BUFFER_PER_TRIAL.pop(trial_id, None)
 
     # Reconcile matrix row with final trial state so the UI can recover
-    # even if an SSE client disconnected mid-trial.
+    # even if an SSE client disconnected mid-trial. Outside finally so it
+    # reads the persisted final state (run_trial sets trial.status in its
+    # own error/abort branches; the reconciler just reflects it).
     if row_id:
         try:
             final = STORE.load(trial_id)
@@ -429,8 +432,14 @@ async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, start
                     r["last_trial_id"] = trial_id
                     _save_matrix(rows)
                     break
-        except Exception:
-            pass
+        except Exception as e:
+            # M4 partial — log rather than silently swallow so reconcile
+            # failures (stale matrix) are at least visible in logs.
+            import logging
+            logging.getLogger(__name__).warning(
+                "matrix reconcile failed for trial %s row %s: %s",
+                trial_id, row_id, e,
+            )
 
 
 @router.get("/trials/{trial_id}")

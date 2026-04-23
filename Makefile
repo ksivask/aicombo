@@ -44,4 +44,4 @@ rotate-keys:
 	fi
 
 test:
-	cd harness && python -m pytest ../tests/ -xvs
+	cd harness && python3 -m pytest ../tests/ -xvs
