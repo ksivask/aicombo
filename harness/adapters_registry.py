@@ -11,6 +11,7 @@ ADAPTER_URLS = {
     "langgraph":   os.environ.get("ADAPTER_LANGGRAPH_URL",   "http://adapter-langgraph:5011"),
     "crewai":      os.environ.get("ADAPTER_CREWAI_URL",      "http://adapter-crewai:5012"),
     "pydantic-ai": os.environ.get("ADAPTER_PYDANTIC_AI_URL", "http://adapter-pydantic-ai:5013"),
+    "autogen":     os.environ.get("ADAPTER_AUTOGEN_URL",     "http://adapter-autogen:5014"),
 }
 
 

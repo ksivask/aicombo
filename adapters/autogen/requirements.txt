@@ -1,0 +1,25 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+httpx>=0.27.0
+# autogen-agentchat: Microsoft's AssistantAgent framework. `AssistantAgent` runs
+# a tool-calling loop via a `ChatCompletionClient` subclass. autogen-ext ships
+# `OpenAIChatCompletionClient` (accepts `http_client=`) and
+# `AnthropicChatCompletionClient` (accepts `http_client=`), so we hand them
+# our event-hook'd httpx.AsyncClient for LLM capture — no monkey-patching.
+#
+# autogen-ext does NOT currently ship an OpenAI Responses client. For
+# api=responses / api=responses+conv we bypass the AssistantAgent and call
+# `openai.AsyncOpenAI(http_client=...).responses.create(...)` directly.
+# For api=responses+conv we additionally chain `previous_response_id` turn
+# over turn to implement the stateful conversation mode.
+autogen-agentchat>=0.7.0
+autogen-ext[openai,anthropic]>=0.7.0
+openai>=1.50.0
+anthropic>=0.40.0
+# fastmcp: used for MCP integration (autogen-ext's mcp_server_tools uses the
+# mcp SDK's streamablehttp_client which does NOT accept a custom httpx
+# client — so we can't capture MCP wire bytes through it. Instead we wrap
+# fastmcp.Client manually, same pattern as adapters/crewai.)
+fastmcp>=2.0.0
+pytest>=8.0.0
+pytest-asyncio>=0.23.0

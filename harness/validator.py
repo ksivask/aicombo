@@ -50,8 +50,8 @@ ADAPTER_CAPABILITIES = {
     "langgraph":   {"chat"},  # Plan B T2: create_react_agent, chat-completions only
     "crewai":      {"chat", "messages"},  # Plan B T3: Crew+Agent+Task via native SDKs
     "pydantic-ai": {"chat", "messages", "responses"},  # Plan B T4: typed Agent + Model + Toolset
+    "autogen":     {"chat", "messages", "responses", "responses+conv"},  # Plan B T5: AssistantAgent + openai responses bypass
     # Plan B (not yet built):
-    # "autogen":    {"chat", "messages", "responses", "responses+conv"},
     # "llamaindex": {"chat", "responses", "responses+conv"},
 }
 

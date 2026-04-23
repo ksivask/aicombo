@@ -59,19 +59,34 @@ def test_none_llm_disables_api_stream_state():
 
 def test_responses_state_combo_state_editable_but_unrunnable_in_plan_a():
     """api=responses + state=T + llm=chatgpt: state cell is editable (api+llm
-    support state), but the row is unrunnable in Plan A because no adapter
-    implements the Responses API yet (autogen/llamaindex are Plan B)."""
+    support state), but the row is unrunnable when the framework has no
+    adapter that implements the Responses API. llamaindex is still unbuilt
+    as of Plan B T5, so it's the canonical "no adapter yet" framework."""
     result = validate({
-        "framework": "autogen", "api": "responses",
+        "framework": "llamaindex", "api": "responses",
         "stream": False, "state": True,
         "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
     })
     # State remains editable (api/llm rule does not disable it)
     assert "state" not in result["disabled_cells"]
     assert "state" not in result["forced_values"]
-    # But the row IS unrunnable: Plan A has no autogen adapter (Plan B scope)
+    # But the row IS unrunnable: llamaindex adapter not yet built.
     assert result["runnable"] is False
     assert any("adapter" in w.lower() for w in result["warnings"])
+
+
+def test_autogen_responses_state_is_runnable():
+    """autogen (Plan B T5) supports api=responses with state=T via the
+    openai SDK bypass (responses.create + previous_response_id chain).
+    This test locks that capability in the validator."""
+    result = validate({
+        "framework": "autogen", "api": "responses",
+        "stream": False, "state": True,
+        "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is True
+    # State is NOT disabled — chatgpt+responses supports state.
+    assert "state" not in result["disabled_cells"]
 
 
 def test_state_disabled_when_llm_does_not_support_responses_state():

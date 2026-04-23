@@ -16,6 +16,7 @@ const ADAPTER_CAPABILITIES_JS = {
   "langgraph":   ["chat"],                          // Plan B T2
   "crewai":      ["chat", "messages"],              // Plan B T3
   "pydantic-ai": ["chat", "messages", "responses"], // Plan B T4
+  "autogen":     ["chat", "messages", "responses", "responses+conv"], // Plan B T5
 };
 
 function isRowRunnable(row) {

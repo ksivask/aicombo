@@ -1,0 +1,214 @@
+"""Tests for adapters/autogen — framework bridge logic (offline).
+
+The autogen adapter is the first to cover all 4 APIs (chat / messages /
+responses / responses+conv) plus a state-mode variant. These tests verify
+URL resolution, model-name selection, state-mode chaining of response ids,
+and the force_state_ref override path without touching real LLM endpoints.
+"""
+import sys
+from pathlib import Path
+from unittest.mock import MagicMock, patch
+
+import pytest
+
+_AUTOGEN_DIR     = str(Path(__file__).resolve().parent.parent / "adapters" / "autogen")
+_PYDANTIC_AI_DIR = str(Path(__file__).resolve().parent.parent / "adapters" / "pydantic_ai")
+_CREWAI_DIR      = str(Path(__file__).resolve().parent.parent / "adapters" / "crewai")
+_LANGCHAIN_DIR   = str(Path(__file__).resolve().parent.parent / "adapters" / "langchain")
+_LANGGRAPH_DIR   = str(Path(__file__).resolve().parent.parent / "adapters" / "langgraph")
+_DIRECT_MCP_DIR  = str(Path(__file__).resolve().parent.parent / "adapters" / "direct-mcp")
+
+
+def _ensure_adapter_on_path():
+    """Put autogen's framework_bridge at the front of sys.path; evict others."""
+    for other in (_PYDANTIC_AI_DIR, _CREWAI_DIR, _LANGCHAIN_DIR,
+                  _LANGGRAPH_DIR, _DIRECT_MCP_DIR):
+        while other in sys.path:
+            sys.path.remove(other)
+    while _AUTOGEN_DIR in sys.path:
+        sys.path.remove(_AUTOGEN_DIR)
+    sys.path.insert(0, _AUTOGEN_DIR)
+    sys.modules.pop("framework_bridge", None)
+
+
+def test_pick_llm_base_url_via_agw_chatgpt(monkeypatch):
+    """chat → chatgpt resolves to the AGW OpenAI URL."""
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    from framework_bridge import pick_llm_base_url
+    url = pick_llm_base_url(routing="via_agw", llm="chatgpt")
+    assert "chatgpt" in url
+
+
+def test_pick_llm_base_url_via_agw_claude(monkeypatch):
+    """messages → claude resolves to the AGW Anthropic URL."""
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_ANTHROPIC", "http://agentgateway:8080/llm/claude")
+    from framework_bridge import pick_llm_base_url
+    url = pick_llm_base_url(routing="via_agw", llm="claude")
+    assert "claude" in url
+
+
+def test_default_model_name_covers_all_four_apis():
+    """All four APIs resolve to a sensible default model identifier.
+
+    This is the guarantee that sets autogen apart: a single adapter class
+    picks the right model for chat/messages/responses/responses+conv.
+    """
+    _ensure_adapter_on_path()
+    from framework_bridge import _default_model_name
+    # chat + ollama: env-defaulted
+    assert _default_model_name("chat", "ollama", None) != ""
+    # messages + claude
+    assert _default_model_name("messages", "claude", None).startswith("claude-")
+    # responses + chatgpt
+    assert _default_model_name("responses", "chatgpt", None).startswith("gpt-")
+    # responses+conv + chatgpt (same model, different flow)
+    assert _default_model_name("responses+conv", "chatgpt", None).startswith("gpt-")
+    # Explicit model wins over defaults
+    assert _default_model_name("responses+conv", "chatgpt", "gpt-5") == "gpt-5"
+
+
+@pytest.mark.asyncio
+async def test_trial_create_and_close_sets_up_state(monkeypatch):
+    """Smoke: Trial init (chat mode) + aclose without real LLM calls.
+
+    Mocks _build_model_client so construction doesn't need a real endpoint
+    or catalog model. Verifies state is initialized (empty history, shared
+    headers wired, no chained response id) and aclose releases the httpx
+    client without raising.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import framework_bridge
+    from framework_bridge import Trial
+
+    fake_client = MagicMock(name="fake_model_client")
+    with patch.object(framework_bridge, "_build_model_client",
+                      return_value=fake_client) as MockBuild:
+        trial = Trial(trial_id="t-init", config={
+            "framework": "autogen", "api": "chat",
+            "stream": False, "state": False,
+            "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+        })
+        try:
+            assert trial.trial_id == "t-init"
+            assert trial._agentchat_messages == []
+            assert trial._http_exchanges == []
+            assert trial._last_response_id is None
+            assert trial._response_history == []
+            assert trial._forced_prev_id is None
+            # Mutable shared headers dict is in place.
+            assert trial._headers["X-Harness-Trial-ID"] == "t-init"
+            MockBuild.assert_called_once()
+            assert trial._mode == "agent"
+        finally:
+            await trial.aclose()
+
+
+@pytest.mark.asyncio
+async def test_responses_mode_state_chains_response_ids(monkeypatch):
+    """responses+conv mode: _last_response_id updates after each turn;
+    history accumulates; force_state_ref(idx) overrides the next turn's
+    previous_response_id.
+
+    We fake openai.AsyncOpenAI so no real HTTP happens. Each call to
+    .responses.create returns a synthetic object with a unique .id.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import framework_bridge
+    from framework_bridge import Trial
+
+    # Build an async mock `.responses.create` that returns a Response-like
+    # object with incrementing .id, and records the `previous_response_id`
+    # it was called with.
+    call_log: list[dict] = []
+    counter = {"n": 0}
+
+    async def fake_create(**kwargs):
+        counter["n"] += 1
+        call_log.append(dict(kwargs))
+        resp = MagicMock()
+        resp.id = f"resp_{counter['n']}"
+        resp.output_text = f"reply {counter['n']}"
+        resp.output = []
+        return resp
+
+    fake_openai = MagicMock()
+    fake_openai.responses.create = fake_create
+
+    # Also need to avoid the real AsyncOpenAI constructor walking httpx internals.
+    with patch.object(framework_bridge, "AsyncOpenAI", return_value=fake_openai, create=True):
+        # The import inside Trial is `from openai import AsyncOpenAI` so
+        # patch that directly.
+        import openai
+        with patch.object(openai, "AsyncOpenAI", return_value=fake_openai):
+            trial = Trial(trial_id="t-resp", config={
+                "framework": "autogen", "api": "responses+conv",
+                "stream": False, "state": True,
+                "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+            })
+            try:
+                assert trial._mode == "responses_direct"
+
+                # Turn 1: no previous_response_id yet.
+                r1 = await trial.turn("turn-1", "hello")
+                assert r1["assistant_msg"] == "reply 1"
+                assert trial._last_response_id == "resp_1"
+                assert trial._response_history == ["resp_1"]
+                assert call_log[-1].get("previous_response_id") is None
+
+                # Turn 2: chain on resp_1.
+                r2 = await trial.turn("turn-2", "continue")
+                assert r2["assistant_msg"] == "reply 2"
+                assert trial._last_response_id == "resp_2"
+                assert trial._response_history == ["resp_1", "resp_2"]
+                assert call_log[-1]["previous_response_id"] == "resp_1"
+
+                # Turn 3: chain on resp_2.
+                await trial.turn("turn-3", "more")
+                assert trial._response_history == ["resp_1", "resp_2", "resp_3"]
+                assert call_log[-1]["previous_response_id"] == "resp_2"
+
+                # Now force the NEXT turn to reference turn-0 (resp_1)
+                # instead of the natural most-recent resp_3.
+                out = trial.force_state_ref(0)
+                assert out["ok"] is True
+                assert out["forced_prev_id"] == "resp_1"
+
+                await trial.turn("turn-4", "branch-back")
+                # The call used resp_1 (forced) despite resp_3 being latest.
+                assert call_log[-1]["previous_response_id"] == "resp_1"
+                # And force is consumed — subsequent turn chains on resp_4.
+                assert trial._forced_prev_id is None
+                await trial.turn("turn-5", "after-branch")
+                assert call_log[-1]["previous_response_id"] == "resp_4"
+            finally:
+                await trial.aclose()
+
+
+def test_force_state_ref_rejects_out_of_range(monkeypatch):
+    """force_state_ref with an invalid index returns ok=False, doesn't crash."""
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import openai
+    from framework_bridge import Trial
+
+    with patch.object(openai, "AsyncOpenAI", return_value=MagicMock()):
+        trial = Trial(trial_id="t-oor", config={
+            "framework": "autogen", "api": "responses+conv",
+            "stream": False, "state": True,
+            "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+        })
+        # No history yet → any index is out of range.
+        out = trial.force_state_ref(0)
+        assert out["ok"] is False
+        # Negative also rejected.
+        out = trial.force_state_ref(-1)
+        assert out["ok"] is False
+        # _forced_prev_id stays None.
+        assert trial._forced_prev_id is None
