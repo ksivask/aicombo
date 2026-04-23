@@ -9,16 +9,46 @@ function openTrialTab(trialId) {
 // Runnability — mirror of harness/validator.py rules that actually matter for the
 // Run button. Anything beyond this is advisory (state/stream/provider constraints
 // are auto-forced, not blocking).
+const ADAPTER_CAPABILITIES_JS = {
+  // Plan A: only langchain (chat-only). direct-mcp routes via llm=NONE.
+  // Plan B will expand this as adapters are added.
+  "langchain": ["chat"],
+};
+
 function isRowRunnable(row) {
   const llm = row.llm || "NONE";
   const mcp = row.mcp || "NONE";
-  if (llm === "NONE" && mcp === "NONE") return false;  // nothing to exercise
+  const api = row.api || "chat";
+  const framework = row.framework || "langchain";
+  if (llm === "NONE" && mcp === "NONE") return false;
+  if (llm === "NONE") return true;  // routes to direct-mcp adapter
+  // Provider must be allowed for the API
+  const apiProviders = API_TO_PROVIDERS[api] || [];
+  if (apiProviders.length && !apiProviders.includes(llm)) return false;
+  // Adapter must implement the API
+  const adapterApis = ADAPTER_CAPABILITIES_JS[framework] || [];
+  if (!adapterApis.includes(api)) return false;
   return true;
 }
 
 function invalidReason(row) {
-  if ((row.llm || "NONE") === "NONE" && (row.mcp || "NONE") === "NONE") {
+  const llm = row.llm || "NONE";
+  const mcp = row.mcp || "NONE";
+  const api = row.api || "chat";
+  const framework = row.framework || "langchain";
+  if (llm === "NONE" && mcp === "NONE") {
     return "LLM=NONE + MCP=NONE: nothing to exercise. Pick at least one.";
+  }
+  if (llm !== "NONE") {
+    const apiProviders = API_TO_PROVIDERS[api] || [];
+    if (apiProviders.length && !apiProviders.includes(llm)) {
+      return `api=${api} not supported by llm=${llm} (supported: ${apiProviders.join(", ")})`;
+    }
+    const adapterApis = ADAPTER_CAPABILITIES_JS[framework] || [];
+    if (!adapterApis.includes(api)) {
+      return `Plan A's ${framework} adapter doesn't implement api=${api} ` +
+             `(available: ${adapterApis.join(", ") || "none"}). Plan B adds the missing adapters.`;
+    }
   }
   return "invalid config";
 }

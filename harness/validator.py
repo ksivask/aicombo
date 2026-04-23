@@ -38,6 +38,23 @@ PROVIDER_TO_KEY = {
 # (previous_response_id semantics). Only chatgpt today; copilot etc come in Plan B.
 LLM_SUPPORTS_RESPONSES_STATE = {"chatgpt"}
 
+# Which Plan A adapters implement which APIs.
+# Plan A ships only:
+#   - adapter-langchain: chat completions only
+#   - adapter-direct-mcp: no LLM (auto-selected when llm=NONE)
+# Plan B will add adapters for langgraph, crewai, pydantic-ai, autogen,
+# llamaindex covering responses / responses+conv / messages.
+ADAPTER_CAPABILITIES = {
+    "langchain":   {"chat"},
+    "direct-mcp":  set(),  # MCP-only adapter, no LLM API
+    # Plan B (not yet built):
+    # "langgraph":  {"chat"},
+    # "crewai":     {"chat", "messages"},
+    # "pydantic-ai":{"chat", "messages", "responses"},
+    # "autogen":    {"chat", "messages", "responses", "responses+conv"},
+    # "llamaindex": {"chat", "responses", "responses+conv"},
+}
+
 
 def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None) -> dict[str, Any]:
     """Validate a row config. Returns disabled_cells, forced_values, runnable, disabled_dropdown_options."""
@@ -107,6 +124,21 @@ def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None)
             warnings.append(
                 f"api={api} is not supported by llm={llm} "
                 f"(supported: {', '.join(api_providers)})"
+            )
+
+    # Rule 6: Adapter capability — does any Plan A adapter actually implement
+    # this (framework, api) combo? Validator may say "messages+claude" is
+    # provider-valid, but if no adapter implements messages, the trial WILL
+    # 400 from the adapter. Block at the validator instead.
+    if llm != "NONE":
+        framework = row.get("framework", "langchain")
+        adapter_apis = ADAPTER_CAPABILITIES.get(framework, set())
+        if api not in adapter_apis:
+            runnable = False
+            available_apis = ", ".join(sorted(adapter_apis)) or "(none)"
+            warnings.append(
+                f"Plan A's {framework} adapter does not implement api={api} "
+                f"(available: {available_apis}). Plan B will add the missing adapters."
             )
 
     return {

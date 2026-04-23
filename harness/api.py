@@ -195,13 +195,19 @@ async def trial_run(row_id: str):
     if not row:
         raise HTTPException(404, "row not found")
 
-    # Reject unrunnable rows (LLM=NONE + MCP=NONE) at the API too, not just UI.
-    if row.get("llm", "NONE") == "NONE" and row.get("mcp", "NONE") == "NONE":
-        raise HTTPException(
-            400,
-            "row is not runnable: LLM=NONE AND MCP=NONE is invalid "
-            "(nothing to exercise — pick at least one).",
-        )
+    # Reject unrunnable rows server-side via the full validator, not just
+    # the UI. Covers: LLM=NONE+MCP=NONE, api↔llm mismatch, adapter-not-
+    # implemented (Plan A only has langchain/chat), etc.
+    id_to_env = {"chatgpt": "openai", "claude": "anthropic", "gemini": "google"}
+    available_keys = {}
+    for p in get_providers():
+        env_key = id_to_env.get(p["id"])
+        if env_key:
+            available_keys[env_key] = p["available"]
+    v = validate_row(row, available_keys=available_keys)
+    if not v.get("runnable", True):
+        reasons = " | ".join(v.get("warnings", [])) or "row is not runnable"
+        raise HTTPException(400, f"row not runnable: {reasons}")
 
     trial_id = str(uuid.uuid4())
     # When llm=NONE, the direct-mcp adapter drives the trial regardless of

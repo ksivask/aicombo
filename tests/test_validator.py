@@ -57,16 +57,21 @@ def test_none_llm_disables_api_stream_state():
         assert cell in result["disabled_cells"]
 
 
-def test_invalid_combo_api_responses_stream_off_state_on_is_valid():
-    """Responses with state but no stream is valid."""
+def test_responses_state_combo_state_editable_but_unrunnable_in_plan_a():
+    """api=responses + state=T + llm=chatgpt: state cell is editable (api+llm
+    support state), but the row is unrunnable in Plan A because no adapter
+    implements the Responses API yet (autogen/llamaindex are Plan B)."""
     result = validate({
         "framework": "autogen", "api": "responses",
         "stream": False, "state": True,
         "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
     })
-    assert result["runnable"] is True
-    # State is allowed on responses, not forced
+    # State remains editable (api/llm rule does not disable it)
     assert "state" not in result["disabled_cells"]
+    assert "state" not in result["forced_values"]
+    # But the row IS unrunnable: Plan A has no autogen adapter (Plan B scope)
+    assert result["runnable"] is False
+    assert any("adapter" in w.lower() for w in result["warnings"])
 
 
 def test_state_disabled_when_llm_does_not_support_responses_state():
