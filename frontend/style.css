@@ -36,6 +36,7 @@ main { padding: 10px; }
 .status-pill.running { background: #fff3cd; color: #856404; }
 .status-pill.idle { background: #e2e3e5; color: #495057; }
 .status-pill.error { background: #f8d7da; color: #721c24; }
+.status-pill.aborted { background: #fff4e0; color: #b45309; border: 1px solid #fbbf24; }
 
 .verdict-pill {
   display: inline-block; width: 20px; text-align: center;
@@ -358,3 +359,21 @@ button.btn-baseline:hover { background: #e3f2fd; border-radius: 3px; }
   border: 1px solid #ffcc80; border-radius: 10px;
   font-size: 10px; font-family: ui-monospace, monospace;
 }
+
+/* ── Plan B T14 — abort running trial ── */
+button.btn-abort {
+  background: #dc2626; color: white; border: none; cursor: pointer;
+  font-size: 13px; padding: 3px 10px; border-radius: 3px;
+  margin: 0 2px; font-weight: 600;
+}
+button.btn-abort:hover { background: #b91c1c; }
+button.btn-abort:disabled {
+  background: #e5e7eb; color: #9ca3af; cursor: not-allowed;
+}
+.verdict-card.aborted,
+.verdict-aborted {
+  border-left-color: #fbbf24;
+  background: #fff8e6;
+  color: #78350f;
+}
+.verdict-aborted strong { color: #b45309; }

@@ -16,7 +16,29 @@ const rowId = params.get("row_id");
 
 const elTitle = document.getElementById("trial-title");
 const elStatus = document.getElementById("trial-status-pill");
+const elAbortBtn = document.getElementById("trial-abort-btn");
 const elRowSummary = document.getElementById("row-summary");
+
+// T14 — wire abort button. Only visible while status=running; hides on
+// terminal status (pass/fail/error/aborted).
+if (elAbortBtn) {
+  elAbortBtn.addEventListener("click", async () => {
+    if (!currentTrialId) return;
+    if (!confirm(`Abort trial ${currentTrialId}?\n\nThe currently-executing turn will finish; subsequent turns are skipped.`)) return;
+    try {
+      const r = await fetch(`${API_BASE}/trials/${currentTrialId}/abort`, {method: "POST"});
+      const j = await r.json();
+      if (!j.ok) {
+        alert(`Abort failed/no-op: ${j.reason || "unknown"}`);
+      } else {
+        elAbortBtn.disabled = true;
+        elAbortBtn.textContent = "⏹ Aborting…";
+      }
+    } catch (e) {
+      alert(`Abort request failed: ${e.message}`);
+    }
+  });
+}
 const tabContents = {
   turns: document.getElementById("tab-turns"),
   plan: document.getElementById("tab-plan"),
@@ -273,6 +295,15 @@ async function renderTrial(tid) {
   elStatus.className = `status-pill ${trial.status || "idle"}`;
   elRowSummary.innerHTML = renderRowChips(trial.config || {});
 
+  // T14 — show Stop only while running.
+  if (elAbortBtn) {
+    elAbortBtn.style.display = (trial.status === "running") ? "" : "none";
+    if (trial.status !== "running") {
+      elAbortBtn.disabled = false;
+      elAbortBtn.textContent = "⏹ Stop";
+    }
+  }
+
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
@@ -365,7 +396,29 @@ function renderVerdictsTab(verdicts) {
     a: "Presence", b: "Channel structure", c: "Continuity",
     d: "Resilience", e: "State-mode gap", f: "GAR richness"
   };
-  return ["a","b","c","d","e","f"].map(lvl => {
+  // T14 — render the `_aborted` marker at the top if present so the user
+  // immediately sees that the verdicts below are partial.
+  let abortedBanner = "";
+  const ab = verdicts["_aborted"];
+  if (ab) {
+    abortedBanner = `
+      <div class="verdict-card aborted verdict-aborted">
+        <strong>⏹ Trial aborted</strong> — <em>${escapeHtml(ab.verdict || "aborted")}</em><br>
+        <small>${escapeHtml(ab.reason || "abort requested by user")}</small>
+        <br><small style="color:#999;">Verdicts below are computed on the turns that completed before abort — treat as partial.</small>
+      </div>
+    `;
+  }
+  const verr = verdicts["_verdict_error"];
+  if (verr) {
+    abortedBanner += `
+      <div class="verdict-card error">
+        <strong>⚠ Verdict computation error</strong> — <em>${escapeHtml(verr.verdict || "error")}</em><br>
+        <small>${escapeHtml(verr.reason || "")}</small>
+      </div>
+    `;
+  }
+  return abortedBanner + ["a","b","c","d","e","f"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     return `
       <div class="verdict-card ${v.verdict}">

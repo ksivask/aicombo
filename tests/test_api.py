@@ -217,6 +217,64 @@ def test_clone_baseline_404_on_missing_row(tmp_data_dir, reset_api_state):
         assert r.status_code == 404
 
 
+# ── Plan B T14 — abort running trial ──
+
+def test_abort_404_when_trial_does_not_exist(tmp_data_dir, reset_api_state):
+    """POST /trials/{id}/abort returns 404 when no event registered AND
+    no trial JSON on disk (genuinely unknown trial)."""
+    with TestClient(app) as client:
+        r = client.post("/trials/does-not-exist/abort")
+        assert r.status_code == 404
+
+
+def test_abort_returns_ok_false_when_trial_already_finished(tmp_data_dir, reset_api_state):
+    """Abort on a completed trial is a no-op: returns ok=false with the
+    trial's current status so the UI can reconcile rather than alerting."""
+    import api as api_mod
+    from trials import Trial, TrialConfig, TurnPlan
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[])
+    trial = Trial(
+        trial_id="already-done", config=cfg, turn_plan=plan, status="pass",
+    )
+    api_mod.STORE.save(trial)
+
+    with TestClient(app) as client:
+        r = client.post("/trials/already-done/abort")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is False
+        assert body["status"] == "pass"
+        assert body["trial_id"] == "already-done"
+
+
+def test_abort_sets_event_for_running_trial(tmp_data_dir, reset_api_state):
+    """POST /trials/{id}/abort on a running trial sets the abort event
+    and returns ok=true."""
+    import asyncio
+    import api as api_mod
+
+    # Simulate the state POST /trials/{row_id}/run leaves behind: event in
+    # the registry. We don't need a trial JSON — the endpoint short-circuits
+    # on event presence before hitting the store.
+    api_mod.ABORT_EVENTS["running-trial"] = asyncio.Event()
+    try:
+        with TestClient(app) as client:
+            r = client.post("/trials/running-trial/abort")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["ok"] is True
+        assert body["abort_requested"] is True
+        assert body["trial_id"] == "running-trial"
+        assert api_mod.ABORT_EVENTS["running-trial"].is_set()
+    finally:
+        api_mod.ABORT_EVENTS.pop("running-trial", None)
+
+
 def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state):
     with TestClient(app) as client:
         r1 = client.post("/matrix/row", json={

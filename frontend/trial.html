@@ -11,6 +11,9 @@
       <a href="/" class="back-link" title="back to matrix">← matrix</a>
       <h1 id="trial-title">Loading…</h1>
       <span id="trial-status-pill" class="status-pill idle">idle</span>
+      <!-- T14 — abort button: hidden by default; trial.js reveals when status=running -->
+      <button id="trial-abort-btn" class="btn-abort" style="display:none;"
+        title="stop trial (current turn finishes, next turns skipped)">⏹ Stop</button>
     </div>
     <div id="row-summary" class="row-summary"></div>
   </header>

@@ -15,6 +15,7 @@ async def run_trial(
     store: TrialStore,
     adapter_client,
     audit_entries_provider: Callable[[], list[AuditEntry]],
+    abort_event: "asyncio.Event | None" = None,
 ) -> None:
     """Execute a trial's turn plan end to end.
 
@@ -22,6 +23,14 @@ async def run_trial(
     audit_entries_provider returns the list of audit entries captured
     so far (used at verdict time; for production wiring, it's audit_tail's
     subscriber-side buffer).
+
+    T14 — abort_event, when set, causes the runner to stop iterating the
+    turn plan at the TOP of the next loop iteration. The currently-
+    executing turn finishes naturally so no HTTP-mid-call corruption /
+    framework state poisoning occurs. The trial transitions to
+    status=aborted; verdicts are computed best-effort on whatever turns
+    completed and stamped with an `_aborted` marker so the UI can render
+    "aborted before turn N" alongside the partial verdicts.
     """
     trial = store.load(trial_id)
     trial.started_at = datetime.now(timezone.utc).isoformat()
@@ -32,6 +41,38 @@ async def run_trial(
         await adapter_client.create_trial(trial_id=trial_id, config=trial.config)
 
         for idx, turn_spec in enumerate(trial.turn_plan.turns):
+            # T14 — cooperative abort check at the top of every turn. We
+            # intentionally skip checking mid-turn: abandoning an HTTP call
+            # in flight would leave the framework adapter in an undefined
+            # state. The invariant "every persisted turn is a complete turn"
+            # matters for verdict computation.
+            if abort_event is not None and abort_event.is_set():
+                trial = store.load(trial_id)
+                trial.status = "aborted"
+                trial.finished_at = datetime.now(timezone.utc).isoformat()
+                # Best-effort partial verdicts — if compute_verdicts raises
+                # mid-abort we still persist status=aborted.
+                try:
+                    partial = compute_verdicts(trial)
+                    trial.verdicts = {
+                        k: {"verdict": v.verdict, "reason": v.reason}
+                        for k, v in partial.items()
+                    }
+                except Exception as ve:
+                    trial.verdicts = trial.verdicts or {}
+                    trial.verdicts["_verdict_error"] = {
+                        "verdict": "error",
+                        "reason": f"compute_verdicts raised during abort: {ve}",
+                    }
+                trial.verdicts["_aborted"] = {
+                    "verdict": "aborted",
+                    "reason": (
+                        f"aborted before turn {idx} of "
+                        f"{len(trial.turn_plan.turns)}"
+                    ),
+                }
+                store.save(trial)
+                return
             kind = turn_spec.get("kind", "user_msg")
             turn_id = f"turn-{idx:03d}-{uuid.uuid4().hex[:8]}"
             turn = Turn(

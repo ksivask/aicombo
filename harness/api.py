@@ -33,6 +33,11 @@ AUDIT_TAIL: AuditTail | None = None
 AUDIT_BUFFER_PER_TRIAL: dict[str, list[AuditEntry]] = defaultdict(list)
 SSE_QUEUES: dict[str, deque] = defaultdict(lambda: deque(maxlen=100))
 
+# Plan B T14 — cooperative abort registry. Populated when a trial starts,
+# set by POST /trials/{id}/abort, checked by runner.run_trial between turns,
+# cleared once the background task completes.
+ABORT_EVENTS: dict[str, asyncio.Event] = {}
+
 
 # ── Matrix persistence (distinct from trial JSON) ──
 
@@ -360,6 +365,10 @@ async def trial_run(row_id: str):
     from adapters_registry import AdapterClient
     adapter = AdapterClient(framework=cfg.framework)
 
+    # T14 — register cooperative-abort event BEFORE spawning so a racing
+    # POST /abort can find it even if it arrives before create_task yields.
+    ABORT_EVENTS[trial_id] = asyncio.Event()
+
     # Run in background (pass row_id so we can update the matrix on completion)
     asyncio.create_task(_run_trial_bg(trial_id, adapter, row_id=row_id, started_mono=trial_started_mono))
 
@@ -393,7 +402,16 @@ async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, start
         store=STORE,
         adapter_client=adapter,
         audit_entries_provider=audit_provider,
+        # T14 — may be None if the event was already cleaned up by a sibling
+        # path, but in practice it's registered in trial_run before this bg
+        # task is scheduled.
+        abort_event=ABORT_EVENTS.get(trial_id),
     )
+
+    # T14 — release the abort event once the trial is fully done (any terminal
+    # status). A second /abort hit after this point will now short-circuit to
+    # the "already finished" branch instead of silently setting a stale event.
+    ABORT_EVENTS.pop(trial_id, None)
 
     if AUDIT_TAIL is not None:
         AUDIT_TAIL.unsubscribe(trial_id)
@@ -423,6 +441,40 @@ def trial_get(trial_id: str):
         return _to_jsonable(trial)
     except FileNotFoundError:
         raise HTTPException(404, "trial not found")
+
+
+@router.post("/trials/{trial_id}/abort")
+async def trial_abort(trial_id: str):
+    """Request cooperative abort of a running trial.
+
+    The currently-executing turn finishes naturally (so no HTTP-mid-call
+    corruption / framework state poisoning); subsequent turns are skipped.
+    The trial transitions to status=aborted and verdicts compute on whatever
+    turns completed.
+
+    Returns:
+      - 404 when the trial does not exist (no event registered AND no trial
+        JSON on disk).
+      - {ok: False, reason, status} when the trial already finished (no
+        event in the registry, but the trial JSON exists with a terminal
+        status). Idempotent — a second abort on a completed trial is a
+        no-op rather than an error.
+      - {ok: True, abort_requested: True, trial_id} on success.
+    """
+    ev = ABORT_EVENTS.get(trial_id)
+    if ev is None:
+        try:
+            trial = STORE.load(trial_id)
+        except FileNotFoundError:
+            raise HTTPException(404, "trial not found")
+        return {
+            "ok": False,
+            "reason": f"trial is not running (status={trial.status})",
+            "status": trial.status,
+            "trial_id": trial_id,
+        }
+    ev.set()
+    return {"ok": True, "abort_requested": True, "trial_id": trial_id}
 
 
 @router.get("/trials/{trial_id}/stream")

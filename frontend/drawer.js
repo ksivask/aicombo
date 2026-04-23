@@ -88,6 +88,16 @@ export async function openTurnPlanDrawer(row) {
     ? '<span class="plan-executed-badge" title="row has a saved override">override</span>'
     : '<span class="plan-pending-badge" title="no override; runner will use default_turn_plan(row)">default</span>';
 
+  // T14 — if the row's latest trial is running, surface a Stop button right
+  // in the drawer header so the user doesn't have to close the drawer to
+  // abort. Disabled gracefully when last_trial_id is absent.
+  const runningHint = row.status === "running" && row.last_trial_id
+    ? `<button id="drawer-abort-btn" class="btn-abort"
+         data-trial-id="${row.last_trial_id}"
+         title="stop trial (current turn finishes, next turns skipped)"
+       >⏹ Stop</button>`
+    : "";
+
   // T13 — surface baseline-pair pointer so the user can flip between
   // the governed row and its no-governance twin.
   const baselineHint = row.baseline_of
@@ -102,7 +112,7 @@ export async function openTurnPlanDrawer(row) {
     <div class="drawer-section">
       <div class="drawer-section-header">
         <h3 style="margin:0;">Row config</h3>
-        <div>${overrideBadge}</div>
+        <div>${overrideBadge}${runningHint}</div>
       </div>
       <div class="row-summary">${renderChips(row)}</div>
       ${baselineHint}
@@ -216,6 +226,29 @@ export async function openTurnPlanDrawer(row) {
       setStatus("error", `Save failed: ${e.message}`);
     }
   };
+
+  // T14 — drawer-header Stop button (only rendered while row is running).
+  const abortBtn = document.getElementById("drawer-abort-btn");
+  if (abortBtn) {
+    abortBtn.onclick = async () => {
+      const tid = abortBtn.dataset.trialId;
+      if (!tid) return;
+      if (!confirm(`Abort trial ${tid}?\n\nThe currently-executing turn will finish; subsequent turns are skipped.`)) return;
+      try {
+        const r = await fetch(`${API_BASE}/trials/${tid}/abort`, {method: "POST"});
+        const j = await r.json();
+        if (j.ok) {
+          setStatus("ok", `Abort requested for ${tid}`);
+          abortBtn.disabled = true;
+        } else {
+          setStatus("info", `Trial already finished: status=${j.status || "?"}`);
+          abortBtn.disabled = true;
+        }
+      } catch (e) {
+        setStatus("error", `Abort failed: ${e.message}`);
+      }
+    };
+  }
 
   document.getElementById("tp-reset-btn").onclick = async () => {
     if (!confirm("Clear override and revert to default template?")) return;

@@ -134,6 +134,123 @@ async def test_runner_drives_force_state_ref_turn(tmp_data_dir):
 
 
 @pytest.mark.asyncio
+async def test_runner_honors_abort_event(tmp_data_dir):
+    """Plan B T14 — when abort_event is set before the loop starts, runner
+    skips every turn, transitions trial.status to 'aborted', and stamps
+    verdicts with an _aborted marker.
+    """
+    import asyncio
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": f"hi {i}"} for i in range(5)
+    ])
+    trial = Trial(
+        trial_id="trial-abort-pre", config=cfg, turn_plan=plan, status="running",
+    )
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    # Adapter: create_trial / delete_trial must still work (abort happens
+    # AFTER create_trial); drive_turn must NEVER be called because abort
+    # is already set at the top of the first iteration.
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(
+        side_effect=AssertionError("adapter.drive_turn called after abort"),
+    )
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    ev = asyncio.Event()
+    ev.set()
+
+    await run_trial(
+        trial_id="trial-abort-pre",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+        abort_event=ev,
+    )
+
+    loaded = store.load("trial-abort-pre")
+    assert loaded.status == "aborted"
+    assert loaded.verdicts.get("_aborted", {}).get("verdict") == "aborted"
+    assert "before turn 0" in loaded.verdicts["_aborted"]["reason"]
+    # drive_turn was NEVER called
+    adapter.drive_turn.assert_not_called()
+    # create_trial DID run (we abort between turns, not before the adapter
+    # session is established) and delete_trial ran via the finally block.
+    adapter.create_trial.assert_called_once()
+    adapter.delete_trial.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_runner_abort_mid_plan_preserves_completed_turns(tmp_data_dir):
+    """Plan B T14 — abort set AFTER the first turn completes: turn 0 is
+    persisted, turn 1 is skipped (never reached drive_turn), trial is
+    aborted. Proves 'every persisted turn is a complete turn' invariant.
+    """
+    import asyncio
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": "first"},
+        {"kind": "user_msg", "content": "second"},
+        {"kind": "user_msg", "content": "third"},
+    ])
+    trial = Trial(
+        trial_id="trial-abort-mid", config=cfg, turn_plan=plan, status="running",
+    )
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    ev = asyncio.Event()
+
+    # First drive_turn call: legit response, set the abort event
+    # so the SECOND iteration trips the check at loop top.
+    async def _first_then_abort(**kw):
+        ev.set()
+        return {
+            "turn_id": "turn-0",
+            "assistant_msg": "hi!",
+            "tool_calls": [],
+            "request_captured": {"body": {}},
+            "response_captured": {
+                "status": 200,
+                "body": {"choices": [{"message": {"content": "hi!"}}]},
+            },
+        }
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(side_effect=_first_then_abort)
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    await run_trial(
+        trial_id="trial-abort-mid",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+        abort_event=ev,
+    )
+
+    loaded = store.load("trial-abort-mid")
+    assert loaded.status == "aborted"
+    # Exactly one turn persisted
+    assert len(loaded.turns) == 1, [t.turn_id for t in loaded.turns]
+    # drive_turn called exactly once (never retried after abort)
+    assert adapter.drive_turn.call_count == 1
+    # _aborted reason names the turn we stopped BEFORE
+    assert "before turn 1" in loaded.verdicts["_aborted"]["reason"]
+
+
+@pytest.mark.asyncio
 async def test_runner_handles_adapter_error(tmp_data_dir):
     """Adapter raises → trial marked error."""
     cfg = TrialConfig(

@@ -238,7 +238,12 @@ function buildColumnDefs() {
 
         let runBtn;
         if (running) {
-          runBtn = `<button class="btn-pause" data-row-id="${row.row_id}" disabled title="abort not implemented in Plan A">⏸</button>`;
+          // T14 — cooperative abort. Disabled when the row has no trial_id
+          // yet (transient window between run-click and POST /trials/run
+          // response); clickable once we know which trial to abort.
+          const tid = row.last_trial_id || "";
+          const disabledAttr = tid ? "" : "disabled";
+          runBtn = `<button class="btn-abort" data-trial-id="${tid}" ${disabledAttr} title="stop trial (current turn finishes, next turns skipped)">⏹</button>`;
         } else if (!runnable) {
           runBtn = `<button class="btn-run" data-row-id="${row.row_id}" disabled title="row is not runnable — ${invalidReason(row)}">▶</button>`;
         } else {
@@ -341,6 +346,47 @@ async function onCellClicked(event) {
   } else if (target.classList.contains("btn-baseline")) {
     const rowId = target.dataset.rowId;
     await cloneBaseline(rowId);
+  } else if (target.classList.contains("btn-abort")) {
+    const trialId = target.dataset.trialId;
+    await abortTrial(trialId);
+  }
+}
+
+async function abortTrial(trialId) {
+  // T14 — cooperative abort. We don't kill the trial mid-turn (would
+  // corrupt framework/HTTP state); the backend runner checks a flag
+  // between turns and transitions to status=aborted.
+  if (!trialId) {
+    showToast("No trial id on this row yet — try again in a moment.");
+    return;
+  }
+  if (!confirm(`Abort trial ${trialId}?\n\nThe currently-executing turn will finish; subsequent turns are skipped.`)) {
+    return;
+  }
+  try {
+    const r = await fetch(`${API_BASE}/trials/${trialId}/abort`, {method: "POST"});
+    if (!r.ok) {
+      showToast(`Abort failed: HTTP ${r.status}`);
+      return;
+    }
+    const j = await r.json();
+    if (j.ok) {
+      showToast(`Abort requested for ${trialId}`);
+    } else {
+      // Already finished — refresh so the stale "running" pill updates.
+      showToast(`Trial already finished (status=${j.status}). Refreshing row.`);
+      const rows = await fetchMatrix();
+      const row = rows.find(r => r.last_trial_id === trialId);
+      if (row && gridApi) {
+        const node = gridApi.getRowNode(row.row_id);
+        if (node) {
+          node.setDataValue("status", row.status);
+          gridApi.refreshCells({rowNodes: [node], force: true});
+        }
+      }
+    }
+  } catch (e) {
+    showToast(`Abort request failed: ${e.message}`);
   }
 }
 
