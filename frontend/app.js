@@ -324,9 +324,15 @@ async function runRow(rowId) {
 }
 
 async function deleteRow(rowId) {
-  if (!confirm("Delete this row?")) return;
-  await fetch(`${API_BASE}/matrix/row/${rowId}`, {method: "DELETE"});
-  gridApi.applyTransaction({remove: [{row_id: rowId}]});
+  // Optimistic delete: no browser confirm() (users can block it permanently).
+  // The matrix row JSON file is the only state lost; trivial to re-add.
+  const r = await fetch(`${API_BASE}/matrix/row/${rowId}`, {method: "DELETE"});
+  if (r.ok) {
+    gridApi.applyTransaction({remove: [{row_id: rowId}]});
+    showToast(`Row ${rowId} deleted`);
+  } else {
+    showToast(`Delete failed: ${r.status}`);
+  }
 }
 
 document.getElementById("btn-add-row").addEventListener("click", async () => {
