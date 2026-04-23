@@ -335,8 +335,77 @@ def verdict_f_gar_richness(trial: Trial) -> Verdict:
         f"For richer GAR, try a stricter schema-follower: chatgpt, llama3.1:8b.")
 
 
+def _cids_for_turn_window(trial: Trial, turn) -> set[str]:
+    """Return the set of cids observable for a turn.
+
+    Prefers header-demux (audit entries carrying matching turn_id) when that
+    channel is available on the trial; falls back to a time-window scan using
+    the turn's [started_at, finished_at] envelope.
+    """
+    # Header-demux path: entries tagged directly with this turn_id.
+    direct = [e.cid for e in trial.audit_entries
+              if e.turn_id == turn.turn_id and e.cid]
+    if direct:
+        return set(direct)
+
+    # Time-window path: entries whose captured_at lies within turn window.
+    if not turn.started_at or not turn.finished_at:
+        return set()
+    win_start, win_end = turn.started_at, turn.finished_at
+    cids: set[str] = set()
+    for e in trial.audit_entries:
+        if not e.cid or not e.captured_at:
+            continue
+        # ISO-8601 strings are lexicographically orderable when uniformly
+        # formatted, which is the format Harness writes.
+        if win_start <= e.captured_at <= win_end:
+            cids.add(e.cid)
+    return cids
+
+
+def verdict_c_continuity(trial: Trial) -> Verdict:
+    """(c) multi-turn continuity — CID preserved across consecutive turns.
+
+    Per design doc §7.4: framework correctly propagates the per-turn CID
+    across turn boundaries when its conversation history survives. A break
+    means the framework dropped the marker (e.g. state=off compaction) and
+    AGW re-minted a fresh CID on the next turn.
+    """
+    user_turns = _user_msg_turns(trial)
+    if len(user_turns) < 2:
+        return Verdict("na", "needs ≥2 user_msg turns for continuity check")
+
+    cids_per_turn: list[set[str]] = [
+        _cids_for_turn_window(trial, t) for t in user_turns
+    ]
+
+    # Keep only turns that actually have at least one cid-bearing audit entry.
+    indexed = [(i, cids) for i, cids in enumerate(cids_per_turn) if cids]
+    if len(indexed) < 2:
+        return Verdict("error",
+            f"only {len(indexed)} turn(s) have audit-bearing CIDs (need ≥2)")
+
+    # Every consecutive indexed pair must share at least one cid.
+    breaks: list[str] = []
+    for (i_a, cids_a), (i_b, cids_b) in zip(indexed, indexed[1:]):
+        if not (cids_a & cids_b):
+            breaks.append(
+                f"turn {i_a} cids {sorted(cids_a)} ↔ turn {i_b} cids {sorted(cids_b)}"
+            )
+
+    if breaks:
+        return Verdict("fail",
+            f"CID continuity broken across {len(breaks)} turn boundary(ies): "
+            + " | ".join(breaks))
+
+    cids_overall: set[str] = set().union(*[cs for _, cs in indexed])
+    return Verdict("pass",
+        f"CID preserved across {len(indexed)} consecutive turns "
+        f"(unique CIDs: {sorted(cids_overall)})")
+
+
 def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f} verdicts. Plan A computes a+b+f; c/d/e na."""
+    """Return {a, b, c, d, e, f} verdicts. Plan A computes a+b+f; d/e na."""
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
         return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
@@ -346,7 +415,7 @@ def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
     return {
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
-        "c": Verdict("na", "deferred to Plan B"),
+        "c": verdict_c_continuity(trial),
         "d": Verdict("na", "deferred to Plan B"),
         "e": Verdict("na", "deferred to Plan B"),
         "f": verdict_f_gar_richness(trial),

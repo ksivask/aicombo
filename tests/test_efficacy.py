@@ -111,8 +111,12 @@ def test_direct_mode_skips_all_verdicts():
         assert v[lvl].verdict == "na"
 
 
-def test_plan_b_verdicts_cde_return_na():
-    """Plan A reports c/d/e as na with reason 'deferred to Plan B'."""
+def test_plan_b_verdicts_de_return_na():
+    """Plan A/B (through T9): d/e still return na with 'deferred to Plan B'.
+
+    Verdict (c) is implemented as of T9 — with only 1 turn, it returns na
+    with a different reason (needs ≥2 turns for continuity), still within spec.
+    """
     turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="llm_request",
@@ -120,9 +124,12 @@ def test_plan_b_verdicts_cde_return_na():
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
-    for lvl in ("c", "d", "e"):
+    for lvl in ("d", "e"):
         assert v[lvl].verdict == "na"
         assert "plan b" in v[lvl].reason.lower() or "deferred" in v[lvl].reason.lower()
+    # (c) should be na for a 1-turn trial (needs ≥2 turns).
+    assert v["c"].verdict == "na"
+    assert "≥2" in v["c"].reason or "user_msg turns" in v["c"].reason
 
 
 # ── Verdict (f) GAR richness tests ─────────────────────────────────────
@@ -190,3 +197,95 @@ def test_verdict_f_na_when_no_tool_calls():
     v = compute_verdicts(trial)
     assert v["f"].verdict == "na", v["f"].reason
     assert "no tool" in v["f"].reason.lower()
+
+
+# ── Verdict (c) multi-turn continuity tests ────────────────────────────
+
+def test_verdict_c_pass_when_cid_preserved_across_3_turns():
+    """All 3 user_msg turns share the same cid → continuity pass."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+        Turn(turn_id="t2", turn_idx=2, kind="user_msg",
+             started_at="2026-04-23T10:00:20", finished_at="2026-04-23T10:00:25"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc123def456", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc123def456", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc123def456", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:22"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "pass", v["c"].reason
+
+
+def test_verdict_c_fail_when_cid_changes_between_turns():
+    """Turn 0 has cid_X, Turn 1 has cid_Y → continuity broken."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "fail", v["c"].reason
+
+
+def test_verdict_c_na_when_only_one_turn():
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, [])
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "na"
+
+
+def test_verdict_c_error_when_audit_missing_for_some_turns():
+    """If audit doesn't have cid-bearing entries for ≥2 turns → error (or fail)."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-23T10:00:00", finished_at="2026-04-23T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-23T10:00:10", finished_at="2026-04-23T10:00:15"),
+    ]
+    # only one audit entry covers turn 0; turn 1 has nothing in window
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaa", backend="ollama", raw={},
+                   captured_at="2026-04-23T10:00:02"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict in ("error", "fail"), v["c"].reason
+
+
+def test_verdict_c_pass_with_header_demux():
+    """If audit entries carry turn_id (header demux available), use that path."""
+    turns = [
+        Turn(turn_id="turn-A", turn_idx=0, kind="user_msg"),
+        Turn(turn_id="turn-B", turn_idx=1, kind="user_msg"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id="turn-A", phase="llm_request",
+                   cid="ib_xyz", backend="ollama", raw={}),
+        AuditEntry(trial_id="t", turn_id="turn-B", phase="llm_request",
+                   cid="ib_xyz", backend="ollama", raw={}),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "pass"
