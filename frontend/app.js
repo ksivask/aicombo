@@ -50,6 +50,23 @@ function providerOptions() {
   return providers.map(p => p.id);
 }
 
+// Client-side mirror of harness/validator.py::API_TO_PROVIDERS.
+// Filters the LLM dropdown so users only see compatible providers
+// for the row's current API.
+const API_TO_PROVIDERS = {
+  "chat": ["ollama", "mock", "chatgpt", "gemini"],
+  "responses": ["chatgpt"],
+  "responses+conv": ["chatgpt"],
+  "messages": ["claude"],
+};
+
+function llmOptionsForRow(row) {
+  const allowed = API_TO_PROVIDERS[row?.api] || providerOptions();
+  // Always keep NONE at the top (direct-MCP mode — valid with any api since
+  // LLM is ignored in that case).
+  return ["NONE", ...allowed];
+}
+
 function buildColumnDefs() {
   return [
     {headerName: "#", valueGetter: "node.rowIndex + 1", width: 60, pinned: "left"},
@@ -97,12 +114,30 @@ function buildColumnDefs() {
     {
       headerName: "LLM", field: "llm", editable: true,
       cellEditor: "agSelectCellEditor",
-      cellEditorParams: () => ({values: providerOptions()}),
+      // Filter by current API — claude doesn't appear when api=chat,
+      // ollama doesn't appear when api=responses, etc.
+      cellEditorParams: params => ({values: llmOptionsForRow(params.data)}),
       cellStyle: params => {
+        const row = params.data || {};
+        const allowed = API_TO_PROVIDERS[row.api] || [];
         const provider = providers.find(p => p.id === params.value);
-        return provider && !provider.available ? {color: "#999", textDecoration: "line-through"} : null;
+        // Red/strikethrough: LLM not compatible with current API (user needs to change)
+        if (params.value !== "NONE" && !allowed.includes(params.value)) {
+          return {color: "#c62828", textDecoration: "line-through", background: "#ffebee"};
+        }
+        // Grey/strikethrough: LLM compatible with API but no API key set
+        if (provider && !provider.available) {
+          return {color: "#999", textDecoration: "line-through"};
+        }
+        return null;
       },
       tooltipValueGetter: params => {
+        const row = params.data || {};
+        const allowed = API_TO_PROVIDERS[row.api] || [];
+        if (params.value !== "NONE" && !allowed.includes(params.value)) {
+          return `api=${row.api} does not support llm=${params.value}. ` +
+                 `Supported: ${allowed.join(", ")}`;
+        }
         const provider = providers.find(p => p.id === params.value);
         return provider && !provider.available ? provider.unavailable_reason : null;
       },
@@ -210,8 +245,9 @@ async function onCellValueChanged(event) {
       event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
     }
     if (colId === "api") {
-      // State editability depends on api too
-      gridApi.refreshCells({rowNodes: [event.api.getRowNode(row.row_id)], columns: ["state"], force: true});
+      // State editability + LLM options both depend on api → redraw the row
+      // so cellStyle + cellEditorParams re-evaluate.
+      event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
     }
     // Persist
     await fetch(`${API_BASE}/matrix/row/${row.row_id}`, {

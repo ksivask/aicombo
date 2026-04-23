@@ -10,8 +10,17 @@ API_VALID_STATE = {
     "messages": {"valid": [False], "forced": False, "disabled": True},
 }
 
+# API ↔ provider compatibility matrix.
+#  - chat:           ollama, chatgpt, gemini    (real chat-completions providers)
+#                    + mock (synthetic, for multi-choice n>1 testing)
+#  - responses:      chatgpt only               (OpenAI-only API)
+#  - responses+conv: chatgpt only               (OpenAI-only API + previous_response_id)
+#  - messages:       claude only                (Anthropic Messages API)
+# Note: claude is INTENTIONALLY excluded from chat — Anthropic does not expose
+# an OpenAI-compat chat-completions endpoint. mock is included as a chat
+# provider since it implements the OpenAI shape for testing only.
 API_TO_PROVIDERS = {
-    "chat": ["ollama", "mock", "claude", "chatgpt", "gemini"],
+    "chat": ["ollama", "mock", "chatgpt", "gemini"],
     "responses": ["chatgpt"],
     "responses+conv": ["chatgpt"],
     "messages": ["claude"],
