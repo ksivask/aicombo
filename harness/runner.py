@@ -179,9 +179,10 @@ async def run_trial(
                             "reason": f"force_state_ref turn failed: {e}",
                         }
             else:
-                # Remaining kinds (inject_ambient_cid) land in future tasks.
-                # Mark as no-op rather than error so templates carrying them
-                # don't block trial completion.
+                # Catch-all: any unknown / deferred kind (e.g. the
+                # design-doc-only `inject_ambient_cid`) lands here so the
+                # trial records an explicit error rather than silently
+                # succeeding. Implement new kinds above this branch.
                 turn.error = {"reason": f"turn kind {kind!r} not implemented"}
 
             turn.finished_at = datetime.now(timezone.utc).isoformat()

@@ -136,7 +136,11 @@ Full API reference: `docs/design.md` §2.1 + §4.
 | `user_msg` | Single user message, adapter handles agent loop if MCP present |
 | `compact` | Simulates history truncation between turns (drop_half / drop_tool_calls / summarize) |
 | `force_state_ref` | Overrides next turn's `previous_response_id` (exercises verdict e) |
-| `inject_ambient_cid` | Pre-seeds a CID into framework state |
+
+> `inject_ambient_cid` appears in `docs/design.md` but is deferred — not
+> implemented in v1. The runner's default branch records
+> `{"reason": "turn kind 'inject_ambient_cid' not implemented"}` if a
+> template carries it.
 
 ## Building AGW image
 
