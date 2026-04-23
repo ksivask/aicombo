@@ -18,6 +18,10 @@ services:
       - AGW_CONTAINER_NAME=agentgateway
       - AGW_ADMIN_URL=http://agentgateway:15000
       - DATA_DIR=/data
+    # Read .env so providers.py can detect API key presence for the UI dropdown.
+    # The harness doesn't USE the keys (adapters do), but it needs them in env
+    # to report availability to the frontend.
+    env_file: [.env]
     volumes:
       - ./data:/data
       - /var/run/docker.sock:/var/run/docker.sock:ro

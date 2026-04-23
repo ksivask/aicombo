@@ -358,7 +358,11 @@ async function runRow(rowId) {
 
   // Update row: status=running, last_trial_id=... (rowNode already bound above)
   rowNode.setDataValue("status", "running");
-  rowNode.setDataValue("last_trial_id", trialId);
+  // last_trial_id is NOT a declared column — AG-Grid setDataValue throws
+  // 'getColDef null' for non-column fields. Write directly to rowNode.data
+  // and refresh the cells that depend on it (Verdicts cell reads it).
+  rowNode.data.last_trial_id = trialId;
+  gridApi.refreshCells({rowNodes: [rowNode], force: true});
 
   // Persist last_trial_id so drawer works after page reload
   await fetch(`${API_BASE}/matrix/row/${rowId}`, {
