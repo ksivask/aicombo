@@ -75,6 +75,105 @@ binds:
                     openAI: {}
                   hostOverride: "mock-llm:8000"
 
+          # ── LLM route: chatgpt (OpenAI) ──
+          #   Used by crewai/pydantic-ai/autogen/llamaindex adapters in Plan B
+          #   for chat completions + Responses API. Adapters supply their own
+          #   OPENAI_API_KEY via Authorization: Bearer <key>; AGW proxies that
+          #   header through to api.openai.com unchanged.
+          - name: llm-chatgpt
+            matches:
+              - path:
+                  pathPrefix: /llm/chatgpt/
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                  header_passthrough: true
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - ai:
+                  name: openai
+                  provider:
+                    openAI: {}
+                  hostOverride: "api.openai.com:443"
+
+          # ── LLM route: claude (Anthropic) ──
+          #   Used by crewai/pydantic-ai adapters for the Messages API.
+          #
+          #   CRITICAL: ai.routes map REQUIRED for Messages-shape dispatch.
+          #   Without it, AGW defaults to the Completions parser and
+          #   governance's messages_shape walker never fires. This is
+          #   the same gotcha fixed in cidgar Harness B commit 9d7b882e.
+          - name: llm-claude
+            matches:
+              - path:
+                  pathPrefix: /llm/claude/
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /
+              ai:
+                routes:
+                  "/v1/messages": messages
+                  "/v1/messages/count_tokens": anthropicTokenCount
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                  header_passthrough: true
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - ai:
+                  name: anthropic
+                  provider:
+                    anthropic: {}
+                  hostOverride: "api.anthropic.com:443"
+
+          # ── LLM route: gemini (Google, OpenAI-compat endpoint) ──
+          #   Gemini exposes /v1beta/openai/chat/completions as an OpenAI-
+          #   compatible chat-completions endpoint, so we use provider:
+          #   openAI here (not a separate google provider). Adapters supply
+          #   GOOGLE_API_KEY via Authorization: Bearer <key>.
+          - name: llm-gemini
+            matches:
+              - path:
+                  pathPrefix: /llm/gemini/
+            policies:
+              urlRewrite:
+                path:
+                  prefix: /
+              governance:
+                kind: cid_gar
+                log_level: debug
+                cid:
+                  generator: uuid4_12
+                  header_passthrough: true
+                gar:
+                  schema_required: true
+                channels:
+                  text_marker: true
+                  resource_block: true
+            backends:
+              - ai:
+                  name: gemini
+                  provider:
+                    openAI: {}
+                  hostOverride: "generativelanguage.googleapis.com:443"
+
           # ── MCP route: weather ──
           - name: mcp-weather
             matches:
