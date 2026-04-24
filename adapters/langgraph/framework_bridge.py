@@ -544,23 +544,49 @@ class Trial:
         self._messages.append(HumanMessage(content=user_msg))
 
         # For responses+conv, thread the effective previous_response_id
-        # into the graph invoke config. _forced_prev_id (set by force_state_ref)
-        # wins over _last_response_id when present; it's consumed below.
-        invoke_kwargs: dict[str, Any] = {}
+        # to the outbound OpenAI Responses API request. _forced_prev_id
+        # (set by force_state_ref) wins over _last_response_id when
+        # present; it's consumed below.
+        #
+        # I1 fix: previously this went through
+        # `config={"configurable": {"previous_response_id": X}}` on
+        # graph.ainvoke — but ChatOpenAI doesn't declare
+        # previous_response_id as a configurable field, so that value
+        # was silently dropped before ever reaching the openai SDK.
+        # Additionally, if `use_previous_response_id=True` were enabled
+        # on the ChatOpenAI, langchain-openai's `_get_last_messages`
+        # would walk `messages` backward and auto-compute a value from
+        # the most-recent AIMessage.response_metadata["id"], clobbering
+        # any kwarg we set.
+        #
+        # Fix: rebuild the graph for this single turn with a bound LLM
+        # carrying the forced id as a default kwarg (survives into the
+        # outbound payload), AND strip response_metadata.id from the
+        # message history (shallow-copied) so no auto-compute could
+        # interfere even if a future version of this code re-enables
+        # use_previous_response_id.
+        graph_to_use = self._graph
+        messages_for_invoke = self._messages
         effective_prev: str | None = None
         if api == "responses+conv":
             effective_prev = self._forced_prev_id or self._last_response_id
             if effective_prev:
-                invoke_kwargs["config"] = {
-                    "configurable": {"previous_response_id": effective_prev},
-                }
+                bound_llm = self.llm.bind(previous_response_id=effective_prev)
+                graph_to_use = create_react_agent(
+                    bound_llm, self._mcp_tools or [],
+                )
+                messages_for_invoke = [copy.copy(m) for m in self._messages]
+                for m in messages_for_invoke:
+                    md = getattr(m, "response_metadata", None)
+                    if isinstance(md, dict) and "id" in md:
+                        m.response_metadata = {
+                            k: v for k, v in md.items() if k != "id"
+                        }
 
         # Mark the window for this turn's graph.ainvoke, then invoke.
         self._mark_exchange_start()
         first_request_before = copy.deepcopy(self._last_request)  # may be None
-        result = await self._graph.ainvoke(
-            {"messages": self._messages}, **invoke_kwargs,
-        )
+        result = await graph_to_use.ainvoke({"messages": messages_for_invoke})
 
         # Update conversation history from graph output.
         new_messages = result["messages"][len(self._messages):]

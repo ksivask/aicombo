@@ -636,11 +636,29 @@ class Trial:
             # instance makes the framework auto-thread the most recent
             # response id by default — passing prev_id=<forced> overrides.
             invoke_kwargs: dict[str, Any] = {}
+            messages_for_invoke = self.messages
             if api == "responses+conv" and hop == 0 and self._forced_prev_id:
                 invoke_kwargs["previous_response_id"] = self._forced_prev_id
+                # I1 fix: langchain-openai's `use_previous_response_id=True`
+                # auto-computes previous_response_id by walking `messages`
+                # backward for an AIMessage whose `response_metadata["id"]`
+                # starts with "resp_" — and that auto-computed value
+                # OVERWRITES our kwarg at payload-build time (see
+                # langchain_openai.chat_models.base._get_request_payload:
+                # payload["previous_response_id"] = previous_response_id).
+                # Strip those ids on a shallow-copied message list so the
+                # auto-compute returns None and our forced kwarg survives
+                # to the outbound OpenAI Responses request.
+                messages_for_invoke = [copy.copy(m) for m in self.messages]
+                for m in messages_for_invoke:
+                    md = getattr(m, "response_metadata", None)
+                    if isinstance(md, dict) and "id" in md:
+                        m.response_metadata = {
+                            k: v for k, v in md.items() if k != "id"
+                        }
                 # Consumed — future turns fall back to the natural chain.
                 self._forced_prev_id = None
-            resp = await llm_to_use.ainvoke(self.messages, **invoke_kwargs)
+            resp = await llm_to_use.ainvoke(messages_for_invoke, **invoke_kwargs)
             # Record this LLM hop
             if first_request is None:
                 first_request = copy.deepcopy(self._last_request)

@@ -155,12 +155,20 @@ async def test_build_llm_responses_rejects_non_chatgpt(adapter_env):
 async def test_build_llm_responses_conv_wires_state_chain(adapter_env):
     """api=responses+conv seeds the state chain + threads previous_response_id.
 
-    Walks one turn() through a stubbed graph.ainvoke whose AIMessage carries
-    response_metadata={"id": ...}, confirms _last_response_id + history
-    are populated, then verifies the NEXT ainvoke receives that id via
-    config={"configurable": {"previous_response_id": ...}}.
+    Walks two turns via stubbed graph.ainvoke. After turn 1, the adapter
+    records resp_001 as _last_response_id. On turn 2, the I1 fix rebuilds
+    the graph with an llm bound to previous_response_id=resp_001 so the
+    forced id reaches the outbound Responses API request (the old
+    config.configurable route was silently dropped by ChatOpenAI).
+
+    We patch `framework_bridge.create_react_agent` with a side_effect that
+    returns a fresh MagicMock for EACH call and verify:
+      - turn 1 uses the initially constructed graph (no llm.bind).
+      - turn 2 triggers a second create_react_agent call whose llm arg is
+        a RunnableBinding carrying `previous_response_id=resp_001`.
     """
     from framework_bridge import Trial
+    from langchain_core.runnables import RunnableBinding
 
     fake_ai_1 = MagicMock()
     fake_ai_1.__class__.__name__ = "AIMessage"
@@ -177,14 +185,25 @@ async def test_build_llm_responses_conv_wires_state_chain(adapter_env):
     fake_human = MagicMock()
     fake_human.__class__.__name__ = "HumanMessage"
 
-    fake_graph = MagicMock()
-    # ainvoke is called twice; return different payloads each time.
-    fake_graph.ainvoke = AsyncMock(side_effect=[
-        {"messages": [fake_human, fake_ai_1]},
-        {"messages": [fake_human, fake_ai_1, fake_human, fake_ai_2]},
-    ])
+    graph1 = MagicMock()
+    graph1.ainvoke = AsyncMock(
+        return_value={"messages": [fake_human, fake_ai_1]},
+    )
+    graph2 = MagicMock()
+    graph2.ainvoke = AsyncMock(
+        return_value={"messages": [fake_human, fake_ai_1, fake_human, fake_ai_2]},
+    )
 
-    with patch("framework_bridge.create_react_agent", return_value=fake_graph):
+    build_calls: list[tuple] = []
+
+    def build_side_effect(llm, tools, *a, **kw):
+        build_calls.append((llm, tools))
+        return graph1 if len(build_calls) == 1 else graph2
+
+    with patch(
+        "framework_bridge.create_react_agent",
+        side_effect=build_side_effect,
+    ):
         trial = Trial(
             trial_id="t-rc",
             config=_cfg("responses+conv", "chatgpt"),
@@ -200,20 +219,26 @@ async def test_build_llm_responses_conv_wires_state_chain(adapter_env):
             assert trial._last_response_id == "resp_001"
             assert trial._response_history == ["resp_001"]
 
-            # First ainvoke must NOT have a config (no prev id yet).
-            first_call = fake_graph.ainvoke.call_args_list[0]
-            assert "config" not in first_call.kwargs
+            # Only one graph built so far (constructor path at first turn).
+            assert len(build_calls) == 1
+            graph1.ainvoke.assert_called_once()
 
             out2 = await trial.turn("turn-1", "followup")
             assert out2["_response_id"] == "resp_002"
             assert trial._last_response_id == "resp_002"
             assert trial._response_history == ["resp_001", "resp_002"]
 
-            # Second ainvoke MUST include previous_response_id = resp_001
-            # (the prior turn's id, threaded via config.configurable).
-            second_call = fake_graph.ainvoke.call_args_list[1]
-            cfg = second_call.kwargs.get("config") or {}
-            assert cfg.get("configurable", {}).get("previous_response_id") == "resp_001"
+            # Turn 2 must have rebuilt the graph with a bound llm whose
+            # kwargs include previous_response_id=resp_001. This is the
+            # I1 fix — the old config.configurable route was silently
+            # dropped by ChatOpenAI, so the forced id never landed in
+            # the outbound OpenAI Responses request.
+            assert len(build_calls) == 2
+            bound_llm, _tools = build_calls[1]
+            assert isinstance(bound_llm, RunnableBinding), \
+                f"expected RunnableBinding from llm.bind(...), got {type(bound_llm)!r}"
+            assert bound_llm.kwargs.get("previous_response_id") == "resp_001"
+            graph2.ainvoke.assert_called_once()
         finally:
             await trial.aclose()
 
@@ -263,5 +288,86 @@ async def test_compact_responses_conv_summarize_falls_back_with_note(adapter_env
         assert out["history_len_after"] < before
         assert "note" in out
         assert "summarize" in out["note"]
+    finally:
+        await trial.aclose()
+
+
+# ── I1 regression: force_state_ref must reach the outbound Responses payload ──
+
+@pytest.mark.asyncio
+async def test_force_state_ref_reaches_openai_responses_payload(monkeypatch):
+    """Regression for code-review I1: mirror of the langchain sibling.
+
+    Langgraph's previous approach threaded previous_response_id via
+    `config={"configurable": {"previous_response_id": ...}}` on
+    `graph.ainvoke`, which is silently dropped because ChatOpenAI
+    doesn't declare that as a configurable field. Separately, the
+    same `use_previous_response_id=True` auto-compute from messages
+    clobbering would apply. The fix: strip `response_metadata.id`
+    from the `messages` list before `graph.ainvoke`, and thread the
+    forced id via a bound ChatOpenAI kwarg that survives to the
+    outbound Responses API request.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    from framework_bridge import Trial
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    captured: dict = {}
+
+    async def fake_create(self, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        from openai.types.responses import Response
+        return Response.model_construct(
+            id="resp_NEW",
+            object="response",
+            created_at=0,
+            model="gpt-4o-mini",
+            status="completed",
+            output=[],
+            parallel_tool_calls=False,
+            tool_choice="auto",
+            tools=[],
+            top_p=1.0,
+            temperature=0.3,
+            metadata={},
+            incomplete_details=None,
+            error=None,
+            instructions=None,
+            usage=None,
+        )
+
+    from openai.resources.responses import AsyncResponses
+    monkeypatch.setattr(AsyncResponses, "create", fake_create)
+
+    trial = Trial(trial_id="t-fsr-lg", config=_cfg("responses+conv", "chatgpt"))
+    try:
+        trial._messages = [
+            HumanMessage(content="turn 1 user"),
+            AIMessage(
+                content="turn 1 assistant",
+                response_metadata={"id": "resp_RECENT"},
+            ),
+        ]
+        trial._forced_prev_id = "resp_OLD"
+        # Appending a fresh Human before turn() mirrors how the runner
+        # would enqueue a user message before force_state_ref.
+        trial._messages.append(HumanMessage(content="turn 2 force"))
+
+        try:
+            await trial.turn("t2", "hi")
+        except Exception:
+            pass  # Post-call logic isn't the subject here
+
+        assert captured.get("kwargs") is not None, \
+            "fake_create never invoked — patch did not intercept"
+        got = captured["kwargs"].get("previous_response_id")
+        assert got == "resp_OLD", (
+            f"forced id dropped: got {got!r}; langchain-openai auto-compute "
+            "clobbered our forced previous_response_id, or langgraph's "
+            "`config.configurable.previous_response_id` was silently ignored."
+        )
     finally:
         await trial.aclose()

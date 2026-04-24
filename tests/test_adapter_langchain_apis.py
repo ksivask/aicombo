@@ -211,3 +211,101 @@ async def test_compact_responses_conv_fallbacks_for_other_strategies(langchain_e
         assert trial._response_history[-1] == "resp_003"
     finally:
         await trial.aclose()
+
+
+# ── I1 regression: force_state_ref must reach the outbound Responses payload ──
+
+@pytest.mark.asyncio
+async def test_force_state_ref_reaches_openai_responses_payload(monkeypatch):
+    """Regression for code-review I1: `_forced_prev_id` must land in the
+    outbound OpenAI Responses API request body — NOT get silently
+    overwritten by `use_previous_response_id=True`'s auto-compute which
+    walks `messages` backward for the most-recent AIMessage response id.
+
+    Before the fix, `_get_request_payload` would set
+    `payload["previous_response_id"]` to the newest AIMessage's id
+    (e.g. "resp_RECENT2"), clobbering the forced id we injected via
+    `invoke_kwargs["previous_response_id"]`. The fix strips
+    `response_metadata.id` from in-memory AIMessages when `_forced_prev_id`
+    is set, so the auto-compute returns None and our kwarg survives.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    from framework_bridge import Trial
+    from langchain_core.messages import AIMessage, HumanMessage
+
+    # Intercept the openai SDK call boundary with a fake create()
+    # returning a minimal Response pydantic model (via model_construct
+    # to bypass validation on fields we don't care about).
+    captured: dict = {}
+
+    async def fake_create(self, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        from openai.types.responses import Response
+        return Response.model_construct(
+            id="resp_NEW",
+            object="response",
+            created_at=0,
+            model="gpt-4o-mini",
+            status="completed",
+            output=[],
+            parallel_tool_calls=False,
+            tool_choice="auto",
+            tools=[],
+            top_p=1.0,
+            temperature=0.3,
+            metadata={},
+            incomplete_details=None,
+            error=None,
+            instructions=None,
+            usage=None,
+        )
+
+    # Patch BEFORE Trial() constructs ChatOpenAI — its AsyncOpenAI client
+    # resolves `.responses` lazily via cached_property, so the patched
+    # AsyncResponses.create gets picked up on first use.
+    from openai.resources.responses import AsyncResponses
+    monkeypatch.setattr(AsyncResponses, "create", fake_create)
+
+    trial = Trial(trial_id="t-fsr", config={
+        "framework": "langchain",
+        "api": "responses+conv",
+        "llm": "chatgpt",
+        "stream": False,
+        "state": True,
+        "mcp": "NONE",
+        "routing": "via_agw",
+    })
+    try:
+        # Prime `messages` with prior AIMessages carrying response_metadata.id.
+        # `_get_last_messages` in langchain-openai walks BACKWARD and would
+        # pick up "resp_RECENT2" as the auto-computed previous_response_id,
+        # overwriting our forced "resp_OLD".
+        trial.messages = [
+            HumanMessage(content="turn 1 user"),
+            AIMessage(content="turn 1 assistant", response_metadata={"id": "resp_RECENT"}),
+            HumanMessage(content="turn 2 user"),
+            AIMessage(content="turn 2 assistant", response_metadata={"id": "resp_RECENT2"}),
+        ]
+        trial._forced_prev_id = "resp_OLD"
+
+        # Run the turn — we only care about the payload captured, not the
+        # response post-processing (which may fail on our synthetic Response).
+        try:
+            await trial.turn("t3", "turn 3 force-ref")
+        except Exception:
+            pass  # Post-call logic (metadata parsing) isn't the subject here
+
+        # CRITICAL: the outbound request MUST carry our forced id.
+        assert captured.get("kwargs") is not None, \
+            "fake_create was never called — patch did not intercept"
+        got = captured["kwargs"].get("previous_response_id")
+        assert got == "resp_OLD", (
+            f"forced id dropped by langchain-openai auto-compute: got {got!r}; "
+            "`_get_last_messages` walked messages backward and clobbered "
+            "invoke_kwargs['previous_response_id']"
+        )
+    finally:
+        await trial.aclose()
