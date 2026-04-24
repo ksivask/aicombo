@@ -275,6 +275,69 @@ def test_abort_sets_event_for_running_trial(tmp_data_dir, reset_api_state):
         api_mod.ABORT_EVENTS.pop("running-trial", None)
 
 
+# ── E4 follow-up — POST /trials/{id}/recompute_verdicts ──
+
+def test_recompute_verdicts_404_on_missing_trial(tmp_data_dir, reset_api_state):
+    with TestClient(app) as client:
+        r = client.post("/trials/nonexistent-trial/recompute_verdicts")
+        assert r.status_code == 404
+
+
+def test_recompute_verdicts_updates_persisted_trial(tmp_data_dir, reset_api_state):
+    """Save a trial, call recompute, load back — verdicts refreshed and persisted."""
+    import api as api_mod
+    from trials import Trial, TrialConfig, TurnPlan
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"turn_id": "t0", "turn_idx": 0, "kind": "user_msg", "text": "hi"},
+    ])
+    trial = Trial(
+        trial_id="recomp-test", config=cfg, turn_plan=plan, status="pass",
+        verdicts={"a": {"verdict": "pass", "reason": "stub"}},
+    )
+    api_mod.STORE.save(trial)
+
+    with TestClient(app) as client:
+        r = client.post("/trials/recomp-test/recompute_verdicts")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["trial_id"] == "recomp-test"
+        assert "verdicts" in body
+        # compute_verdicts should produce the full a-f+h keyset for a
+        # via_agw trial, not just the stub 'a' we seeded.
+        assert set(body["verdicts"].keys()) >= {"a", "b", "c", "d", "e", "f", "h"}
+
+    # Reload and confirm persistence
+    reloaded = api_mod.STORE.load("recomp-test")
+    assert reloaded.verdicts == body["verdicts"]
+
+
+def test_recompute_verdicts_is_idempotent(tmp_data_dir, reset_api_state):
+    """Calling twice yields the same result."""
+    import api as api_mod
+    from trials import Trial, TrialConfig, TurnPlan
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[])
+    api_mod.STORE.save(Trial(
+        trial_id="idemp-test", config=cfg, turn_plan=plan, status="pass",
+    ))
+
+    with TestClient(app) as client:
+        r1 = client.post("/trials/idemp-test/recompute_verdicts")
+        r2 = client.post("/trials/idemp-test/recompute_verdicts")
+        assert r1.status_code == 200
+        assert r2.status_code == 200
+        assert r1.json()["verdicts"] == r2.json()["verdicts"]
+
+
 def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state):
     with TestClient(app) as client:
         r1 = client.post("/matrix/row", json={

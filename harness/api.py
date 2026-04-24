@@ -689,6 +689,34 @@ def pairs_diff(row_id: str, path: str = ""):
     }
 
 
+@router.post("/trials/{trial_id}/recompute_verdicts")
+def trial_recompute_verdicts(trial_id: str):
+    """Re-run compute_verdicts on the persisted trial and save back.
+
+    Use case: verdict (h) depends on matrix.json's baseline_of metadata
+    which isn't persisted until AFTER run_trial returns, so the first
+    run of a governed trial records h=na. Running the baseline later
+    doesn't retroactively update the governed trial's frozen verdicts.
+    This endpoint is the explicit 'refresh my verdicts' action.
+
+    Returns the new verdicts dict. Idempotent.
+    """
+    try:
+        trial = STORE.load(trial_id)
+    except FileNotFoundError:
+        raise HTTPException(404, "trial not found")
+
+    verdicts_out = compute_verdicts(trial)
+    # Persist as plain dicts (mirrors runner.run_trial's conversion) so
+    # the on-disk shape matches what the UI and other callers subscript.
+    trial.verdicts = {
+        k: {"verdict": v.verdict, "reason": v.reason}
+        for k, v in verdicts_out.items()
+    }
+    STORE.save(trial)
+    return {"trial_id": trial_id, "verdicts": trial.verdicts}
+
+
 @router.post("/trials/{trial_id}/abort")
 async def trial_abort(trial_id: str):
     """Request cooperative abort of a running trial.

@@ -72,6 +72,7 @@ function renderSummary(pair) {
         <h3>Verdicts</h3>
         <div class="kv">governed: ${verdictPills(s.verdicts.governed)}</div>
         <div class="kv">baseline: ${verdictPills(s.verdicts.baseline)}</div>
+        <div class="kv small">↻ refreshed ${escapeHtml(new Date().toLocaleTimeString())}</div>
       </div>
     </div>
     <div class="pair-classification">
@@ -136,14 +137,43 @@ function renderTurns(pair) {
 
 async function load() {
   try {
-    const r = await fetch(`${API_BASE}/pairs/${encodeURIComponent(rowId)}`);
-    if (!r.ok) {
-      const text = await r.text();
+    // First fetch — learn trial_ids so we know which trials to refresh.
+    const r1 = await fetch(`${API_BASE}/pairs/${encodeURIComponent(rowId)}`);
+    if (!r1.ok) {
+      const text = await r1.text();
       document.getElementById("pair-summary").innerHTML =
-        `<p class="error">HTTP ${r.status}: ${escapeHtml(text)}</p>`;
+        `<p class="error">HTTP ${r1.status}: ${escapeHtml(text)}</p>`;
       return;
     }
-    const pair = await r.json();
+    const pair1 = await r1.json();
+
+    // Recompute both sides' verdicts so the frozen (h) reflects the now-
+    // existing pair. compute_verdicts inside run_trial fires BEFORE the
+    // matrix reconciliation that sets last_trial_id, so the first run of
+    // a governed trial always records h=na. Best-effort — don't block the
+    // render if a recompute fails.
+    const gTid = pair1.governed?.trial_id;
+    const bTid = pair1.baseline?.trial_id;
+    await Promise.all([
+      gTid
+        ? fetch(`${API_BASE}/trials/${encodeURIComponent(gTid)}/recompute_verdicts`,
+                {method: "POST"}).catch(() => {})
+        : Promise.resolve(),
+      bTid
+        ? fetch(`${API_BASE}/trials/${encodeURIComponent(bTid)}/recompute_verdicts`,
+                {method: "POST"}).catch(() => {})
+        : Promise.resolve(),
+    ]);
+
+    // Second fetch — now with fresh frozen verdicts inside governed/baseline.
+    const r2 = await fetch(`${API_BASE}/pairs/${encodeURIComponent(rowId)}`);
+    if (!r2.ok) {
+      // Fall back to the first envelope if the re-fetch fails.
+      renderSummary(pair1);
+      renderTurns(pair1);
+      return;
+    }
+    const pair = await r2.json();
     renderSummary(pair);
     renderTurns(pair);
   } catch (e) {
