@@ -338,6 +338,59 @@ def test_recompute_verdicts_is_idempotent(tmp_data_dir, reset_api_state):
         assert r1.json()["verdicts"] == r2.json()["verdicts"]
 
 
+def test_recompute_verdicts_refuses_running_trial(tmp_data_dir, reset_api_state):
+    """I3 regression: recompute must reject when trial is still running.
+
+    Racing recompute against _run_trial_bg's writes could corrupt the
+    persisted final state (partial read, stale overwrite). ABORT_EVENTS
+    is the canonical "is this trial running" registry.
+    """
+    import asyncio
+    import api as api_mod
+    from trials import Trial, TrialConfig, TurnPlan
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[])
+    trial = Trial(
+        trial_id="running-trial", config=cfg, turn_plan=plan, status="running",
+    )
+    api_mod.STORE.save(trial)
+    api_mod.ABORT_EVENTS["running-trial"] = asyncio.Event()
+
+    try:
+        with TestClient(app) as client:
+            r = client.post("/trials/running-trial/recompute_verdicts")
+        assert r.status_code == 409
+        body = r.json()
+        assert "running" in (body.get("detail") or "").lower()
+    finally:
+        api_mod.ABORT_EVENTS.pop("running-trial", None)
+
+
+def test_recompute_verdicts_accepts_finished_trial(tmp_data_dir, reset_api_state):
+    """Sanity: once the trial is NOT in ABORT_EVENTS, recompute works."""
+    import api as api_mod
+    from trials import Trial, TrialConfig, TurnPlan
+
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[])
+    trial = Trial(
+        trial_id="done-trial", config=cfg, turn_plan=plan, status="pass",
+    )
+    api_mod.STORE.save(trial)
+    # NOT registered in ABORT_EVENTS — trial has completed.
+
+    with TestClient(app) as client:
+        r = client.post("/trials/done-trial/recompute_verdicts")
+    assert r.status_code == 200
+
+
 def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state):
     with TestClient(app) as client:
         r1 = client.post("/matrix/row", json={

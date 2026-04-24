@@ -700,7 +700,18 @@ def trial_recompute_verdicts(trial_id: str):
     This endpoint is the explicit 'refresh my verdicts' action.
 
     Returns the new verdicts dict. Idempotent.
+
+    Gated against running trials (I3 fix) — ABORT_EVENTS membership is
+    the canonical "is this trial running" registry. Racing recompute
+    against _run_trial_bg's writes could read partial JSON, compute
+    verdicts on incomplete data, and silently overwrite the runner's
+    final persisted state.
     """
+    if trial_id in ABORT_EVENTS:
+        raise HTTPException(
+            409,
+            f"trial {trial_id} is still running — recompute after it completes",
+        )
     try:
         trial = STORE.load(trial_id)
     except FileNotFoundError:
