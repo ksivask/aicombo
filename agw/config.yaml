@@ -105,6 +105,8 @@ binds:
                   provider:
                     openAI: {}
                   hostOverride: "api.openai.com:443"
+                  policies:
+                    backendTLS: {}
 
           # ── LLM route: claude (Anthropic) ──
           #   Used by crewai/pydantic-ai adapters for the Messages API.
@@ -142,6 +144,8 @@ binds:
                   provider:
                     anthropic: {}
                   hostOverride: "api.anthropic.com:443"
+                  policies:
+                    backendTLS: {}
 
           # ── LLM route: gemini (Google, OpenAI-compat endpoint) ──
           #   Gemini exposes /v1beta/openai/chat/completions as an OpenAI-
@@ -173,6 +177,8 @@ binds:
                   provider:
                     openAI: {}
                   hostOverride: "generativelanguage.googleapis.com:443"
+                  policies:
+                    backendTLS: {}
 
           # ── MCP route: weather ──
           - name: mcp-weather
