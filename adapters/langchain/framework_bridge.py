@@ -29,7 +29,6 @@ import os
 from typing import Any
 
 import httpx
-from langchain_openai import ChatOpenAI
 
 
 def pick_llm_base_url(routing: str, llm: str) -> str:
@@ -38,12 +37,18 @@ def pick_llm_base_url(routing: str, llm: str) -> str:
         "mock":    "AGW_LLM_BASE_URL_MOCK",
         "chatgpt": "AGW_LLM_BASE_URL_OPENAI",
         "gemini":  "AGW_LLM_BASE_URL_GEMINI",
+        # api=messages uses ChatAnthropic. The env-var name follows the
+        # existing convention used across crewai/pydantic_ai/autogen/llamaindex
+        # adapters + docker-compose (AGW_LLM_BASE_URL_ANTHROPIC), NOT the
+        # _CLAUDE suffix — switching it would break container wiring.
+        "claude":  "AGW_LLM_BASE_URL_ANTHROPIC",
     }
     env_map_direct = {
         "ollama":  "DIRECT_LLM_BASE_URL_OLLAMA",
         "mock":    "DIRECT_LLM_BASE_URL_MOCK",
         "chatgpt": "DIRECT_LLM_BASE_URL_OPENAI",
         "gemini":  "DIRECT_LLM_BASE_URL_GEMINI",
+        "claude":  "DIRECT_LLM_BASE_URL_ANTHROPIC",
     }
     env_map = env_map_via_agw if routing == "via_agw" else env_map_direct
     var = env_map.get(llm)
@@ -64,6 +69,7 @@ _API_KEY_ENV_BY_LLM = {
     "mock":    None,      # local mock-llm; no validation
     "chatgpt": "OPENAI_API_KEY",
     "gemini":  "GOOGLE_API_KEY",
+    "claude":  "ANTHROPIC_API_KEY",
 }
 
 
@@ -101,6 +107,11 @@ def _default_model(llm: str) -> str:
         return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
     if llm == "mock":
         return "mock"
+    if llm == "claude":
+        # Mirrors the crewai adapter's default (claude-3-5-haiku) — fast
+        # + inexpensive for Plan B smoke coverage; operator can override
+        # via DEFAULT_CLAUDE_MODEL.
+        return os.environ.get("DEFAULT_CLAUDE_MODEL", "claude-3-5-haiku-20241022")
     return "unknown"
 
 
@@ -216,15 +227,41 @@ class Trial:
             timeout=httpx.Timeout(120.0),
         )
 
-        self.llm = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,  # cloud providers: real key from env;
-                              # ollama/mock: placeholder (Ollama doesn't validate)
-            model=model,
-            http_async_client=self._http_client,
-            default_headers={},  # populated per-turn in drive_turn
-            temperature=0.3,
-        )
+        # Build the LLM per (api, llm). Historically this adapter was
+        # chat-only; Plan B T5 extends to messages/responses/responses+conv.
+        # If the api+llm combo is rejected (ValueError), release the
+        # already-constructed httpx.AsyncClient to avoid an "unclosed client"
+        # warning at teardown.
+        api = config.get("api", "chat")
+        try:
+            self.llm = self._build_llm(
+                api=api, llm=config["llm"], model=model,
+                base_url=base_url, api_key=api_key,
+            )
+        except Exception:
+            # Best-effort close; httpx.AsyncClient must be aclosed from an
+            # event loop. If no loop is running, just discard — the test
+            # context manager / process teardown will GC it.
+            import asyncio
+            try:
+                loop = asyncio.get_event_loop()
+                if loop.is_running():
+                    # Can't block from within a running loop — rely on GC.
+                    pass
+                else:
+                    loop.run_until_complete(self._http_client.aclose())
+            except Exception:
+                pass
+            raise
+
+        # Responses+conv state chain (mirrors autogen/llamaindex T11 pattern).
+        # Even though langchain-openai's `use_previous_response_id=True`
+        # would thread prev-id automatically for a simple linear chain,
+        # we maintain our own history list so `force_state_ref` can point
+        # the next turn at an earlier response id (verdict-e test path).
+        self._last_response_id: str | None = None
+        self._response_history: list[str] = []
+        self._forced_prev_id: str | None = None
 
         # MCP wiring (lazy — fetched on first turn that needs it).
         self.mcp_url = (
@@ -234,6 +271,128 @@ class Trial:
         )
         self._mcp_tools: list | None = None  # populated by _setup_mcp_tools
         self._llm_with_tools: Any | None = None
+
+    def _build_llm(
+        self,
+        api: str,
+        llm: str,
+        model: str,
+        base_url: str,
+        api_key: str,
+    ) -> Any:
+        """Construct the LangChain LLM object for this (api, llm).
+
+        api=chat
+            → langchain_openai.ChatOpenAI (OpenAI-compat; ollama/chatgpt/
+              gemini/mock providers).
+        api=messages
+            → langchain_anthropic.ChatAnthropic (claude only). The underlying
+              anthropic SDK client is built on first use via a cached_property;
+              we override both `_client` and `_async_client` to inject our
+              hooked httpx clients so wire bytes flow into `_http_exchanges`.
+        api=responses
+            → ChatOpenAI with `use_responses_api=True`. chatgpt only.
+        api=responses+conv
+            → ChatOpenAI with `use_responses_api=True` AND
+              `use_previous_response_id=True`. chatgpt only. We also track
+              `_response_history` ourselves so `force_state_ref` can
+              override the next turn's prev-id.
+        """
+        if api == "chat":
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                http_async_client=self._http_client,
+                default_headers={},   # populated per-turn in turn()
+                temperature=0.3,
+            )
+
+        if api in ("responses", "responses+conv"):
+            if llm != "chatgpt":
+                raise ValueError(
+                    f"api={api} requires llm=chatgpt; got llm={llm}"
+                )
+            from langchain_openai import ChatOpenAI
+            # Verified against langchain-openai 1.1.16: both flags exist
+            # as top-level model fields. `use_previous_response_id=True`
+            # makes ainvoke auto-thread the prior response's id on every
+            # call — we ALSO track it ourselves for force_state_ref.
+            kwargs: dict[str, Any] = {
+                "base_url": base_url,
+                "api_key": api_key,
+                "model": model,
+                "http_async_client": self._http_client,
+                "default_headers": {},
+                "temperature": 0.3,
+                "use_responses_api": True,
+            }
+            if api == "responses+conv":
+                kwargs["use_previous_response_id"] = True
+            return ChatOpenAI(**kwargs)
+
+        if api == "messages":
+            if llm != "claude":
+                raise ValueError(
+                    f"api=messages requires llm=claude; got llm={llm}"
+                )
+            from langchain_anthropic import ChatAnthropic
+            # langchain-anthropic 1.4.x uses `anthropic_api_url` + its
+            # alias `base_url`; same for `anthropic_api_key` / `api_key`.
+            # Temperature surfaced the same as ChatOpenAI. `default_headers`
+            # passthrough is populated per-turn.
+            inst = ChatAnthropic(
+                anthropic_api_url=base_url,
+                anthropic_api_key=api_key,
+                model=model,
+                default_headers={},
+                temperature=0.3,
+            )
+            # ChatAnthropic 1.4.x does NOT expose http_client / http_async_client
+            # as model fields — the SDK clients are created lazily via
+            # `@cached_property` methods named `_client` / `_async_client`.
+            # We override both with instances whose `http_client=` is our
+            # hooked httpx client, before either property is read. This
+            # is the same pattern crewai's adapter uses for the native
+            # anthropic SDK client swap.
+            self._install_anthropic_hooked_clients(
+                inst, base_url=base_url, api_key=api_key,
+            )
+            return inst
+
+        raise ValueError(f"unsupported api: {api}")
+
+    def _install_anthropic_hooked_clients(
+        self,
+        chat_anthropic: Any,
+        base_url: str,
+        api_key: str,
+    ) -> None:
+        """Swap `_client` + `_async_client` on a ChatAnthropic so both use
+        our hooked httpx clients. cached_property reads `inst.__dict__`
+        first, so setting the attributes directly wins over the descriptor.
+        """
+        import anthropic  # provided by langchain-anthropic's deps
+
+        # Sync httpx.Client with the same hook closures as our async one.
+        # ChatAnthropic.ainvoke() only hits the async path, but if any
+        # codepath (e.g. tests) happens to call the sync .invoke(), the
+        # sync client will still work — just without hooks.
+        sync_http_client = httpx.Client(timeout=httpx.Timeout(120.0))
+
+        chat_anthropic._client = anthropic.Client(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=sync_http_client,
+        )
+        chat_anthropic._async_client = anthropic.AsyncClient(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=self._http_client,
+        )
+        # Stash the sync client on the Trial so aclose() can release it.
+        self._anthropic_sync_http = sync_http_client
 
     # ── httpx factory for langchain-mcp-adapters ──
     #
@@ -420,14 +579,27 @@ class Trial:
             HumanMessage, AIMessage, ToolMessage, SystemMessage,
         )
 
+        api = self.config.get("api", "chat")
+
         headers = {
             "X-Harness-Trial-ID": self.trial_id,
             "X-Harness-Turn-ID": turn_id,
         }
         # Replace default_headers so each turn's X-Harness-Turn-ID updates.
         # ChatOpenAI is built with this http_async_client; default_headers
-        # are sent by the OpenAI SDK on every call.
-        self.llm.default_headers = headers
+        # are sent by the OpenAI SDK on every call. ChatAnthropic's
+        # _async_client was overridden in __init__ so we bypass the
+        # framework's own default_headers path — update the SDK client
+        # directly via its `_custom_headers` attr (anthropic SDK internal,
+        # stable across 0.x — see anthropic-sdk-python BaseClient).
+        try:
+            self.llm.default_headers = headers
+        except Exception:
+            pass
+        if api == "messages":
+            async_client = getattr(self.llm, "_async_client", None)
+            if async_client is not None and hasattr(async_client, "_custom_headers"):
+                async_client._custom_headers = dict(headers)
 
         # Reset per-turn capture
         self._last_request = None
@@ -457,7 +629,18 @@ class Trial:
 
         # Iterative agent loop, max MAX_LLM_HOPS LLM hops.
         for hop in range(MAX_LLM_HOPS):
-            resp = await llm_to_use.ainvoke(self.messages)
+            # For api=responses+conv, thread previous_response_id as a
+            # per-call kwarg. On hop > 0 we don't override (the hop
+            # exchange is internal); only the first hop needs the cross-
+            # turn link. `use_previous_response_id=True` on the ChatOpenAI
+            # instance makes the framework auto-thread the most recent
+            # response id by default — passing prev_id=<forced> overrides.
+            invoke_kwargs: dict[str, Any] = {}
+            if api == "responses+conv" and hop == 0 and self._forced_prev_id:
+                invoke_kwargs["previous_response_id"] = self._forced_prev_id
+                # Consumed — future turns fall back to the natural chain.
+                self._forced_prev_id = None
+            resp = await llm_to_use.ainvoke(self.messages, **invoke_kwargs)
             # Record this LLM hop
             if first_request is None:
                 first_request = copy.deepcopy(self._last_request)
@@ -472,6 +655,18 @@ class Trial:
             # AIMessage from the response directly so tool_calls metadata
             # is preserved correctly for the next-hop wire format.
             self.messages.append(resp)
+
+            # Record the response id for responses/responses+conv modes so
+            # force_state_ref + _response_id envelope field work. The id
+            # lives on resp.response_metadata["id"] for the OpenAI
+            # Responses API path in langchain-openai 1.1.x.
+            if api in ("responses", "responses+conv"):
+                md = getattr(resp, "response_metadata", None) or {}
+                rid = md.get("id") or md.get("response_id")
+                if rid:
+                    self._response_history.append(rid)
+                    if api == "responses+conv":
+                        self._last_response_id = rid
 
             if not tool_calls:
                 final_resp = resp
@@ -534,7 +729,7 @@ class Trial:
             "body": {"note": "event hook didn't fire"},
         }
 
-        return {
+        envelope: dict = {
             "turn_id": turn_id,
             "assistant_msg": final_content,
             "tool_calls": last_tool_calls,
@@ -542,6 +737,14 @@ class Trial:
             "response_captured": response_captured,
             "framework_events": self._events,
         }
+        # T11: expose the latest Responses-API response id so the runner
+        # can thread it through a subsequent force_state_ref turn.
+        if api in ("responses", "responses+conv"):
+            envelope["_response_id"] = (
+                self._response_history[-1]
+                if self._response_history else None
+            )
+        return envelope
 
     async def compact(self, strategy: str) -> dict:
         """Plan B T10 — mutate `self.messages` per the requested strategy.
@@ -553,9 +756,34 @@ class Trial:
           * summarize — drop_half + inject a SystemMessage summary marker at
             the head of the kept (non-system) segment.
 
+        For api=responses+conv the framework has no per-message history we
+        own — only the response-id chain. compact trims `_response_history`
+        and re-pegs `_last_response_id` to the surviving tail. All three
+        strategies fall through to drop_half on this path (mirrors
+        autogen/llamaindex responses_direct compact shape).
+
         Returns a small envelope the runner captures as the compact turn's
         response body.
         """
+        api = self.config.get("api", "chat")
+        if api == "responses+conv":
+            before = len(self._response_history)
+            half = before // 2
+            self._response_history = self._response_history[half:]
+            self._last_response_id = (
+                self._response_history[-1] if self._response_history else None
+            )
+            out: dict = {
+                "strategy": strategy,
+                "history_len_before": before,
+                "history_len_after": len(self._response_history),
+                "note": (
+                    "responses+conv has no per-message history — "
+                    "compacted _response_history chain instead"
+                ),
+            }
+            return out
+
         # Lazy import matches the turn() path — tests don't need langchain
         # until a real turn runs.
         from langchain_core.messages import (
@@ -597,6 +825,14 @@ class Trial:
             await self._http_client.aclose()
         except Exception:
             pass
+        # api=messages path installs an extra sync httpx.Client on the
+        # Trial for the anthropic SDK's sync code path. Close it too.
+        sync_http = getattr(self, "_anthropic_sync_http", None)
+        if sync_http is not None:
+            try:
+                sync_http.close()
+            except Exception:
+                pass
 
 
 def _stringify_tool_result(raw: Any) -> str:
