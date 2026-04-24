@@ -377,3 +377,125 @@ button.btn-abort:disabled {
   color: #78350f;
 }
 .verdict-aborted strong { color: #b45309; }
+
+/* ── E4 — pair diff page (pairs.html / pairs.js) ── */
+body.page-pairs {
+  background: #f7f7f7; margin: 0;
+  font-family: system-ui, sans-serif;
+}
+.page-pairs .page-header {
+  background: white; border-bottom: 1px solid #ddd;
+  padding: 12px 20px; display: flex; align-items: center; gap: 16px;
+  flex-wrap: wrap;
+}
+.page-pairs .page-header h1 {
+  margin: 0; font-size: 18px; font-weight: 600; color: #333;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.page-pairs .back-link {
+  color: #555; text-decoration: none; font-size: 14px;
+  padding: 4px 10px; border-radius: 3px;
+}
+.page-pairs .back-link:hover { background: #eee; color: #000; }
+.page-pairs .pair-meta { font-size: 12px; }
+.pair-summary {
+  padding: 16px 20px; background: white;
+  border-bottom: 1px solid #ddd;
+}
+.pair-summary-grid {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  gap: 12px; margin-bottom: 12px;
+}
+.pair-summary-grid .card {
+  padding: 10px 12px; border: 1px solid #ddd; border-radius: 4px;
+  background: #fafafa;
+}
+.pair-summary-grid .card h3 {
+  font-size: 11px; text-transform: uppercase; color: #666;
+  margin: 0 0 6px; letter-spacing: 0.5px; font-weight: 600;
+}
+.pair-summary-grid .kv {
+  font-size: 12px; color: #333; line-height: 1.6;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.pair-summary-grid .kv strong { color: #0277bd; }
+.pair-summary-grid .kv.small { color: #888; font-size: 10px; margin-top: 4px; }
+
+.pair-classification {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.pair-classification .cls-expected,
+.pair-classification .cls-unexpected {
+  padding: 8px 12px; border-radius: 4px; font-size: 12px;
+}
+.pair-classification .cls-expected {
+  background: #e8f5e9; border: 1px solid #a5d6a7; color: #1b5e20;
+}
+.pair-classification .cls-unexpected {
+  background: #fde7e9; border: 1px solid #ef9a9a; color: #7f1d1d;
+}
+.pair-classification h4 { margin: 0 0 6px; font-size: 12px; }
+.pair-classification ul { margin: 0; padding-left: 18px; }
+.pair-classification li { margin: 2px 0; }
+
+.pair-turns { padding: 16px 20px; }
+.pair-turn {
+  margin-bottom: 16px; padding: 12px; border: 1px solid #ddd;
+  border-radius: 4px; background: white;
+}
+.pair-turn h3 {
+  margin: 0 0 10px; font-size: 14px; color: #333;
+  font-family: ui-monospace, "SF Mono", monospace;
+}
+.pair-turn .turn-kind { color: #888; font-weight: normal; font-size: 12px; }
+.turn-delta {
+  display: inline-block; margin-left: 8px; padding: 1px 8px;
+  border-radius: 10px; font-size: 11px;
+  font-family: ui-monospace, monospace; font-weight: 600;
+}
+.turn-delta.pos { background: #fde7e9; color: #7f1d1d; }
+.turn-delta.neg { background: #e8f5e9; color: #1b5e20; }
+
+.diff-cols {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 12px;
+}
+.diff-col { min-width: 0; /* so pre overflow works inside grid */ }
+.diff-col h4 {
+  margin: 0 0 6px; font-size: 12px; color: #555;
+  font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px;
+}
+.diff-col .turn-meta {
+  font-size: 11px; color: #777; margin-bottom: 6px;
+  font-family: ui-monospace, monospace;
+}
+.diff-col pre.trial-json {
+  background: #f5f5f5; padding: 8px; border-radius: 3px;
+  font-size: 11px; max-height: 480px; overflow: auto;
+  white-space: pre-wrap; word-break: break-word; overflow-wrap: anywhere;
+  margin: 0;
+}
+
+/* Pairs action button on matrix row — matches .btn-baseline style */
+button.btn-pairs {
+  background: none; border: none; cursor: pointer; font-size: 14px;
+  padding: 2px 6px; margin: 0 2px;
+}
+button.btn-pairs:hover { background: #e3f2fd; border-radius: 3px; }
+
+/* Verdict pills rendered inline on the summary card */
+.pair-summary-grid .vp {
+  display: inline-block; padding: 1px 6px; border-radius: 3px;
+  font-size: 10px; margin: 1px 2px;
+  font-family: ui-monospace, monospace;
+}
+.pair-summary-grid .vp-pass { background: #d4edda; color: #155724; }
+.pair-summary-grid .vp-fail { background: #f8d7da; color: #721c24; }
+.pair-summary-grid .vp-na   { background: #e2e3e5; color: #495057; }
+.pair-summary-grid .vp-error { background: #f8d7da; color: #721c24; }
+
+.page-pairs .error {
+  color: #721c24; background: #f8d7da;
+  padding: 12px 20px; margin: 12px 20px;
+  border-radius: 3px; border: 1px solid #f5c6cb;
+  font-family: ui-monospace, monospace; font-size: 13px;
+}

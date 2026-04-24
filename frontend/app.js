@@ -62,6 +62,19 @@ function invalidReason(row) {
 let gridApi;
 let providers = [];
 
+// E4 — does any currently-loaded row have baseline_of === rowId? Used to
+// decide whether to render the "🔁 Pairs" action button on a governed row.
+// Grid data is the source of truth (matches what the user sees right now;
+// no extra fetch needed).
+function matrixHasBaselineFor(rowId) {
+  if (!gridApi || !rowId) return false;
+  let found = false;
+  gridApi.forEachNode(n => {
+    if (n.data?.baseline_of === rowId) found = true;
+  });
+  return found;
+}
+
 async function fetchProviders() {
   const r = await fetch(`${API_BASE}/providers`);
   const j = await r.json();
@@ -256,8 +269,16 @@ function buildColumnDefs() {
         if ((row.routing || "via_agw") !== "direct") {
           baselineBtn = `<button class="btn-baseline" data-row-id="${row.row_id}" title="clone as direct/baseline row (no AGW) for A/B comparison">🔀</button>`;
         }
+        // E4 — 🔁 Pairs: open /pairs.html for the governed row. Shown on
+        // baseline rows (they know their pointer) and on governed rows that
+        // currently have a baseline sibling in the grid.
+        let pairsBtn = "";
+        const governedRowId = row.baseline_of || (matrixHasBaselineFor(row.row_id) ? row.row_id : null);
+        if (governedRowId) {
+          pairsBtn = `<button class="btn-pairs" data-pair-row-id="${governedRowId}" title="open governed-vs-baseline diff view">🔁</button>`;
+        }
         const deleteBtn = `<button class="btn-delete" data-row-id="${row.row_id}" title="delete row">✕</button>`;
-        return `${runBtn}${previewBtn}${baselineBtn}${deleteBtn}`;
+        return `${runBtn}${previewBtn}${baselineBtn}${pairsBtn}${deleteBtn}`;
       },
     },
   ];
@@ -349,6 +370,11 @@ async function onCellClicked(event) {
   } else if (target.classList.contains("btn-abort")) {
     const trialId = target.dataset.trialId;
     await abortTrial(trialId);
+  } else if (target.classList.contains("btn-pairs")) {
+    const pairRowId = target.dataset.pairRowId;
+    if (pairRowId) {
+      window.open(`/pairs.html?row_id=${encodeURIComponent(pairRowId)}`, "_blank");
+    }
   }
 }
 
@@ -408,6 +434,12 @@ async function cloneBaseline(rowId) {
   if (rr.ok) {
     const newRow = await rr.json();
     gridApi.applyTransaction({add: [newRow]});
+    // E4 — the newly-added baseline makes the governed row eligible for the
+    // 🔁 Pairs action button. Redraw the source row so Actions re-renders.
+    const srcNode = gridApi.getRowNode(rowId);
+    if (srcNode) {
+      gridApi.refreshCells({rowNodes: [srcNode], force: true});
+    }
     showToast(`Baseline created: ${j.row_id} (← ${j.baseline_of})`);
   } else {
     showToast(`Baseline created but fetch failed: HTTP ${rr.status}`);

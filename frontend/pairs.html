@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>aiplay — pair diff</title>
+  <link rel="stylesheet" href="/style.css">
+  <!-- CodeMirror 5 (CDN, no bundler). Loaded to match index/trial pages; a
+       future follow-up can wire the merge addon for inline highlighting. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.css">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/theme/dracula.css">
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/lib/codemirror.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/codemirror@5.65.16/mode/javascript/javascript.min.js"></script>
+</head>
+<body class="page-pairs">
+  <header class="page-header">
+    <a href="/" class="back-link" title="back to matrix">← matrix</a>
+    <h1 id="pair-title">Pair diff: <span id="pair-row-id">…</span></h1>
+    <div id="pair-meta" class="pair-meta"></div>
+  </header>
+  <section id="pair-summary" class="pair-summary"></section>
+  <section id="pair-turns" class="pair-turns"></section>
+  <script type="module" src="/pairs.js"></script>
+</body>
+</html>
