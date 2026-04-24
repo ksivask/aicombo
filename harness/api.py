@@ -451,6 +451,244 @@ def trial_get(trial_id: str):
         raise HTTPException(404, "trial not found")
 
 
+# ── E4 — pair diff endpoints + helpers ──
+
+def _median(xs: list[float]) -> float:
+    s = sorted(xs)
+    n = len(s)
+    if n == 0:
+        return 0.0
+    return s[n // 2] if n % 2 else (s[n // 2 - 1] + s[n // 2]) / 2
+
+
+def _percentile(xs: list[float], pct: int) -> float:
+    """Linear-interpolation percentile; matches numpy's default for small lists."""
+    if not xs:
+        return 0.0
+    s = sorted(xs)
+    k = (len(s) - 1) * pct / 100
+    f = int(k)
+    if f + 1 >= len(s):
+        return s[f]
+    return s[f] + (s[f + 1] - s[f]) * (k - f)
+
+
+def _compute_latency_deltas_ms(g_turns: list, b_turns: list) -> list[float]:
+    """Per-turn (governed - baseline) latency in ms. Pairs by turn_idx.
+
+    Skips turns missing started_at/finished_at on either side, and skips
+    turns whose timestamps are malformed.
+    """
+    from datetime import datetime
+    deltas: list[float] = []
+    for g_turn in g_turns:
+        idx = g_turn.get("turn_idx")
+        if idx is None:
+            continue
+        b_turn = next((t for t in b_turns if t.get("turn_idx") == idx), None)
+        if not b_turn:
+            continue
+        try:
+            g_dur = (datetime.fromisoformat(g_turn["finished_at"]) -
+                     datetime.fromisoformat(g_turn["started_at"])).total_seconds() * 1000
+            b_dur = (datetime.fromisoformat(b_turn["finished_at"]) -
+                     datetime.fromisoformat(b_turn["started_at"])).total_seconds() * 1000
+            deltas.append(g_dur - b_dur)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return deltas
+
+
+def _diff_summary(governed: dict, baseline: dict) -> dict:
+    """Top-level summary of governed vs baseline for the E4 pair diff UI.
+
+    Surfaces:
+      * audit_entry_count — governed vs baseline (expect >0 vs 0)
+      * turn_count — match is expected; mismatch = misconfig
+      * latency_overhead_ms — median + p95 of (governed - baseline) per turn
+      * verdicts — side-by-side map of every verdict on both sides
+      * classification — expected vs unexpected human-readable diffs
+    """
+    g_audit = governed.get("audit_entries", []) or []
+    b_audit = baseline.get("audit_entries", []) or []
+    g_turns = governed.get("turns", []) or []
+    b_turns = baseline.get("turns", []) or []
+
+    expected: list[str] = []
+    unexpected: list[str] = []
+
+    # Audit presence — governed should have entries, baseline should have zero.
+    if len(b_audit) > 0:
+        unexpected.append(
+            f"baseline has {len(b_audit)} audit entries — direct route is "
+            f"leaking through AGW"
+        )
+    if len(g_audit) == 0:
+        unexpected.append(
+            "governed has zero audit entries — cidgar may not be wired up"
+        )
+    if len(g_audit) > 0 and len(b_audit) == 0:
+        expected.append(
+            f"governed audit count: {len(g_audit)} entries; baseline: 0 (correct)"
+        )
+
+    # Turn count match
+    if len(g_turns) != len(b_turns):
+        unexpected.append(
+            f"turn count differs: governed={len(g_turns)}, baseline={len(b_turns)}"
+        )
+
+    # Per-turn latency delta (best-effort — turns may lack timestamps if errored)
+    deltas_ms = _compute_latency_deltas_ms(g_turns, b_turns)
+
+    return {
+        "audit_entry_count": {"governed": len(g_audit), "baseline": len(b_audit)},
+        "turn_count": {"governed": len(g_turns), "baseline": len(b_turns)},
+        "latency_overhead_ms": {
+            "median": _median(deltas_ms) if deltas_ms else None,
+            "p95": _percentile(deltas_ms, 95) if deltas_ms else None,
+            "n_turns": len(deltas_ms),
+        },
+        "verdicts": {
+            "governed": governed.get("verdicts", {}) or {},
+            "baseline": baseline.get("verdicts", {}) or {},
+        },
+        "classification": {
+            "expected_diffs": expected,
+            "unexpected_diffs": unexpected,
+        },
+    }
+
+
+def _path_get(obj: Any, dotted: str) -> Any:
+    """Walk a dotted path through dicts/lists.
+
+    Example: 'turns.0.response.body'. Empty segments (leading dot, double
+    dot) are skipped. Returns None on any missing key or out-of-range index.
+    """
+    cur = obj
+    for part in dotted.split("."):
+        if part == "":
+            continue
+        if isinstance(cur, list):
+            try:
+                cur = cur[int(part)]
+            except (ValueError, IndexError):
+                return None
+        elif isinstance(cur, dict):
+            cur = cur.get(part)
+        else:
+            return None
+    return cur
+
+
+def _classify_diff(path: str, g_val: Any, b_val: Any) -> str:
+    """Tag a diff as noise / expected_governance_marker / unexpected_diff.
+
+    Heuristics (per E4 brainstorm §2):
+      - Identical values → 'noise' (nothing to report)
+      - Governed contains '_ib_cid' or 'ib_' string not in baseline →
+        'expected_governance_marker' (cidgar channel markers)
+      - Everything else → 'unexpected_diff' (worth user attention)
+    """
+    if g_val == b_val:
+        return "noise"
+    g_str = (
+        json.dumps(g_val) if isinstance(g_val, (dict, list))
+        else ("" if g_val is None else str(g_val))
+    )
+    b_str = (
+        json.dumps(b_val) if isinstance(b_val, (dict, list))
+        else ("" if b_val is None else str(b_val))
+    )
+    if "_ib_cid" in g_str and "_ib_cid" not in b_str:
+        return "expected_governance_marker"
+    if "ib_" in g_str and "ib_" not in b_str:
+        return "expected_governance_marker"
+    return "unexpected_diff"
+
+
+@router.get("/pairs/{row_id}")
+def pairs_get(row_id: str):
+    """Return both trials in a governed/baseline pair, plus a diff summary.
+
+    The pair is identified by `row_id`; the sibling is resolved via the
+    matrix's `baseline_of` metadata (T13). Both rows must have a saved
+    `last_trial_id` — the endpoint 409s if either side hasn't been run yet.
+    """
+    rows = _load_matrix()
+    src = next((r for r in rows if r["row_id"] == row_id), None)
+    if not src:
+        raise HTTPException(404, "row not found")
+
+    # Determine which side of the pair `row_id` is.
+    if src.get("routing", "via_agw") == "via_agw":
+        governed_row = src
+        baseline_row = next(
+            (r for r in rows if r.get("baseline_of") == row_id), None
+        )
+    elif src.get("baseline_of"):
+        baseline_row = src
+        governed_row = next(
+            (r for r in rows if r["row_id"] == src["baseline_of"]), None
+        )
+    else:
+        raise HTTPException(
+            400,
+            "row is direct-routed but has no baseline_of pointer; "
+            "not part of a pair",
+        )
+
+    if not governed_row or not baseline_row:
+        raise HTTPException(
+            404, "pair incomplete: missing baseline or governed sibling"
+        )
+
+    governed_trial_id = governed_row.get("last_trial_id")
+    baseline_trial_id = baseline_row.get("last_trial_id")
+    if not governed_trial_id or not baseline_trial_id:
+        raise HTTPException(
+            409, "pair has no run history yet — run both rows first"
+        )
+
+    from trials import _to_jsonable
+    try:
+        governed = _to_jsonable(STORE.load(governed_trial_id))
+        baseline = _to_jsonable(STORE.load(baseline_trial_id))
+    except FileNotFoundError as e:
+        raise HTTPException(404, f"trial JSON missing: {e}")
+
+    summary = _diff_summary(governed, baseline)
+    return {
+        "governed_row_id": governed_row["row_id"],
+        "baseline_row_id": baseline_row["row_id"],
+        "governed": governed,
+        "baseline": baseline,
+        "diff_summary": summary,
+    }
+
+
+@router.get("/pairs/{row_id}/diff")
+def pairs_diff(row_id: str, path: str = ""):
+    """Scoped diff for a specific dotted JSON path within the pair.
+
+    Returns the governed-vs-baseline value at `path` on each side plus a
+    classification (expected_governance_marker / unexpected_diff / noise).
+    An empty `path` returns the full trials (same as /pairs/{row_id} but
+    without the diff_summary envelope).
+    """
+    pair = pairs_get(row_id)
+    governed_val = _path_get(pair["governed"], path) if path else pair["governed"]
+    baseline_val = _path_get(pair["baseline"], path) if path else pair["baseline"]
+    classification = _classify_diff(path, governed_val, baseline_val)
+    return {
+        "path": path,
+        "governed": governed_val,
+        "baseline": baseline_val,
+        "classification": classification,
+    }
+
+
 @router.post("/trials/{trial_id}/abort")
 async def trial_abort(trial_id: str):
     """Request cooperative abort of a running trial.
