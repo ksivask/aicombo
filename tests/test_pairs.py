@@ -293,3 +293,31 @@ def test_pairs_classification_marks_governance_marker_as_expected(
     assert _classify_diff("x", {"a": 1}, {"a": 1}) == "noise"
     # And plain unequal non-marker values → unexpected_diff
     assert _classify_diff("x", {"a": 1}, {"a": 2}) == "unexpected_diff"
+
+
+def test_classify_diff_rejects_ib_substring_false_positive():
+    """_classify_diff must distinguish cidgar's marker from arbitrary 'ib_'
+    substrings in LLM output (e.g. library_id, fib_number, etc)."""
+    from api import _classify_diff
+    # Governed has a common code-flavored substring, NOT a cidgar marker.
+    g_val = {"text": "I found library_id=42 in the search results"}
+    b_val = {"text": "I located record 42 in the index"}
+    # Today's classifier returns expected_governance_marker (false positive).
+    # After fix, this should be unexpected_diff (real content difference).
+    assert _classify_diff("turns.0.response.body", g_val, b_val) == "unexpected_diff"
+
+
+def test_classify_diff_accepts_real_cidgar_marker():
+    """Positive case: full 12-hex cidgar signature must be classified."""
+    from api import _classify_diff
+    g_val = {"text": "<!-- _ib_cid=ib_abc123def456 -->Hello"}
+    b_val = {"text": "Hello"}
+    assert _classify_diff("turns.0.response.body", g_val, b_val) == "expected_governance_marker"
+
+
+def test_classify_diff_rejects_short_ib_hex():
+    """Must require the full 12-hex signature, not partial."""
+    from api import _classify_diff
+    g_val = {"text": "something ib_abc"}  # Only 3 hex chars after ib_
+    b_val = {"text": "other"}
+    assert _classify_diff("turns.0.response.body", g_val, b_val) == "unexpected_diff"

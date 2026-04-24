@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import uuid
 from collections import defaultdict
 from pathlib import Path
@@ -35,6 +36,13 @@ AUDIT_BUFFER_PER_TRIAL: dict[str, list[AuditEntry]] = defaultdict(list)
 # set by POST /trials/{id}/abort, checked by runner.run_trial between turns,
 # cleared once the background task completes.
 ABORT_EVENTS: dict[str, asyncio.Event] = {}
+
+# I2 — cidgar's uuid4_12 generator produces markers of the form
+# ``ib_<12 lowercase hex>``. _classify_diff uses this to distinguish
+# governance channel markers from arbitrary content diffs. The full
+# 12-hex suffix is statistically distinctive enough to avoid collisions
+# with English/code tokens (e.g. library_id, fib_number).
+_CID_MARKER_RE = re.compile(r'ib_[a-f0-9]{12}')
 
 
 # ── Matrix persistence (distinct from trial JSON) ──
@@ -587,9 +595,16 @@ def _classify_diff(path: str, g_val: Any, b_val: Any) -> str:
 
     Heuristics (per E4 brainstorm §2):
       - Identical values → 'noise' (nothing to report)
-      - Governed contains '_ib_cid' or 'ib_' string not in baseline →
-        'expected_governance_marker' (cidgar channel markers)
+      - Governed contains cidgar's uuid4_12 marker signature (``ib_`` + 12
+        lowercase hex chars) not present in baseline →
+        'expected_governance_marker'
       - Everything else → 'unexpected_diff' (worth user attention)
+
+    I2 fix: the prior substring check ``"ib_" in g_str`` matched any text
+    containing that literal fragment (e.g. ``fib_number``), producing
+    false positives on LLM non-determinism. The regex below requires the
+    full 12-hex suffix, which is statistically distinctive enough not to
+    collide with arbitrary English/code tokens.
     """
     if g_val == b_val:
         return "noise"
@@ -601,9 +616,7 @@ def _classify_diff(path: str, g_val: Any, b_val: Any) -> str:
         json.dumps(b_val) if isinstance(b_val, (dict, list))
         else ("" if b_val is None else str(b_val))
     )
-    if "_ib_cid" in g_str and "_ib_cid" not in b_str:
-        return "expected_governance_marker"
-    if "ib_" in g_str and "ib_" not in b_str:
+    if _CID_MARKER_RE.search(g_str) and not _CID_MARKER_RE.search(b_str):
         return "expected_governance_marker"
     return "unexpected_diff"
 
