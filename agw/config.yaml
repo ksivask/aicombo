@@ -248,6 +248,15 @@ binds:
                         host: http://mcp-library:8000/mcp
 
           # ── MCP route: fetch ──
+          #
+          # E7 demo — this route opts into mcp_marker_kind=both so the f5 hook
+          # emits BOTH a spec-compliant `resource` content block (for MCP
+          # clients that preserve non-text content) AND a plain-text marker
+          # block carrying the same <!-- ib:cid=... --> needle (for agents
+          # that flatten tool_result.content to text and drop non-text
+          # blocks). Other MCP routes (weather/news/library) intentionally
+          # omit the field and get the default (Resource) — this demonstrates
+          # per-route granularity of the new AGW knob.
           - name: mcp-fetch
             matches:
               - path:
@@ -259,6 +268,10 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                channels:
+                  text_marker: true
+                  resource_block: true
+                  mcp_marker_kind: both  # E7 — emit resource AND text markers
             backends:
               - mcp:
                   prefixMode: always
