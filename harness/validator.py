@@ -45,13 +45,13 @@ LLM_SUPPORTS_RESPONSES_STATE = {"chatgpt"}
 # Plan B will add adapters for langgraph, crewai, pydantic-ai, autogen,
 # llamaindex covering responses / responses+conv / messages.
 ADAPTER_CAPABILITIES = {
-    "langchain":   {"chat"},
+    "langchain":   {"chat", "messages", "responses", "responses+conv"},  # E5a: ChatOpenAI / ChatAnthropic / ChatOpenAI(use_responses_api=True)
     "direct-mcp":  set(),  # MCP-only adapter, no LLM API
-    "langgraph":   {"chat"},  # Plan B T2: create_react_agent, chat-completions only
-    "crewai":      {"chat", "messages"},  # Plan B T3: Crew+Agent+Task via native SDKs
-    "pydantic-ai": {"chat", "messages", "responses"},  # Plan B T4: typed Agent + Model + Toolset
+    "langgraph":   {"chat", "messages", "responses", "responses+conv"},  # E5b: same langchain wrappers via create_react_agent
+    "crewai":      {"chat", "messages"},  # Plan B T3: Crew+Agent+Task via native SDKs (responses+conv via bypass — E5c)
+    "pydantic-ai": {"chat", "messages", "responses"},  # Plan B T4: typed Agent + Model + Toolset (responses+conv via bypass — E5d)
     "autogen":     {"chat", "messages", "responses", "responses+conv"},  # Plan B T5: AssistantAgent + openai responses bypass
-    "llamaindex":  {"chat", "responses", "responses+conv"},  # Plan B T6: llama_index OpenAI + openai responses bypass (no messages)
+    "llamaindex":  {"chat", "responses", "responses+conv"},  # Plan B T6: llama_index OpenAI + openai responses bypass (messages via E5e)
 }
 
 

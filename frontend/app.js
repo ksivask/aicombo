@@ -11,10 +11,9 @@ function openTrialTab(trialId) {
 // Run button. Anything beyond this is advisory (state/stream/provider constraints
 // are auto-forced, not blocking).
 const ADAPTER_CAPABILITIES_JS = {
-  // Plan A: only langchain (chat-only). direct-mcp routes via llm=NONE.
-  // Plan B will expand this as adapters are added.
-  "langchain":   ["chat"],
-  "langgraph":   ["chat"],                          // Plan B T2
+  // Mirrors harness/validator.py::ADAPTER_CAPABILITIES.
+  "langchain":   ["chat", "messages", "responses", "responses+conv"],  // E5a
+  "langgraph":   ["chat", "messages", "responses", "responses+conv"],  // E5b
   "crewai":      ["chat", "messages"],              // Plan B T3
   "pydantic-ai": ["chat", "messages", "responses"], // Plan B T4
   "autogen":     ["chat", "messages", "responses", "responses+conv"], // Plan B T5
