@@ -461,3 +461,75 @@ def test_verdict_e_na_when_no_force_state_ref_turn():
     v = compute_verdicts(trial)
     assert v["e"].verdict == "na"
     assert "force_state_ref" in v["e"].reason.lower()
+
+
+# ── E4 — verdict (h) latency overhead vs baseline pair ─────────────────
+
+def _t(idx: int, started_iso: str, finished_iso: str) -> Turn:
+    """Convenience: build a user_msg Turn with timing for verdict-h tests."""
+    return Turn(
+        turn_id=f"t{idx}", turn_idx=idx, kind="user_msg",
+        started_at=started_iso, finished_at=finished_iso,
+    )
+
+
+def test_verdict_h_pass_when_overhead_under_budget():
+    """Median overhead ≤200ms over comparable turns → pass."""
+    governed_turns = [
+        _t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:01.100000+00:00"),
+        _t(1, "2026-04-23T00:00:02+00:00", "2026-04-23T00:00:03.150000+00:00"),
+    ]
+    baseline_turns = [
+        _t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:01+00:00"),
+        _t(1, "2026-04-23T00:00:02+00:00", "2026-04-23T00:00:03+00:00"),
+    ]
+    governed = _trial_with(governed_turns, [])
+    baseline = _trial_with(baseline_turns, [], routing="direct")
+
+    v = compute_verdicts(governed, pair_resolver=lambda _t: baseline)
+    # Overheads: 100ms, 150ms → median 125ms ≤ 200ms budget
+    assert v["h"].verdict == "pass", v["h"].reason
+    assert "overhead" in v["h"].reason.lower()
+
+
+def test_verdict_h_fail_when_overhead_exceeds_absolute_budget():
+    """Median overhead > 2000ms → fail (regardless of baseline median)."""
+    governed_turns = [
+        _t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:05+00:00"),  # 5000ms
+        _t(1, "2026-04-23T00:00:10+00:00", "2026-04-23T00:00:13+00:00"),  # 3000ms
+    ]
+    baseline_turns = [
+        _t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:00.500000+00:00"),
+        _t(1, "2026-04-23T00:00:10+00:00", "2026-04-23T00:00:10.400000+00:00"),
+    ]
+    governed = _trial_with(governed_turns, [])
+    baseline = _trial_with(baseline_turns, [], routing="direct")
+
+    v = compute_verdicts(governed, pair_resolver=lambda _t: baseline)
+    # Overheads: 4500ms, 2600ms → median ~3550 → fail on absolute budget
+    assert v["h"].verdict == "fail"
+    assert "2000ms" in v["h"].reason or "absolute budget" in v["h"].reason
+
+
+def test_verdict_h_na_when_no_baseline_pair():
+    """No paired baseline (resolver returns None) → na."""
+    governed_turns = [_t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:01+00:00")]
+    governed = _trial_with(governed_turns, [])
+
+    v = compute_verdicts(governed, pair_resolver=lambda _t: None)
+    assert v["h"].verdict == "na"
+    assert "baseline" in v["h"].reason.lower()
+
+
+def test_verdict_h_na_when_trial_is_direct_routed():
+    """Direct-routed (baseline-side) trial → na (verdict measured on governed
+    side only)."""
+    turns = [_t(0, "2026-04-23T00:00:00+00:00", "2026-04-23T00:00:01+00:00")]
+    direct_trial = _trial_with(turns, [], routing="direct")
+
+    # routing=direct short-circuits at compute_verdicts before resolver runs;
+    # all verdicts return na with the baseline-routing reason.
+    v = compute_verdicts(direct_trial, pair_resolver=lambda _t: None)
+    assert v["h"].verdict == "na"
+    # The compute_verdicts short-circuit reason is "baseline — cidgar not in path".
+    assert "cidgar" in v["h"].reason.lower() or "baseline" in v["h"].reason.lower()

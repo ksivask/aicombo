@@ -542,17 +542,159 @@ def verdict_e_state_mode_gap(trial: Trial) -> Verdict:
     )
 
 
-def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f} verdicts.
+def _default_pair_resolver(trial: Trial) -> Trial | None:
+    """Production resolver — looks up the baseline trial paired with `trial`
+    via matrix.json on disk.
 
-    Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 adds e.
+    Returns the baseline Trial when:
+      * trial is governed (routing != 'direct'), AND
+      * a matrix row points to trial.trial_id via last_trial_id, AND
+      * a sibling row exists with baseline_of == that row's row_id, AND
+      * the sibling row has a last_trial_id pointing at a saved trial JSON.
+
+    Returns None on any failure path. Tests inject a stub via
+    compute_verdicts(trial, pair_resolver=...) instead of mocking the
+    filesystem.
+    """
+    import os
+    import json
+    from pathlib import Path
+
+    matrix_path = Path(os.environ.get("DATA_DIR", "/data")) / "matrix.json"
+    if not matrix_path.exists():
+        return None
+
+    try:
+        with matrix_path.open() as f:
+            rows = json.load(f).get("rows", [])
+    except (OSError, ValueError):
+        return None
+
+    self_row = next(
+        (r for r in rows if r.get("last_trial_id") == trial.trial_id), None,
+    )
+    if not self_row:
+        return None
+
+    sibling = next(
+        (r for r in rows if r.get("baseline_of") == self_row["row_id"]), None,
+    )
+    if not sibling or not sibling.get("last_trial_id"):
+        return None
+
+    from trials import TrialStore
+    store = TrialStore(Path(os.environ.get("DATA_DIR", "/data")) / "trials")
+    try:
+        return store.load(sibling["last_trial_id"])
+    except FileNotFoundError:
+        return None
+
+
+def verdict_h_overhead(trial: Trial, pair_resolver=None) -> Verdict:
+    """(h) latency overhead — per-turn p50 added by cidgar governance.
+
+    Only meaningful when the trial has a paired baseline (T13 clone-baseline).
+    Resolution is delegated to `pair_resolver(trial) -> Trial | None` so
+    tests can inject a stub instead of mocking matrix.json on disk. Defaults
+    to `_default_pair_resolver` which reads from $DATA_DIR/matrix.json.
+
+    Thresholds (per E4 brainstorm §6):
+      pass — median overhead ≤ 200 ms
+      fail — median overhead > 2000 ms OR > 100% of baseline median
+      na   — direct-routed trial, no pair, or no comparable turns
+      pass (with note) — middle band [200, 2000] and ≤ baseline median;
+             flagged in the reason but doesn't fail the verdict (we do not
+             want to introduce a 'warn' status just for this metric).
+    """
+    if pair_resolver is None:
+        pair_resolver = _default_pair_resolver
+
+    if trial.config.routing == "direct":
+        return Verdict("na", "verdict (h) measured on the governed side only")
+
+    baseline = pair_resolver(trial)
+    if baseline is None:
+        return Verdict("na", "no baseline pair has been run yet")
+
+    from datetime import datetime
+    deltas: list[tuple[float, float, float]] = []  # (overhead, g_dur, b_dur)
+    for g_turn in trial.turns:
+        b_turn = next(
+            (t for t in baseline.turns if t.turn_idx == g_turn.turn_idx), None,
+        )
+        if not b_turn:
+            continue
+        if not g_turn.started_at or not g_turn.finished_at:
+            continue
+        if not b_turn.started_at or not b_turn.finished_at:
+            continue
+        try:
+            g_dur = (datetime.fromisoformat(g_turn.finished_at) -
+                     datetime.fromisoformat(g_turn.started_at)).total_seconds() * 1000
+            b_dur = (datetime.fromisoformat(b_turn.finished_at) -
+                     datetime.fromisoformat(b_turn.started_at)).total_seconds() * 1000
+            deltas.append((g_dur - b_dur, g_dur, b_dur))
+        except (TypeError, ValueError):
+            continue
+
+    if not deltas:
+        return Verdict("na", "no comparable turns for latency measurement")
+
+    overheads = sorted(d[0] for d in deltas)
+    baseline_durs = sorted(d[2] for d in deltas)
+    n = len(overheads)
+    median = overheads[n // 2] if n % 2 else (overheads[n // 2 - 1] + overheads[n // 2]) / 2
+    baseline_median = (
+        baseline_durs[n // 2] if n % 2
+        else (baseline_durs[n // 2 - 1] + baseline_durs[n // 2]) / 2
+    )
+
+    # Fail conditions first — explicit budgets from §6.
+    if median > 2000:
+        return Verdict(
+            "fail",
+            f"median overhead {median:.0f}ms exceeds 2000ms absolute budget "
+            f"over {n} turn{'s' if n != 1 else ''}",
+        )
+    if baseline_median > 0 and median > baseline_median:
+        return Verdict(
+            "fail",
+            f"median overhead {median:.0f}ms exceeds 100% of baseline median "
+            f"{baseline_median:.0f}ms over {n} turn{'s' if n != 1 else ''}",
+        )
+
+    if median <= 200:
+        return Verdict(
+            "pass",
+            f"median overhead {median:.0f}ms (≤200ms budget) over {n} turn"
+            f"{'s' if n != 1 else ''}",
+        )
+
+    # Middle band [200, 2000] and ≤ baseline median — within absolute budget
+    # but worth monitoring. Pass with a note rather than introducing 'warn'.
+    return Verdict(
+        "pass",
+        f"median overhead {median:.0f}ms (within absolute budget but elevated; "
+        f"baseline median {baseline_median:.0f}ms) over {n} turn"
+        f"{'s' if n != 1 else ''}",
+    )
+
+
+def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
+    """Return {a, b, c, d, e, f, h} verdicts.
+
+    Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 added e;
+    E4 (this commit) adds h (latency overhead vs baseline pair).
+
+    `pair_resolver` is injected straight through to verdict_h_overhead so
+    callers (esp. tests) can avoid the disk-based matrix lookup.
     """
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na}
     if trial.status == "aborted":
         na = Verdict("na", "trial aborted before completion")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na}
     return {
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
@@ -560,4 +702,5 @@ def compute_verdicts(trial: Trial) -> dict[str, Verdict]:
         "d": verdict_d_resilience(trial),
         "e": verdict_e_state_mode_gap(trial),
         "f": verdict_f_gar_richness(trial),
+        "h": verdict_h_overhead(trial, pair_resolver=pair_resolver),
     }
