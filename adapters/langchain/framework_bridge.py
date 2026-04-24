@@ -34,12 +34,16 @@ from langchain_openai import ChatOpenAI
 
 def pick_llm_base_url(routing: str, llm: str) -> str:
     env_map_via_agw = {
-        "ollama": "AGW_LLM_BASE_URL_OLLAMA",
-        "mock":   "AGW_LLM_BASE_URL_MOCK",
+        "ollama":  "AGW_LLM_BASE_URL_OLLAMA",
+        "mock":    "AGW_LLM_BASE_URL_MOCK",
+        "chatgpt": "AGW_LLM_BASE_URL_OPENAI",
+        "gemini":  "AGW_LLM_BASE_URL_GEMINI",
     }
     env_map_direct = {
-        "ollama": "DIRECT_LLM_BASE_URL_OLLAMA",
-        "mock":   "DIRECT_LLM_BASE_URL_MOCK",
+        "ollama":  "DIRECT_LLM_BASE_URL_OLLAMA",
+        "mock":    "DIRECT_LLM_BASE_URL_MOCK",
+        "chatgpt": "DIRECT_LLM_BASE_URL_OPENAI",
+        "gemini":  "DIRECT_LLM_BASE_URL_GEMINI",
     }
     env_map = env_map_via_agw if routing == "via_agw" else env_map_direct
     var = env_map.get(llm)
@@ -49,6 +53,55 @@ def pick_llm_base_url(routing: str, llm: str) -> str:
     if not url:
         raise ValueError(f"env var {var} not set")
     return url
+
+
+# Per-LLM API-key env var. Cloud providers (chatgpt/gemini) need a real
+# key — we surface this clearly at Trial construction so a misconfigured
+# adapter fails loudly instead of silently sending "placeholder".
+# Mirrors adapters/langgraph/framework_bridge.py::_API_KEY_ENV_BY_LLM.
+_API_KEY_ENV_BY_LLM = {
+    "ollama":  None,      # local; any placeholder is fine (Ollama doesn't validate)
+    "mock":    None,      # local mock-llm; no validation
+    "chatgpt": "OPENAI_API_KEY",
+    "gemini":  "GOOGLE_API_KEY",
+}
+
+
+def _pick_api_key(llm: str) -> str:
+    """Resolve the LLM API key for ChatOpenAI.
+
+    Returns a placeholder string for self-hosted providers (ollama, mock)
+    since ChatOpenAI requires *some* non-empty api_key value. Returns the
+    real env-sourced key for cloud providers (chatgpt, gemini), raising
+    ValueError when the required env var is missing or empty.
+    """
+    env_var = _API_KEY_ENV_BY_LLM.get(llm)
+    if env_var is None:
+        return "placeholder"
+    key = os.environ.get(env_var, "")
+    if not key:
+        raise ValueError(
+            f"{env_var} not set in adapter environment — needed for llm={llm}"
+        )
+    return key
+
+
+def _default_model(llm: str) -> str:
+    """Pick a sensible default model name when row config doesn't specify one.
+
+    Mirrors the per-provider defaults convention used across Plan B
+    adapters. Env-var overrides let operators pin a specific model
+    without code changes.
+    """
+    if llm == "ollama":
+        return os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
+    if llm == "chatgpt":
+        return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
+    if llm == "gemini":
+        return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
+    if llm == "mock":
+        return "mock"
+    return "unknown"
 
 
 def pick_mcp_base_url(routing: str, mcp: str) -> str:
@@ -110,7 +163,8 @@ class Trial:
         self._exchange_mark: int = 0  # index into _http_exchanges at start of current op
 
         base_url = pick_llm_base_url(routing=config["routing"], llm=config["llm"])
-        model = config.get("model") or os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
+        model = config.get("model") or _default_model(config["llm"])
+        api_key = _pick_api_key(config["llm"])
 
         # httpx client with event hooks that capture real wire bytes.
         # Writes to BOTH _last_* (back-compat for simple cases) AND the
@@ -164,7 +218,8 @@ class Trial:
 
         self.llm = ChatOpenAI(
             base_url=base_url,
-            api_key="ollama",  # placeholder; Ollama doesn't validate
+            api_key=api_key,  # cloud providers: real key from env;
+                              # ollama/mock: placeholder (Ollama doesn't validate)
             model=model,
             http_async_client=self._http_client,
             default_headers={},  # populated per-turn in drive_turn

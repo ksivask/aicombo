@@ -56,12 +56,16 @@ services:
       - ADAPTER_PORT=5001
       - AGW_LLM_BASE_URL_OLLAMA=http://agentgateway:8080/llm/ollama/v1
       - AGW_LLM_BASE_URL_MOCK=http://agentgateway:8080/llm/mock/v1
+      - AGW_LLM_BASE_URL_OPENAI=http://agentgateway:8080/llm/chatgpt/v1
+      - AGW_LLM_BASE_URL_GEMINI=http://agentgateway:8080/llm/gemini/v1beta/openai
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - AGW_MCP_WEATHER=http://agentgateway:8080/mcp/weather
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
+      - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
+      - DIRECT_LLM_BASE_URL_GEMINI=https://generativelanguage.googleapis.com/v1beta/openai
       - DIRECT_MCP_WEATHER=http://mcp-weather:8000/mcp
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
