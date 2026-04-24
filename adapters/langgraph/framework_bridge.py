@@ -35,7 +35,6 @@ import os
 from typing import Any
 
 import httpx
-from langchain_openai import ChatOpenAI
 from langgraph.prebuilt import create_react_agent
 
 
@@ -45,12 +44,14 @@ def pick_llm_base_url(routing: str, llm: str) -> str:
         "mock":    "AGW_LLM_BASE_URL_MOCK",
         "chatgpt": "AGW_LLM_BASE_URL_OPENAI",
         "gemini":  "AGW_LLM_BASE_URL_GEMINI",
+        "claude":  "AGW_LLM_BASE_URL_ANTHROPIC",
     }
     env_map_direct = {
         "ollama":  "DIRECT_LLM_BASE_URL_OLLAMA",
         "mock":    "DIRECT_LLM_BASE_URL_MOCK",
         "chatgpt": "DIRECT_LLM_BASE_URL_OPENAI",
         "gemini":  "DIRECT_LLM_BASE_URL_GEMINI",
+        "claude":  "DIRECT_LLM_BASE_URL_ANTHROPIC",
     }
     env_map = env_map_via_agw if routing == "via_agw" else env_map_direct
     var = env_map.get(llm)
@@ -95,6 +96,7 @@ _API_KEY_ENV_BY_LLM = {
     "mock":    None,      # local mock-llm; no validation
     "chatgpt": "OPENAI_API_KEY",
     "gemini":  "GOOGLE_API_KEY",
+    "claude":  "ANTHROPIC_API_KEY",
 }
 
 
@@ -108,6 +110,24 @@ def _pick_api_key(llm: str) -> str:
             f"{env_var} not set in adapter environment — needed for llm={llm}"
         )
     return key
+
+
+def _default_model(llm: str) -> str:
+    """Pick a sensible default model name when row config doesn't specify one.
+
+    Env-var overrides let operators pin a specific model without code changes.
+    """
+    if llm == "ollama":
+        return os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
+    if llm == "chatgpt":
+        return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
+    if llm == "gemini":
+        return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
+    if llm == "claude":
+        return os.environ.get("DEFAULT_ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+    if llm == "mock":
+        return "mock"
+    return "unknown"
 
 
 class Trial:
@@ -146,10 +166,6 @@ class Trial:
         # every captured exchange afterwards by URL / JSON-RPC method.
         self._http_exchanges: list[dict] = []
         self._exchange_mark: int = 0
-
-        base_url = pick_llm_base_url(routing=config["routing"], llm=config["llm"])
-        model = config.get("model") or os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
-        api_key = _pick_api_key(config["llm"])
 
         # httpx client with event hooks that capture real wire bytes.
         # Writes to BOTH _last_* (back-compat) AND the _http_exchanges list
@@ -197,14 +213,20 @@ class Trial:
             timeout=httpx.Timeout(120.0),
         )
 
-        self.llm = ChatOpenAI(
-            base_url=base_url,
-            api_key=api_key,
-            model=model,
-            http_async_client=self._http_client,
-            default_headers={},  # populated per-turn
-            temperature=0.3,
-        )
+        # Build the wrapped chat model for the configured api. langgraph's
+        # create_react_agent is LLM-agnostic — it accepts any langchain-
+        # wrapped chat model with .bind_tools(), so api switching just
+        # swaps the self.llm slot; the graph shape is unchanged.
+        api = config.get("api", "chat")
+        self.llm = self._build_llm(api, config)
+
+        # Responses+conv state chain. Populated only when api=responses or
+        # api=responses+conv. _last_response_id is threaded into the next
+        # turn's graph.ainvoke config as previous_response_id; _forced_prev_id
+        # is the T11 force_state_ref override (one-shot, consumed on use).
+        self._last_response_id: str | None = None
+        self._response_history: list[str] = []
+        self._forced_prev_id: str | None = None
 
         # MCP wiring (lazy — fetched on first turn that needs it).
         self.mcp_url = (
@@ -214,6 +236,76 @@ class Trial:
         )
         self._mcp_tools: list | None = None  # populated by _setup_mcp_tools
         self._graph: Any | None = None       # compiled langgraph agent
+
+    def _build_llm(self, api: str, config: dict) -> Any:
+        """Construct the langchain chat model for the configured api.
+
+        Since langgraph's create_react_agent(llm, tools) takes any langchain
+        chat model, switching api is just a matter of selecting the right
+        wrapper class:
+
+          * api=chat            → ChatOpenAI (openai-compat; works for ollama,
+                                  mock, chatgpt, gemini via AGW's provider
+                                  routing)
+          * api=responses       → ChatOpenAI(use_responses_api=True) — requires
+                                  llm=chatgpt
+          * api=responses+conv  → same as responses; previous_response_id is
+                                  threaded per-turn via graph.ainvoke's
+                                  config={"configurable": ...}
+          * api=messages        → ChatAnthropic — requires llm=claude
+        """
+        base_url = pick_llm_base_url(routing=config["routing"], llm=config["llm"])
+        api_key = _pick_api_key(config["llm"])
+        model = config.get("model") or _default_model(config["llm"])
+
+        if api == "chat":
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                http_async_client=self._http_client,
+                default_headers={},  # populated per-turn
+                temperature=0.3,
+            )
+
+        if api in ("responses", "responses+conv"):
+            if config["llm"] != "chatgpt":
+                raise ValueError(
+                    f"api={api} requires llm=chatgpt; got {config['llm']}"
+                )
+            from langchain_openai import ChatOpenAI
+            return ChatOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                http_async_client=self._http_client,
+                default_headers={},  # populated per-turn
+                temperature=0.3,
+                use_responses_api=True,
+            )
+
+        if api == "messages":
+            if config["llm"] != "claude":
+                raise ValueError(
+                    f"api=messages requires llm=claude; got {config['llm']}"
+                )
+            from langchain_anthropic import ChatAnthropic
+            # ChatAnthropic (langchain-anthropic 0.3+) doesn't accept an
+            # http_client kwarg directly. Wire bytes aren't captured via the
+            # shared hooked client on this path — same tradeoff the sibling
+            # autogen/pydantic-ai adapters document for their ChatAnthropic
+            # equivalents. anthropic_api_url + anthropic_api_key flow into
+            # the underlying anthropic SDK.
+            return ChatAnthropic(
+                anthropic_api_url=base_url,
+                api_key=api_key,
+                model=model,
+                default_headers={},  # populated per-turn
+                temperature=0.3,
+            )
+
+        raise ValueError(f"unsupported api: {api}")
 
     # ── httpx factory for langchain-mcp-adapters ──
     #
@@ -367,13 +459,21 @@ class Trial:
         The graph handles the LLM↔tool hop loop internally. We capture
         every HTTP exchange (LLM + MCP) that happens during ainvoke and
         label each as either `llm_hop_N` or `mcp_*`.
+
+        For api=responses+conv, the effective previous_response_id (either
+        the chained _last_response_id or a T11 force_state_ref override)
+        is threaded through the graph's `config={"configurable": {...}}`,
+        which langchain's ChatOpenAI reads when use_responses_api=True.
         """
         from langchain_core.messages import HumanMessage
+
+        api = self.config.get("api", "chat")
 
         headers = {
             "X-Harness-Trial-ID": self.trial_id,
             "X-Harness-Turn-ID":  turn_id,
         }
+        # ChatAnthropic + ChatOpenAI both accept default_headers.
         self.llm.default_headers = headers
 
         # Reset per-turn capture
@@ -402,10 +502,24 @@ class Trial:
 
         self._messages.append(HumanMessage(content=user_msg))
 
+        # For responses+conv, thread the effective previous_response_id
+        # into the graph invoke config. _forced_prev_id (set by force_state_ref)
+        # wins over _last_response_id when present; it's consumed below.
+        invoke_kwargs: dict[str, Any] = {}
+        effective_prev: str | None = None
+        if api == "responses+conv":
+            effective_prev = self._forced_prev_id or self._last_response_id
+            if effective_prev:
+                invoke_kwargs["config"] = {
+                    "configurable": {"previous_response_id": effective_prev},
+                }
+
         # Mark the window for this turn's graph.ainvoke, then invoke.
         self._mark_exchange_start()
         first_request_before = copy.deepcopy(self._last_request)  # may be None
-        result = await self._graph.ainvoke({"messages": self._messages})
+        result = await self._graph.ainvoke(
+            {"messages": self._messages}, **invoke_kwargs,
+        )
 
         # Update conversation history from graph output.
         new_messages = result["messages"][len(self._messages):]
@@ -464,7 +578,23 @@ class Trial:
             "body": {"note": "event hook didn't fire"},
         }
 
-        return {
+        # Responses-API state chain: pull the per-response id from the
+        # final AIMessage.response_metadata (ChatOpenAI populates it as
+        # "id" when use_responses_api=True) so the runner + compact() can
+        # chain / prune it. For responses+conv, update _last_response_id +
+        # append to history; _forced_prev_id was consumed by this turn, so
+        # clear it regardless of the outcome.
+        new_resp_id: str | None = None
+        if api in ("responses", "responses+conv") and final_ai is not None:
+            meta = getattr(final_ai, "response_metadata", None) or {}
+            new_resp_id = meta.get("id") or meta.get("response_id")
+            if new_resp_id and api == "responses+conv":
+                self._last_response_id = new_resp_id
+                self._response_history.append(new_resp_id)
+        if api == "responses+conv":
+            self._forced_prev_id = None
+
+        envelope: dict[str, Any] = {
             "turn_id": turn_id,
             "assistant_msg": final_content,
             "tool_calls": last_tool_calls,
@@ -472,18 +602,56 @@ class Trial:
             "response_captured": response_captured,
             "framework_events": self._events,
         }
+        if api in ("responses", "responses+conv"):
+            envelope["_response_id"] = new_resp_id
+        return envelope
 
     async def compact(self, strategy: str) -> dict:
         """Plan B T10 — mutate `self._messages` per the requested strategy.
 
-        Same semantics as the langchain adapter: the message list holds
-        langchain-core BaseMessage objects (HumanMessage / AIMessage /
-        ToolMessage / SystemMessage), so the strategy implementations are
-        identical. See adapters/langchain/framework_bridge.py::Trial.compact.
+        For api=chat / api=messages: the message list holds langchain-core
+        BaseMessage objects (HumanMessage / AIMessage / ToolMessage /
+        SystemMessage), so the strategy implementations match the langchain
+        adapter. See adapters/langchain/framework_bridge.py::Trial.compact.
+
+        For api=responses+conv: `_messages` is unused for continuity — the
+        Responses-API chain is _response_history. compact() shrinks the
+        chain (drop_half drops the oldest half; drop_tool_calls / summarize
+        fall back to the same prune + emit a note, since there's no
+        per-message tool-call or prose payload to manipulate at this layer).
+        Mirrors the autogen / llamaindex responses_direct compact path.
         """
         from langchain_core.messages import (
             SystemMessage, ToolMessage,
         )
+
+        api = self.config.get("api", "chat")
+        if api == "responses+conv":
+            before = len(self._response_history)
+            if strategy == "drop_half":
+                self._response_history = self._response_history[before // 2:]
+                self._last_response_id = (
+                    self._response_history[-1] if self._response_history else None
+                )
+                return {
+                    "strategy": strategy,
+                    "history_len_before": before,
+                    "history_len_after": len(self._response_history),
+                }
+            if strategy in ("drop_tool_calls", "summarize"):
+                self._response_history = self._response_history[before // 2:]
+                self._last_response_id = (
+                    self._response_history[-1] if self._response_history else None
+                )
+                return {
+                    "strategy": strategy,
+                    "history_len_before": before,
+                    "history_len_after": len(self._response_history),
+                    "note": (
+                        f"{strategy} falls back to drop_half for responses+conv chain"
+                    ),
+                }
+            raise ValueError(f"unknown strategy: {strategy}")
 
         before = len(self._messages)
         if strategy == "drop_half":
