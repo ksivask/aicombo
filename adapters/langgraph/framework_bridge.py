@@ -291,21 +291,62 @@ class Trial:
                     f"api=messages requires llm=claude; got {config['llm']}"
                 )
             from langchain_anthropic import ChatAnthropic
-            # ChatAnthropic (langchain-anthropic 0.3+) doesn't accept an
-            # http_client kwarg directly. Wire bytes aren't captured via the
-            # shared hooked client on this path — same tradeoff the sibling
-            # autogen/pydantic-ai adapters document for their ChatAnthropic
-            # equivalents. anthropic_api_url + anthropic_api_key flow into
-            # the underlying anthropic SDK.
-            return ChatAnthropic(
+            # langchain-anthropic 1.4.x uses `anthropic_api_url` + its
+            # alias `base_url`; same for `anthropic_api_key` / `api_key`.
+            # Temperature surfaced the same as ChatOpenAI. `default_headers`
+            # passthrough is populated per-turn.
+            inst = ChatAnthropic(
                 anthropic_api_url=base_url,
-                api_key=api_key,
+                anthropic_api_key=api_key,
                 model=model,
-                default_headers={},  # populated per-turn
+                default_headers={},
                 temperature=0.3,
             )
+            # ChatAnthropic 1.4.x does NOT expose http_client / http_async_client
+            # as model fields — the SDK clients are created lazily via
+            # `@cached_property` methods named `_client` / `_async_client`.
+            # We override both with instances whose `http_client=` is our
+            # hooked httpx client, before either property is read. This
+            # is the same pattern crewai's adapter uses for the native
+            # anthropic SDK client swap.
+            self._install_anthropic_hooked_clients(
+                inst, base_url=base_url, api_key=api_key,
+            )
+            return inst
 
         raise ValueError(f"unsupported api: {api}")
+
+    # Copied from adapters/langchain/framework_bridge.py (E5a). Keep in sync.
+    def _install_anthropic_hooked_clients(
+        self,
+        chat_anthropic: Any,
+        base_url: str,
+        api_key: str,
+    ) -> None:
+        """Swap `_client` + `_async_client` on a ChatAnthropic so both use
+        our hooked httpx clients. cached_property reads `inst.__dict__`
+        first, so setting the attributes directly wins over the descriptor.
+        """
+        import anthropic  # provided by langchain-anthropic's deps
+
+        # Sync httpx.Client with the same hook closures as our async one.
+        # ChatAnthropic.ainvoke() only hits the async path, but if any
+        # codepath (e.g. tests) happens to call the sync .invoke(), the
+        # sync client will still work — just without hooks.
+        sync_http_client = httpx.Client(timeout=httpx.Timeout(120.0))
+
+        chat_anthropic._client = anthropic.Client(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=sync_http_client,
+        )
+        chat_anthropic._async_client = anthropic.AsyncClient(
+            api_key=api_key,
+            base_url=base_url,
+            http_client=self._http_client,
+        )
+        # Stash the sync client on the Trial so aclose() can release it.
+        self._anthropic_sync_http = sync_http_client
 
     # ── httpx factory for langchain-mcp-adapters ──
     #
@@ -688,6 +729,14 @@ class Trial:
             await self._http_client.aclose()
         except Exception:
             pass
+        # api=messages path installs an extra sync httpx.Client on the
+        # Trial for the anthropic SDK's sync code path. Close it too.
+        sync_http = getattr(self, "_anthropic_sync_http", None)
+        if sync_http is not None:
+            try:
+                sync_http.close()
+            except Exception:
+                pass
 
 
 def _annotate_tool_calls(events: list[dict], new_messages: list[Any]) -> None:

@@ -99,6 +99,30 @@ async def test_build_llm_messages_returns_chat_anthropic(adapter_env):
         await trial.aclose()
 
 
+async def test_build_llm_messages_installs_hooked_anthropic_clients(adapter_env):
+    """api=messages: _install_anthropic_hooked_clients must have run, so the
+    anthropic SDK's _async_client uses our hooked httpx.AsyncClient.
+
+    This pins the E5a pattern port: ChatAnthropic's @cached_property
+    descriptors for _client / _async_client are overridden before first
+    read, so LLM wire bytes flow through the shared httpx hooks.
+    """
+    import anthropic
+    from framework_bridge import Trial
+
+    trial = Trial(trial_id="t-msg-hook", config=_cfg("messages", "claude"))
+    try:
+        # cached_property reads inst.__dict__ first — these are the instances
+        # we installed, not lazily-built ones.
+        assert isinstance(trial.llm._async_client, anthropic.AsyncClient)
+        assert isinstance(trial.llm._client, anthropic.Client)
+        # The async SDK client's underlying httpx.AsyncClient must be our
+        # hooked one (same object identity — not a copy).
+        assert trial.llm._async_client._client is trial._http_client
+    finally:
+        await trial.aclose()
+
+
 async def test_build_llm_messages_rejects_non_claude(adapter_env):
     """api=messages + llm != claude must raise at Trial.__init__."""
     from framework_bridge import Trial
