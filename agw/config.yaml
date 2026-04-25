@@ -271,7 +271,9 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
-                  mcp_marker_kind: both  # E7 — emit resource AND text markers
+                  mcp_marker_kind: both  # E7 — emit resource AND text markers.
+                  # Requires AGW image built from ibfork/feat/cidgar
+                  # commit 5c96003a or later. Older binaries reject this field.
             backends:
               - mcp:
                   prefixMode: always
