@@ -208,6 +208,13 @@ class Trial:
         # across turns and replay via `message_history=`.
         self._messages: list[Any] = []
 
+        # E13a: state-chain modes (api=responses + state=True) thread
+        # `previous_response_id` per-turn instead of replaying the full
+        # message_history. `_last_response_id` is the natural prev-id
+        # captured from the most recent LLM response body.
+        self._last_response_id: str | None = None
+        self._response_history: list[str] = []
+
         # Per-turn capture
         self._last_request: dict | None = None
         self._last_response: dict | None = None
@@ -392,13 +399,33 @@ class Trial:
         self._last_response = None
         self._events = []
 
+        # E13a: api=responses + state=True chains via previous_response_id
+        # instead of replaying message_history. pydantic-ai's
+        # `OpenAIResponsesModelSettings` exposes `openai_previous_response_id`
+        # — set it via model_settings= per-call. (responses+conv is NOT
+        # currently supported by this adapter; E13b's container-mode path
+        # is out of scope for E13a.)
+        api = self.config.get("api", "chat")
+        state_chain = api == "responses" and bool(self.config.get("state"))
+
+        run_kwargs: dict[str, Any] = {"user_prompt": user_msg}
+        if state_chain:
+            # Don't replay history when we're chaining server-side: the
+            # whole point is that the model already has prior state
+            # via previous_response_id.
+            if self._last_response_id is not None:
+                from pydantic_ai.models.openai import OpenAIResponsesModelSettings
+                run_kwargs["model_settings"] = OpenAIResponsesModelSettings(
+                    openai_previous_response_id=self._last_response_id,
+                )
+        else:
+            # Default behavior: full message_history replay (state=False).
+            run_kwargs["message_history"] = self._messages or None
+
         # Mark window for this turn's agent.run, then invoke.
         self._mark_exchange_start()
         try:
-            result = await self._agent.run(
-                user_prompt=user_msg,
-                message_history=self._messages or None,
-            )
+            result = await self._agent.run(**run_kwargs)
         except Exception as e:  # noqa: BLE001
             result = None
             final_text = f"(pydantic-ai error: {e.__class__.__name__}: {e})"
@@ -406,7 +433,9 @@ class Trial:
             out = getattr(result, "output", None)
             final_text = str(out) if out is not None else ""
             # Accumulate conversation history: pydantic-ai owns the full
-            # list via result.all_messages().
+            # list via result.all_messages(). For state_chain mode the
+            # list still grows so compact() works on it, but turn-N
+            # invocations rely on previous_response_id, not the replay.
             try:
                 self._messages = list(result.all_messages())
             except Exception:
@@ -469,7 +498,27 @@ class Trial:
                 if last_tool_calls:
                     break
 
-        return {
+        # E13a: capture the OpenAI Responses API response id for the
+        # next turn's previous_response_id chain. The id lives at
+        # `body["id"]` of the most recent /responses call.
+        if api == "responses":
+            new_resp_id: str | None = None
+            for ev in reversed(turn_events):
+                if not ev["t"].startswith("llm_hop_"):
+                    continue
+                resp = ev.get("response") or {}
+                body = resp.get("body")
+                if isinstance(body, dict):
+                    rid = body.get("id")
+                    if isinstance(rid, str) and rid.startswith("resp_"):
+                        new_resp_id = rid
+                        break
+            if new_resp_id:
+                self._response_history.append(new_resp_id)
+                if state_chain:
+                    self._last_response_id = new_resp_id
+
+        envelope: dict[str, Any] = {
             "turn_id": turn_id,
             "assistant_msg": final_text,
             "tool_calls": last_tool_calls,
@@ -477,6 +526,12 @@ class Trial:
             "response_captured": response_captured,
             "framework_events": self._events,
         }
+        if api == "responses":
+            envelope["_response_id"] = (
+                self._response_history[-1]
+                if self._response_history else None
+            )
+        return envelope
 
     async def compact(self, strategy: str) -> dict:
         """Plan B T10 — mutate `self._messages` per the requested strategy.

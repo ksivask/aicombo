@@ -1,7 +1,7 @@
 """Tests for adapters/pydantic_ai — framework bridge logic (offline)."""
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -96,5 +96,87 @@ async def test_trial_create_and_close_sets_up_state(monkeypatch):
             assert trial._headers["X-Harness-Trial-ID"] == "t-init"
             MockBuild.assert_called_once()
             MockAgent.assert_called_once()
+        finally:
+            await trial.aclose()
+
+
+# ── E13a regression: state=True on api=responses must thread previous_response_id ──
+
+@pytest.mark.asyncio
+async def test_state_true_on_api_responses_threads_previous_response_id(monkeypatch):
+    """E13a: api=responses + state=True must chain previous_response_id.
+
+    pydantic-ai's `OpenAIResponsesModel` does NOT auto-thread
+    previous_response_id (unlike langchain-openai's
+    `use_previous_response_id=True`). E13a adds explicit threading via
+    `OpenAIResponsesModelSettings(openai_previous_response_id=...)`
+    passed as `model_settings=` on `agent.run()`.
+
+    Before E13a: pydantic-ai had NO previous_response_id mechanism in
+    its adapter at all, and full message_history replay was the only
+    path — so state=True was a silent no-op (just full-history replay
+    with the state checkbox cosmetic).
+
+    We mock the Agent so `agent.run(**kwargs)` captures kwargs; we
+    pre-seed `_last_response_id` on the Trial and assert that the
+    next turn() call passes a `model_settings` carrying that id.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import framework_bridge
+    from framework_bridge import Trial
+
+    captured: dict = {}
+
+    async def fake_run(**kwargs):
+        captured["kwargs"] = kwargs
+        result = MagicMock(name="fake_result")
+        result.output = "next-reply"
+        result.all_messages = MagicMock(return_value=[])
+        return result
+
+    fake_model = MagicMock(name="fake_model")
+    fake_agent = MagicMock(name="fake_agent")
+    fake_agent.run = fake_run
+
+    with patch.object(framework_bridge, "_build_model", return_value=fake_model), \
+         patch("pydantic_ai.Agent", MagicMock(return_value=fake_agent)):
+        trial = Trial(trial_id="t-state-t-pa", config={
+            "framework": "pydantic-ai",
+            "api": "responses",       # ← NOT responses+conv
+            "stream": False,
+            "state": True,             # ← E13a: chain via prev-id
+            "llm": "chatgpt",
+            "mcp": "NONE",
+            "routing": "via_agw",
+        })
+        try:
+            # Pre-seed _last_response_id (simulates a captured prior turn).
+            trial._last_response_id = "resp_PRIOR"
+
+            await trial.turn("t1", "next")
+
+            assert "kwargs" in captured, "agent.run was never called"
+            settings = captured["kwargs"].get("model_settings")
+            assert settings is not None, (
+                "state=True on api=responses should pass model_settings= "
+                "with openai_previous_response_id; got no model_settings."
+            )
+            # `OpenAIResponsesModelSettings` is a TypedDict — can be accessed
+            # via dict subscript.
+            got = (settings or {}).get("openai_previous_response_id") \
+                if hasattr(settings, "get") else getattr(settings, "openai_previous_response_id", None)
+            assert got == "resp_PRIOR", (
+                f"openai_previous_response_id should be 'resp_PRIOR'; "
+                f"got {got!r}. Before E13a pydantic-ai had no "
+                "previous_response_id threading at all."
+            )
+            # And: in state-chain mode we must NOT replay message_history
+            # (the whole point is the server holds prior state).
+            assert captured["kwargs"].get("message_history") is None, (
+                "state-chain mode must not replay message_history; got "
+                f"{captured['kwargs'].get('message_history')!r}"
+            )
         finally:
             await trial.aclose()

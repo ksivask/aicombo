@@ -371,3 +371,79 @@ async def test_force_state_ref_reaches_openai_responses_payload(monkeypatch):
         )
     finally:
         await trial.aclose()
+
+
+# ── E13a regression: state=True on api=responses must thread previous_response_id ──
+
+@pytest.mark.asyncio
+async def test_state_true_on_api_responses_threads_previous_response_id(monkeypatch):
+    """E13a: api=responses + state=True must chain previous_response_id,
+    same as api=responses+conv. Was previously a silent no-op (the
+    threading branch only checked api=='responses+conv'), so users who
+    picked state=True on the responses API got state=False semantics
+    (full history replay) at the wire — a config-vs-runtime mismatch.
+
+    Pre-seeds _last_response_id (simulating a captured prior turn) and
+    confirms the next outbound openai SDK call carries previous_response_id.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    from framework_bridge import Trial
+    from langchain_core.messages import HumanMessage
+
+    captured: dict = {}
+
+    async def fake_create(self, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        from openai.types.responses import Response
+        return Response.model_construct(
+            id="resp_NEW",
+            object="response",
+            created_at=0,
+            model="gpt-4o-mini",
+            status="completed",
+            output=[],
+            parallel_tool_calls=False,
+            tool_choice="auto",
+            tools=[],
+            top_p=1.0,
+            temperature=0.3,
+            metadata={},
+            incomplete_details=None,
+            error=None,
+            instructions=None,
+            usage=None,
+        )
+
+    from openai.resources.responses import AsyncResponses
+    monkeypatch.setattr(AsyncResponses, "create", fake_create)
+
+    trial = Trial(trial_id="t-state-t-lg", config=_cfg(
+        "responses", "chatgpt", state=True,
+    ))
+    try:
+        # Pre-seed _last_response_id (simulates a prior turn having
+        # captured a response id). The next turn() must pick this up
+        # as the natural prev-id and thread it into the outbound payload.
+        trial._last_response_id = "resp_PRIOR"
+        # Mirror the runner: enqueue the user message into the graph
+        # state before turn() drives graph.ainvoke.
+        trial._messages.append(HumanMessage(content="next"))
+
+        try:
+            await trial.turn("t1", "next")
+        except Exception:
+            pass  # Don't care about post-call processing of synthetic resp
+
+        assert captured.get("kwargs") is not None, \
+            "fake_create never invoked — patch did not intercept"
+        got = captured["kwargs"].get("previous_response_id")
+        assert got == "resp_PRIOR", (
+            f"state=True on api=responses should have threaded "
+            f"previous_response_id; got {got!r}. Before E13a the "
+            "threading branch only fired for api=='responses+conv'."
+        )
+    finally:
+        await trial.aclose()

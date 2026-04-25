@@ -627,37 +627,72 @@ class Trial:
         last_assistant_content = ""
         last_tool_calls: list[dict] = []
 
+        # E13a: state-chain modes — both api=responses+conv AND
+        # api=responses + state=True must thread previous_response_id
+        # across turns (chain semantics). The validator/UI permit
+        # state=True on (api=responses, llm=chatgpt); before E13a only
+        # responses+conv was honored at runtime, so state=T silently
+        # behaved like state=F (full history). Now both go through the
+        # same threading path.
+        state_chain = (
+            api == "responses+conv"
+            or (api == "responses" and bool(self.config.get("state")))
+        )
+
         # Iterative agent loop, max MAX_LLM_HOPS LLM hops.
         for hop in range(MAX_LLM_HOPS):
-            # For api=responses+conv, thread previous_response_id as a
-            # per-call kwarg. On hop > 0 we don't override (the hop
-            # exchange is internal); only the first hop needs the cross-
-            # turn link. `use_previous_response_id=True` on the ChatOpenAI
-            # instance makes the framework auto-thread the most recent
-            # response id by default — passing prev_id=<forced> overrides.
+            # On hop=0 (cross-turn link), thread previous_response_id as a
+            # per-call kwarg whenever the trial is in a state-chain mode.
+            # On hop > 0 we don't override (the hop exchange is internal).
+            #
+            # For api=responses+conv: ChatOpenAI was built with
+            # `use_previous_response_id=True` so the framework auto-threads
+            # the most recent response id from messages history. We only
+            # need to OVERRIDE that when `_forced_prev_id` is set.
+            #
+            # For api=responses + state=T (E13a): `use_previous_response_id`
+            # is NOT set on the LLM, so we must explicitly pass our
+            # `_last_response_id` (or `_forced_prev_id` override) to chain.
+            # Without this kwarg the request would replay full message
+            # history (state=F semantics), which is the bug E13a fixes.
             invoke_kwargs: dict[str, Any] = {}
             messages_for_invoke = self.messages
-            if api == "responses+conv" and hop == 0 and self._forced_prev_id:
-                invoke_kwargs["previous_response_id"] = self._forced_prev_id
-                # I1 fix: langchain-openai's `use_previous_response_id=True`
-                # auto-computes previous_response_id by walking `messages`
-                # backward for an AIMessage whose `response_metadata["id"]`
-                # starts with "resp_" — and that auto-computed value
-                # OVERWRITES our kwarg at payload-build time (see
-                # langchain_openai.chat_models.base._get_request_payload:
-                # payload["previous_response_id"] = previous_response_id).
-                # Strip those ids on a shallow-copied message list so the
-                # auto-compute returns None and our forced kwarg survives
-                # to the outbound OpenAI Responses request.
-                messages_for_invoke = [copy.copy(m) for m in self.messages]
-                for m in messages_for_invoke:
-                    md = getattr(m, "response_metadata", None)
-                    if isinstance(md, dict) and "id" in md:
-                        m.response_metadata = {
-                            k: v for k, v in md.items() if k != "id"
-                        }
-                # Consumed — future turns fall back to the natural chain.
-                self._forced_prev_id = None
+            if state_chain and hop == 0:
+                effective_prev = self._forced_prev_id or (
+                    self._last_response_id
+                    if api == "responses" and self.config.get("state")
+                    else None
+                )
+                # responses+conv only needs explicit threading on a forced
+                # override (the rest is handled by use_previous_response_id).
+                if api == "responses+conv":
+                    effective_prev = self._forced_prev_id
+                if effective_prev:
+                    invoke_kwargs["previous_response_id"] = effective_prev
+                    # I1 fix: langchain-openai's `use_previous_response_id=True`
+                    # auto-computes previous_response_id by walking `messages`
+                    # backward for an AIMessage whose `response_metadata["id"]`
+                    # starts with "resp_" — and that auto-computed value
+                    # OVERWRITES our kwarg at payload-build time (see
+                    # langchain_openai.chat_models.base._get_request_payload:
+                    # payload["previous_response_id"] = previous_response_id).
+                    # Strip those ids on a shallow-copied message list so the
+                    # auto-compute returns None and our explicit kwarg survives
+                    # to the outbound OpenAI Responses request.
+                    #
+                    # For api=responses + state=T this scrub is doubly
+                    # important: even though the LLM has no auto-thread
+                    # flag set, openai SDK won't reject the kwarg, but
+                    # we also want clean, minimal outbound payloads.
+                    messages_for_invoke = [copy.copy(m) for m in self.messages]
+                    for m in messages_for_invoke:
+                        md = getattr(m, "response_metadata", None)
+                        if isinstance(md, dict) and "id" in md:
+                            m.response_metadata = {
+                                k: v for k, v in md.items() if k != "id"
+                            }
+                    # Consumed — future turns fall back to the natural chain.
+                    self._forced_prev_id = None
             resp = await llm_to_use.ainvoke(messages_for_invoke, **invoke_kwargs)
             # Record this LLM hop
             if first_request is None:
@@ -678,12 +713,17 @@ class Trial:
             # force_state_ref + _response_id envelope field work. The id
             # lives on resp.response_metadata["id"] for the OpenAI
             # Responses API path in langchain-openai 1.1.x.
+            #
+            # `_last_response_id` is updated whenever the trial is in a
+            # state-chain mode (responses+conv OR responses+state=T per
+            # E13a), so the next turn's threading branch above can pick
+            # it up as the natural prev-id.
             if api in ("responses", "responses+conv"):
                 md = getattr(resp, "response_metadata", None) or {}
                 rid = md.get("id") or md.get("response_id")
                 if rid:
                     self._response_history.append(rid)
-                    if api == "responses+conv":
+                    if state_chain:
                         self._last_response_id = rid
 
             if not tool_calls:

@@ -543,7 +543,18 @@ class Trial:
 
         self._messages.append(HumanMessage(content=user_msg))
 
-        # For responses+conv, thread the effective previous_response_id
+        # E13a: state-chain modes — both api=responses+conv AND
+        # api=responses + state=True must thread previous_response_id
+        # across turns. Validator/UI permit state=T on (api=responses,
+        # llm=chatgpt); before E13a only responses+conv was honored at
+        # runtime, so state=T silently behaved like state=F (full
+        # history). Now both go through the same threading path.
+        state_chain = (
+            api == "responses+conv"
+            or (api == "responses" and bool(self.config.get("state")))
+        )
+
+        # For state-chain modes, thread the effective previous_response_id
         # to the outbound OpenAI Responses API request. _forced_prev_id
         # (set by force_state_ref) wins over _last_response_id when
         # present; it's consumed below.
@@ -560,7 +571,7 @@ class Trial:
         # any kwarg we set.
         #
         # Fix: rebuild the graph for this single turn with a bound LLM
-        # carrying the forced id as a default kwarg (survives into the
+        # carrying the prev id as a default kwarg (survives into the
         # outbound payload), AND strip response_metadata.id from the
         # message history (shallow-copied) so no auto-compute could
         # interfere even if a future version of this code re-enables
@@ -568,7 +579,7 @@ class Trial:
         graph_to_use = self._graph
         messages_for_invoke = self._messages
         effective_prev: str | None = None
-        if api == "responses+conv":
+        if state_chain:
             effective_prev = self._forced_prev_id or self._last_response_id
             if effective_prev:
                 bound_llm = self.llm.bind(previous_response_id=effective_prev)
@@ -655,10 +666,12 @@ class Trial:
         if api in ("responses", "responses+conv") and final_ai is not None:
             meta = getattr(final_ai, "response_metadata", None) or {}
             new_resp_id = meta.get("id") or meta.get("response_id")
-            if new_resp_id and api == "responses+conv":
+            # E13a: also update on api=responses + state=True so the next
+            # turn's threading branch above picks up the natural prev id.
+            if new_resp_id and state_chain:
                 self._last_response_id = new_resp_id
                 self._response_history.append(new_resp_id)
-        if api == "responses+conv":
+        if state_chain:
             self._forced_prev_id = None
 
         envelope: dict[str, Any] = {

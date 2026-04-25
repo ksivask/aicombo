@@ -212,3 +212,61 @@ def test_force_state_ref_rejects_out_of_range(monkeypatch):
         assert out["ok"] is False
         # _forced_prev_id stays None.
         assert trial._forced_prev_id is None
+
+
+# ── E13a regression: state=True on api=responses must thread previous_response_id ──
+
+@pytest.mark.asyncio
+async def test_state_true_on_api_responses_threads_previous_response_id(monkeypatch):
+    """E13a: api=responses + state=True must chain previous_response_id,
+    same as api=responses+conv. The autogen adapter has long had the
+    correct gate (`state_mode = bool(self.config.get("state")) or
+    api == "responses+conv"`), so this test is a regression pin: if a
+    future refactor narrows the condition back to responses+conv only,
+    this test catches it.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import openai
+    from framework_bridge import Trial
+
+    call_log: list[dict] = []
+
+    async def fake_create(**kwargs):
+        call_log.append(dict(kwargs))
+        resp = MagicMock()
+        resp.id = "resp_NEW"
+        resp.output_text = "next-reply"
+        resp.output = []
+        return resp
+
+    fake_openai = MagicMock()
+    fake_openai.responses.create = fake_create
+
+    with patch.object(openai, "AsyncOpenAI", return_value=fake_openai):
+        trial = Trial(trial_id="t-state-t-ag", config={
+            "framework": "autogen",
+            "api": "responses",         # ← NOT responses+conv
+            "stream": False,
+            "state": True,               # ← E13a: chain via prev-id
+            "llm": "chatgpt",
+            "mcp": "NONE",
+            "routing": "via_agw",
+        })
+        try:
+            assert trial._mode == "responses_direct"
+            # Pre-seed _last_response_id (simulates a captured prior turn).
+            trial._last_response_id = "resp_PRIOR"
+
+            await trial.turn("t1", "next")
+
+            assert call_log, "fake_create was never called"
+            got = call_log[-1].get("previous_response_id")
+            assert got == "resp_PRIOR", (
+                f"state=True on api=responses should have threaded "
+                f"previous_response_id; got {got!r}. Before E13a the "
+                "threading gate only fired for api=='responses+conv'."
+            )
+        finally:
+            await trial.aclose()
