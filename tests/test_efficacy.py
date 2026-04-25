@@ -533,3 +533,113 @@ def test_verdict_h_na_when_trial_is_direct_routed():
     assert v["h"].verdict == "na"
     # The compute_verdicts short-circuit reason is "baseline — cidgar not in path".
     assert "cidgar" in v["h"].reason.lower() or "baseline" in v["h"].reason.lower()
+
+
+# ── Anthropic Messages shape tool_use walker tests ────────────────────
+
+def test_verdict_f_pass_anthropic_messages_tool_use_with_full_gar():
+    """Anthropic Messages content[].type=tool_use with input._ib_gar present
+    (5-key JSON string) — verdict (f) must report pass, not na."""
+    cfg = TrialConfig(framework="langchain", api="messages", stream=False, state=False,
+                      llm="claude", mcp="fetch", routing="via_agw")
+    body = {
+        "id": "msg_test",
+        "role": "assistant",
+        "content": [{
+            "type": "tool_use",
+            "id": "toolu_1",
+            "name": "fetch_fetch",
+            "input": {
+                "url": "https://example.com",
+                "_ib_cid": "ib_test12345abc",
+                "_ib_gar": '{"goal":"x","need":"y","impact":"z","dspm":"a","alt":"b"}',
+            },
+        }],
+    }
+    turn = Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+                response={"body": body},
+                started_at="2026-04-25T10:00:00",
+                finished_at="2026-04-25T10:00:05")
+    trial = _trial_with([turn], [], cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "pass", f"got {v['f']}"
+
+
+def test_verdict_f_fail_anthropic_messages_tool_use_with_malformed_gar():
+    """Messages tool_use with _ib_gar missing required keys → fail."""
+    cfg = TrialConfig(framework="langchain", api="messages", stream=False, state=False,
+                      llm="claude", mcp="NONE", routing="via_agw")
+    body = {
+        "content": [{
+            "type": "tool_use", "id": "toolu_1", "name": "weather",
+            "input": {"_ib_gar": '{"goal":"x"}'},  # Only 1 of 5 required keys
+        }],
+    }
+    turn = Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+                response={"body": body},
+                started_at="2026-04-25T10:00:00",
+                finished_at="2026-04-25T10:00:05")
+    trial = _trial_with([turn], [], cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["f"].verdict == "fail"
+    assert "missing keys" in v["f"].reason.lower()
+
+
+def test_verdict_b_anthropic_messages_validates_channel_1_not_just_text():
+    """Regression: verdict (b) must detect Anthropic tool_use as Channel 1
+    evidence, not silently fall through to Channel 2 only."""
+    # Construct a trial where Channel 1 is present (tool_use) but Channel 2
+    # is ABSENT. With the bug, verdict (b) would have to invent something or
+    # fail; correct behavior: pass via Ch1.
+    cfg = TrialConfig(framework="langchain", api="messages", stream=False, state=False,
+                      llm="claude", mcp="weather", routing="via_agw")
+    body = {
+        "content": [{
+            "type": "tool_use", "id": "toolu_1", "name": "weather",
+            "input": {"location": "SF", "_ib_cid": "ib_test12345abc"},
+        }],
+        # No text content block — only tool_use
+    }
+    turn = Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+                response={"body": body},
+                started_at="2026-04-25T10:00:00",
+                finished_at="2026-04-25T10:00:05")
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_test12345abc", backend="claude", raw={},
+                   captured_at="2026-04-25T10:00:02"),
+    ]
+    trial = _trial_with([turn], audit, cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["b"].verdict == "pass", f"got {v['b']}"
+
+
+def test_extract_gar_strings_from_body_messages_shape_helper():
+    """Direct unit test of the new helper."""
+    from efficacy import _extract_gar_strings_from_body_messages_shape
+    body = {
+        "content": [
+            {"type": "text", "text": "hello"},  # ignored
+            {"type": "tool_use", "input": {"_ib_gar": "abc"}},
+            {"type": "tool_use", "input": {"other": "x"}},  # no _ib_gar — skip
+            {"type": "tool_use", "input": {"_ib_gar": "def"}},
+        ],
+    }
+    assert _extract_gar_strings_from_body_messages_shape(body) == ["abc", "def"]
+
+
+def test_body_has_any_tool_call_detects_both_shapes():
+    """The shape-agnostic detector must trigger on either format."""
+    from efficacy import _body_has_any_tool_call
+    # OpenAI shape
+    assert _body_has_any_tool_call({
+        "choices": [{"message": {"tool_calls": [{"id": "x"}]}}]
+    })
+    # Anthropic shape
+    assert _body_has_any_tool_call({
+        "content": [{"type": "tool_use", "id": "x"}]
+    })
+    # Neither
+    assert not _body_has_any_tool_call({"choices": [{"message": {"content": "hi"}}]})
+    assert not _body_has_any_tool_call({"content": [{"type": "text", "text": "hi"}]})
+    assert not _body_has_any_tool_call({})

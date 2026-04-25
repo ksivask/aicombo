@@ -92,6 +92,56 @@ def _find_cid_in_tool_calls_openai(body: dict[str, Any]) -> list[str]:
     return out
 
 
+def _find_cid_in_tool_use_messages(body: dict[str, Any]) -> list[str]:
+    """Extract _ib_cid from anthropic Messages-shape content[].type=tool_use.
+
+    Mirrors _find_cid_in_tool_calls_openai for the Anthropic format. The
+    `input` dict carries the args; cidgar's f3 PATH A injects _ib_cid
+    there (see governance/messages_shape.rs::inject_cid_into_tool_use_response).
+    """
+    out: list[str] = []
+    for c in body.get("content", []) or []:
+        if not isinstance(c, dict) or c.get("type") != "tool_use":
+            continue
+        inp = c.get("input", {}) or {}
+        if isinstance(inp, dict) and "_ib_cid" in inp:
+            cid = inp["_ib_cid"]
+            if isinstance(cid, str):
+                out.append(cid)
+    return out
+
+
+def _extract_gar_strings_from_body_messages_shape(body: dict) -> list:
+    """Pull _ib_gar from anthropic Messages-shape content[].type=tool_use.input.
+
+    Returns a list of raw _ib_gar values. Cidgar may transmit GAR as a
+    JSON-string per spec §3.2.1 — the verdict_f caller handles parsing.
+    """
+    out = []
+    for c in body.get("content", []) or []:
+        if not isinstance(c, dict) or c.get("type") != "tool_use":
+            continue
+        inp = c.get("input", {}) or {}
+        if isinstance(inp, dict) and "_ib_gar" in inp:
+            out.append(inp["_ib_gar"])
+    return out
+
+
+def _body_has_any_tool_call(body: dict) -> bool:
+    """True if body carries tool calls in EITHER OpenAI or Anthropic shape."""
+    if not isinstance(body, dict):
+        return False
+    # OpenAI Completions: choices[i].message.tool_calls
+    for ch in body.get("choices", []) or []:
+        if (ch.get("message", {}) or {}).get("tool_calls"):
+            return True
+    # Anthropic Messages: content[i].type=tool_use
+    for c in body.get("content", []) or []:
+        if isinstance(c, dict) and c.get("type") == "tool_use":
+            return True
+    return False
+
+
 def _find_c2_marker_openai(body: dict[str, Any]) -> str | None:
     """Pull C2 marker from choices[].message.content (text-only response)."""
     choices = body.get("choices", []) or []
@@ -166,10 +216,7 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
 
         for body in bodies:
             choices = body.get("choices", []) or []
-            has_tool_calls = any(
-                (ch.get("message", {}) or {}).get("tool_calls")
-                for ch in choices
-            )
+            has_tool_calls = _body_has_any_tool_call(body)
             has_text = any(
                 (ch.get("message", {}) or {}).get("content")
                 for ch in choices
@@ -177,6 +224,7 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
             if has_tool_calls:
                 any_tool_calls_seen = True
                 observed_c1.update(_find_cid_in_tool_calls_openai(body))
+                observed_c1.update(_find_cid_in_tool_use_messages(body))
             if has_text:
                 any_text_seen = True
                 c2 = _find_c2_marker_openai(body)
@@ -262,11 +310,13 @@ def verdict_f_gar_richness(trial: Trial) -> Verdict:
         bodies = _all_response_bodies(t)
         turn_had_tool_call = False
         for body in bodies:
-            tcs_args = _extract_gar_strings_from_body(body)
+            tcs_args = (
+                _extract_gar_strings_from_body(body)
+                + _extract_gar_strings_from_body_messages_shape(body)
+            )
             # Separately count turns with ANY tool_call (even if _ib_gar omitted)
             if not turn_had_tool_call:
-                choices = body.get("choices", []) or []
-                if any((ch.get("message", {}) or {}).get("tool_calls") for ch in choices):
+                if _body_has_any_tool_call(body):
                     turn_had_tool_call = True
 
             for gar_val in tcs_args:
@@ -299,6 +349,7 @@ def verdict_f_gar_richness(trial: Trial) -> Verdict:
                 gar_valid += 1
 
             # Count tool_calls that had NO _ib_gar in their args
+            # OpenAI Completions shape — choices[].message.tool_calls
             choices = body.get("choices", []) or []
             for ch in choices:
                 msg = ch.get("message", {}) or {}
@@ -311,6 +362,13 @@ def verdict_f_gar_richness(trial: Trial) -> Verdict:
                             gar_omitted += 1
                     except (ValueError, AttributeError):
                         pass
+            # Anthropic Messages shape — content[].type=tool_use.input
+            for c in body.get("content", []) or []:
+                if not isinstance(c, dict) or c.get("type") != "tool_use":
+                    continue
+                inp = c.get("input", {}) or {}
+                if isinstance(inp, dict) and "_ib_gar" not in inp:
+                    gar_omitted += 1
 
         if turn_had_tool_call:
             tool_call_turns += 1
