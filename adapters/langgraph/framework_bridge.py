@@ -124,7 +124,7 @@ def _default_model(llm: str) -> str:
     if llm == "gemini":
         return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
     if llm == "claude":
-        return os.environ.get("DEFAULT_ANTHROPIC_MODEL", "claude-3-5-haiku-20241022")
+        return os.environ.get("DEFAULT_CLAUDE_MODEL", "claude-haiku-4-5")
     if llm == "mock":
         return "mock"
     return "unknown"

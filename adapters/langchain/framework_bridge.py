@@ -108,10 +108,10 @@ def _default_model(llm: str) -> str:
     if llm == "mock":
         return "mock"
     if llm == "claude":
-        # Mirrors the crewai adapter's default (claude-3-5-haiku) — fast
-        # + inexpensive for Plan B smoke coverage; operator can override
-        # via DEFAULT_CLAUDE_MODEL.
-        return os.environ.get("DEFAULT_CLAUDE_MODEL", "claude-3-5-haiku-20241022")
+        # .env.example ships the canonical default. Fallback here is a
+        # safety net for missing-env runs; operator should set
+        # DEFAULT_CLAUDE_MODEL in .env.
+        return os.environ.get("DEFAULT_CLAUDE_MODEL", "claude-haiku-4-5")
     return "unknown"
 
 

@@ -134,14 +134,14 @@ def _default_model_name(api: str, llm: str, requested: str | None) -> str:
         if llm == "ollama":
             return os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
         if llm == "chatgpt":
-            return "gpt-4o-mini"
+            return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
         if llm == "gemini":
-            return "gemini-1.5-flash"
+            return os.environ.get("DEFAULT_GEMINI_MODEL", "gemini-2.0-flash")
         if llm == "mock":
-            return "gpt-4o-mini"
+            return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
     if api in ("responses", "responses+conv"):
         if llm == "chatgpt":
-            return "gpt-4o-mini"
+            return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
     raise ValueError(f"unsupported (api, llm) for llamaindex: ({api}, {llm})")
 
 

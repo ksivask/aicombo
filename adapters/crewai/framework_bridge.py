@@ -137,17 +137,17 @@ def _llm_model_string(config: dict) -> str:
         if llm == "ollama":
             return f"ollama/{requested or os.environ.get('DEFAULT_OLLAMA_MODEL', 'qwen2.5:7b')}"
         if llm == "chatgpt":
-            return f"openai/{requested or 'gpt-4o-mini'}"
+            return f"openai/{requested or os.environ.get('DEFAULT_OPENAI_MODEL', 'gpt-4o-mini')}"
         if llm == "gemini":
-            return f"gemini/{requested or 'gemini-1.5-flash'}"
+            return f"gemini/{requested or os.environ.get('DEFAULT_GEMINI_MODEL', 'gemini-2.0-flash')}"
         if llm == "mock":
             # mock-llm exposes OpenAI-compat chat completions; route via
             # OpenAICompletion. Model name is arbitrary but must match a
-            # recognized openai prefix for the native path; use gpt-4o-mini.
-            return f"openai/{requested or 'gpt-4o-mini'}"
+            # recognized openai prefix for the native path.
+            return f"openai/{requested or os.environ.get('DEFAULT_OPENAI_MODEL', 'gpt-4o-mini')}"
     elif api == "messages":
         if llm == "claude":
-            return f"anthropic/{requested or 'claude-3-5-haiku-20241022'}"
+            return f"anthropic/{requested or os.environ.get('DEFAULT_CLAUDE_MODEL', 'claude-haiku-4-5')}"
     raise ValueError(f"unsupported (api, llm) for crewai: ({api}, {llm})")
 
 
