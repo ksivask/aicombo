@@ -30,9 +30,10 @@ class ModelInfo:
 # before this dict catches up.
 CURATED: dict[str, list[ModelInfo]] = {
     "ollama": [
-        ModelInfo("qwen2.5:7b",  "Qwen 2.5 7B",  "cheap"),
-        ModelInfo("llama3.1:8b", "Llama 3.1 8B", "mid"),
-        ModelInfo("mistral:7b",  "Mistral 7B",   "mid"),
+        ModelInfo("qwen2.5:7b",      "Qwen 2.5 7B",     "cheap"),
+        ModelInfo("llama3.1:8b",     "Llama 3.1 8B",    "mid"),
+        ModelInfo("llama3.1:latest", "Llama 3.1 latest", "mid"),
+        ModelInfo("mistral:7b",      "Mistral 7B",      "mid"),
     ],
     "mock": [
         ModelInfo("mock", "mock-llm", "cheap"),
