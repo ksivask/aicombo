@@ -88,6 +88,16 @@ binds:
               urlRewrite:
                 path:
                   prefix: /
+              # CRITICAL: ai.routes map REQUIRED for Responses-shape dispatch.
+              # Without it, AGW defaults to the Completions parser for every
+              # path under this route → /v1/responses requests fail with
+              # "missing field `messages`" because the Responses body has
+              # `input` not `messages`. Same gotcha as the claude route below
+              # (which needs the map for messages-shape dispatch).
+              ai:
+                routes:
+                  "/v1/chat/completions": completions
+                  "/v1/responses": responses
               governance:
                 kind: cid_gar
                 log_level: debug
