@@ -81,23 +81,32 @@ async def run_trial(
             )
 
             if kind == "user_msg":
-                resp = await adapter_client.drive_turn(
-                    trial_id=trial_id,
-                    turn_id=turn_id,
-                    user_msg=turn_spec.get("content", ""),
-                )
-                # Adapter may echo back a canonical turn_id — prefer that so
-                # audit entries (which use the adapter-side id) align.
-                if resp.get("turn_id"):
-                    turn.turn_id = resp["turn_id"]
-                turn.request = resp.get("request_captured", {})
-                turn.response = resp.get("response_captured", {}) or {}
-                # T11 — also surface the Responses-API response id at the
-                # turn.response level so a subsequent force_state_ref turn
-                # can lookup a target_response_id from this turn.
-                if resp.get("_response_id"):
-                    turn.response["_response_id"] = resp["_response_id"]
-                turn.framework_events = resp.get("framework_events", [])
+                # Wrap the adapter call so a mid-trial 5xx persists as
+                # turn.error instead of propagating out of the for-loop and
+                # silently discarding the turn record + the rest of the
+                # plan's turns + the audit/verdict tail. Mirrors the
+                # try/except already used by the compact + force_state_ref
+                # branches below.
+                try:
+                    resp = await adapter_client.drive_turn(
+                        trial_id=trial_id,
+                        turn_id=turn_id,
+                        user_msg=turn_spec.get("content", ""),
+                    )
+                    # Adapter may echo back a canonical turn_id — prefer that
+                    # so audit entries (which use the adapter-side id) align.
+                    if resp.get("turn_id"):
+                        turn.turn_id = resp["turn_id"]
+                    turn.request = resp.get("request_captured", {})
+                    turn.response = resp.get("response_captured", {}) or {}
+                    # T11 — also surface the Responses-API response id at the
+                    # turn.response level so a subsequent force_state_ref
+                    # turn can lookup a target_response_id from this turn.
+                    if resp.get("_response_id"):
+                        turn.response["_response_id"] = resp["_response_id"]
+                    turn.framework_events = resp.get("framework_events", [])
+                except Exception as e:
+                    turn.error = {"reason": f"user_msg turn failed: {e}"}
             elif kind == "compact":
                 # Plan B T10 — ask the adapter to mutate its internal history
                 # per the requested strategy. No LLM call; no audit entry

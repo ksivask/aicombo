@@ -251,8 +251,16 @@ async def test_runner_abort_mid_plan_preserves_completed_turns(tmp_data_dir):
 
 
 @pytest.mark.asyncio
-async def test_runner_handles_adapter_error(tmp_data_dir):
-    """Adapter raises → trial marked error."""
+async def test_runner_records_user_msg_turn_error_on_adapter_failure(tmp_data_dir):
+    """Adapter raises during user_msg → turn record preserved with turn.error.
+
+    Regression: previously the user_msg branch had no try/except, so a
+    mid-trial 5xx propagated out of the loop and only set trial-level
+    error_reason — the turn record (with whatever framework_events had
+    been captured before the failure) was silently discarded. Fix wraps
+    the adapter call so the turn lands with .error populated and the
+    loop continues (consistent with compact + force_state_ref branches).
+    """
     cfg = TrialConfig(
         framework="langchain", api="chat", stream=False, state=False,
         llm="ollama", mcp="NONE", routing="via_agw",
@@ -275,5 +283,56 @@ async def test_runner_handles_adapter_error(tmp_data_dir):
     )
 
     loaded = store.load("t-err")
-    assert loaded.status == "error"
-    assert "adapter crashed" in (loaded.error_reason or "")
+    # Turn record IS preserved with the error reason captured.
+    assert len(loaded.turns) == 1
+    assert loaded.turns[0].error is not None
+    assert "adapter crashed" in loaded.turns[0].error.get("reason", "")
+    # No trial-level error_reason — this isn't a runner-internal crash.
+    # (Old behavior set this to "adapter crashed" via the outer except —
+    # masked the turn record being silently dropped.)
+    assert not loaded.error_reason
+    # Verdicts ran (loop completed) — proves we didn't bail early.
+    # Verdict (a) likely 'error' because audit is empty, but the
+    # important thing is that compute_verdicts ran AT ALL.
+    assert loaded.verdicts, "verdicts never computed → loop bailed early"
+
+
+@pytest.mark.asyncio
+async def test_runner_continues_subsequent_turns_after_user_msg_failure(tmp_data_dir):
+    """Multi-turn plan: turn 0 fails, turn 1 also attempted (and recorded).
+
+    Mirrors the compact + force_state_ref behavior — failure on one turn
+    doesn't abort the loop. User sees the failure pattern (every turn
+    failing the same way) instead of one failed turn + a black hole.
+    """
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": "first"},
+        {"kind": "user_msg", "content": "second"},
+        {"kind": "user_msg", "content": "third"},
+    ])
+    trial = Trial(trial_id="t-multi-err", config=cfg, turn_plan=plan, status="running")
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(side_effect=RuntimeError("upstream 503"))
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    await run_trial(
+        trial_id="t-multi-err",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
+
+    loaded = store.load("t-multi-err")
+    # All three turns attempted and recorded with errors.
+    assert len(loaded.turns) == 3
+    for i, t in enumerate(loaded.turns):
+        assert t.error is not None, f"turn {i} should have error captured"
+        assert "upstream 503" in t.error.get("reason", "")
