@@ -61,6 +61,44 @@ function invalidReason(row) {
 let gridApi;
 let providers = [];
 
+// E9 — curated model list per provider, fetched lazily and cached
+// in window.__modelsByProvider so the model column's agSelectCellEditor
+// can resolve synchronously when a cell opens. Empty list for unknown
+// providers (the dropdown then shows just the "Custom…" sentinel).
+window.__modelsByProvider = window.__modelsByProvider || {};
+
+async function loadModelsFor(provider) {
+  if (!provider || provider === "NONE") return;
+  if (window.__modelsByProvider[provider]) return;
+  try {
+    const r = await fetch(`${API_BASE}/providers/${provider}/models`);
+    if (!r.ok) return;
+    const j = await r.json();
+    window.__modelsByProvider[provider] = j.models || [];
+  } catch (_e) {
+    // Network blip — leave the cache empty; the editor's synchronous
+    // fallback list still gives the user something usable.
+  }
+}
+
+async function preloadModels() {
+  // Pre-fetch every known provider on grid load + cache in
+  // window.__modelsByProvider. Refresh the model column once cached
+  // so already-rendered rows pick up the display-name + tier formatting.
+  if (!providers.length) {
+    try {
+      const r = await fetch(`${API_BASE}/providers`);
+      if (r.ok) providers = (await r.json()).providers || [];
+    } catch (_e) { /* fall through with empty providers */ }
+  }
+  await Promise.all(
+    (providers || [])
+      .filter(p => p.id && p.id !== "NONE")
+      .map(p => loadModelsFor(p.id))
+  );
+  if (gridApi) gridApi.refreshCells({columns: ["model"], force: true});
+}
+
 // E4 — does any currently-loaded row have baseline_of === rowId? Used to
 // decide whether to render the "🔁 Pairs" action button on a governed row.
 // Grid data is the source of truth (matches what the user sees right now;
@@ -192,6 +230,34 @@ function buildColumnDefs() {
       width: 110,
     },
     {
+      // E9 — Model dropdown. Values come from the curated list cached in
+      // window.__modelsByProvider (populated by preloadModels). The "__custom__"
+      // sentinel prompts the user for a free-text model id (handled in
+      // onCellValueChanged); blank/empty stays blank — runner falls back to
+      // DEFAULT_<PROVIDER>_MODEL env. LLM=NONE rows ignore this column.
+      headerName: "Model", field: "model", editable: true,
+      cellEditor: "agSelectCellEditor",
+      cellEditorParams: params => {
+        const llm = params.data?.llm || "";
+        const cached = window.__modelsByProvider?.[llm] || [];
+        const ids = cached.map(m => m.id);
+        // Always include "" (use default) + "__custom__" sentinel so the
+        // user can clear the cell or supply a one-off id.
+        return {values: ["", ...ids, "__custom__"]};
+      },
+      valueFormatter: params => {
+        if (params.value === "__custom__") return "Custom…";
+        if (!params.value) return "(default)";
+        const llm = params.data?.llm;
+        const m = (window.__modelsByProvider?.[llm] || [])
+          .find(x => x.id === params.value);
+        return m ? `${m.display} (${m.tier})` : params.value;
+      },
+      cellStyle: params => (params.data?.llm === "NONE"
+        ? {color: "#bbb", fontStyle: "italic"} : null),
+      width: 180,
+    },
+    {
       headerName: "MCP", field: "mcp", editable: true,
       cellEditor: "agSelectCellEditor",
       cellEditorParams: {values: ["NONE", "weather", "news", "library", "fetch"]},
@@ -285,6 +351,11 @@ function buildColumnDefs() {
 
 async function initGrid() {
   await fetchProviders();
+  // E9 — kick off model-list preload in parallel with grid mount. Runs
+  // asynchronously; the model column's editor falls back to whatever's
+  // in window.__modelsByProvider when opened (empty cache → just the
+  // "__custom__" sentinel, which is still a usable degraded state).
+  preloadModels();
   const rows = await fetchMatrix();
 
   const gridOptions = {
@@ -304,6 +375,30 @@ async function initGrid() {
 
 let debounceTimer = null;
 async function onCellValueChanged(event) {
+  // E9 — handle the model column's "__custom__" sentinel synchronously
+  // BEFORE debounce + PATCH, so the sentinel never gets persisted.
+  // window.prompt() blocks; if the user cancels we revert to oldValue.
+  const colId = event.column?.getColId();
+  if (colId === "model" && event.newValue === "__custom__") {
+    const custom = window.prompt(
+      "Enter a custom model id (leave blank to use default):",
+      event.oldValue && event.oldValue !== "__custom__" ? event.oldValue : ""
+    );
+    const next = (custom == null) ? (event.oldValue || "") : custom.trim();
+    // setDataValue here re-fires onCellValueChanged with the resolved
+    // value; that recursive call goes through the normal PATCH path.
+    event.node.setDataValue("model", next === "__custom__" ? "" : next);
+    return;
+  }
+  // E9 — lazy-load the new provider's model list when the LLM changes
+  // so the model dropdown shows the right entries on the next open.
+  if (colId === "llm" && event.newValue && event.newValue !== "NONE") {
+    loadModelsFor(event.newValue).then(() => {
+      if (gridApi) gridApi.refreshCells({
+        rowNodes: [event.node], columns: ["model"], force: true,
+      });
+    });
+  }
   clearTimeout(debounceTimer);
   debounceTimer = setTimeout(async () => {
     const row = event.data;
@@ -317,10 +412,10 @@ async function onCellValueChanged(event) {
     }
     // Cells whose styling/editability depends on other columns must redraw
     // when those source columns change.
-    const colId = event.column?.getColId();
     if (colId === "llm" || colId === "mcp") {
-      // Actions + State both depend on llm; redraw the whole row to refresh
-      // .row-not-runnable class + State cell editability/style.
+      // Actions + State + Model all depend on llm; redraw the whole row to
+      // refresh .row-not-runnable class + State cell editability/style +
+      // Model cell formatter (which keys off llm).
       event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
     }
     if (colId === "api") {

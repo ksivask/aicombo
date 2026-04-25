@@ -105,6 +105,12 @@ class RowConfig(BaseModel):
     llm: str
     mcp: str
     routing: str = "via_agw"
+    # E9 — optional per-row model override, populated by the matrix UI's
+    # Model dropdown. Empty string / None means "use the adapter's
+    # DEFAULT_<PROVIDER>_MODEL env fallback". Curated values are surfaced
+    # by GET /providers/{id}/models; "__custom__" is a UI-only sentinel
+    # that's never persisted (the frontend prompts for free text).
+    model: str | None = None
     # Plan B T10 — opt-in flag that switches the row's default turn plan to
     # `with_mcp_with_compact` so verdict (d) has a compact turn to bracket.
     with_compact: bool = False
@@ -145,6 +151,21 @@ def info():
 @router.get("/providers")
 def providers_endpoint():
     return {"providers": get_providers()}
+
+
+@router.get("/providers/{provider_id}/models")
+def provider_models_endpoint(provider_id: str):
+    """Return curated models for a provider. Backed by harness/models.py.
+
+    Sources: env override (``<PROVIDER>_MODELS=a,b,c``) wins; otherwise
+    the curated dict in models.py. Unknown providers return an empty
+    list — the UI falls back to a free-text input.
+    """
+    from models import get_models, to_jsonable
+    return {
+        "provider": provider_id,
+        "models": to_jsonable(get_models(provider_id)),
+    }
 
 
 @router.post("/validate")
@@ -345,6 +366,10 @@ async def trial_run(row_id: str):
         framework=framework, api=row["api"],
         stream=row.get("stream", False), state=row.get("state", False),
         llm=row["llm"], mcp=row["mcp"], routing=row.get("routing", "via_agw"),
+        # E9 — empty string is treated as "no override" by the adapter
+        # (which then falls back to DEFAULT_<PROVIDER>_MODEL). None and ""
+        # are equivalent at the wire level.
+        model=row.get("model") or None,
     )
     # T12 — prefer per-row override when the user has saved one via the drawer.
     plan_dict = row.get("turn_plan_override") or default_turn_plan(row)

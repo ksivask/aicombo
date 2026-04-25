@@ -20,6 +20,29 @@ def test_providers_returns_expected_set():
         assert {"NONE", "ollama", "claude", "chatgpt", "gemini"} <= ids
 
 
+# ── E9 — GET /providers/{id}/models ──
+
+def test_provider_models_endpoint_returns_curated_list():
+    with TestClient(app) as client:
+        r = client.get("/providers/chatgpt/models")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["provider"] == "chatgpt"
+        assert isinstance(body["models"], list)
+        assert len(body["models"]) >= 3
+        # Each entry has full metadata
+        first = body["models"][0]
+        assert "id" in first and "display" in first and "tier" in first
+
+
+def test_provider_models_endpoint_returns_empty_for_unknown():
+    with TestClient(app) as client:
+        r = client.get("/providers/unknown_provider/models")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["models"] == []
+
+
 def test_validate_chat_api_disables_state():
     with TestClient(app) as client:
         r = client.post("/validate", json={"row_config": {
