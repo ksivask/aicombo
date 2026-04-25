@@ -229,13 +229,11 @@ function renderTurnCard(trial, t, i) {
   const resp = t.response || {};
   const audits = pickAudits(trial, t);
   const events = Array.isArray(t.framework_events) ? t.framework_events : [];
-  // Auto-collapse the bookend summaries on multi-turn trials — Steps + Audit
-  // carry the actual cidgar evidence, summary is just first/last HTTP bytes.
-  // For single-turn trials, summary IS most of the data so keep it open.
-  const isMultiTurn = (trial.turns?.length || 1) > 1;
-  const summaryOpen = isMultiTurn ? "" : "open";
+  // All sections collapsed by default — user expands what they need. Reduces
+  // visual noise on multi-turn / MCP-heavy trials while still letting
+  // single-turn trials drill in with one click.
   const stepsBlock = events.length ? `
-      <details open><summary><strong>Steps</strong> — multi-step framework flow (${events.length} events)</summary>
+      <details><summary><strong>Steps</strong> — multi-step framework flow (${events.length} events)</summary>
         <div class="section steps-list">
           ${events.map((ev, idx) => renderEventStepCard(ev, idx)).join("")}
         </div>
@@ -243,7 +241,7 @@ function renderTurnCard(trial, t, i) {
   return `
     <div class="turn-card">
       <h4>Turn ${i}: ${escapeHtml(t.kind)} <span class="turn-id">${escapeHtml(t.turn_id || '')}</span></h4>
-      <details ${summaryOpen}><summary><strong>Summary: First request</strong> — what the adapter sent on the first HTTP call of this turn (pre-cidgar mutation)</summary>
+      <details><summary><strong>Summary: First request</strong> — what the adapter sent on the first HTTP call of this turn (pre-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>${escapeHtml(req.method || 'POST')}</strong> ${escapeHtml(req.url || '')}</div>
           <div class="subhead">Headers</div>
@@ -252,7 +250,7 @@ function renderTurnCard(trial, t, i) {
           ${renderBody(req.body)}
         </div>
       </details>
-      <details ${summaryOpen}><summary><strong>Summary: Final response</strong> — what AGW returned on the last HTTP call of this turn (post-cidgar mutation)</summary>
+      <details><summary><strong>Summary: Final response</strong> — what AGW returned on the last HTTP call of this turn (post-cidgar mutation)</summary>
         <div class="section">
           <div class="http-line"><strong>HTTP ${escapeHtml(String(resp.status || '?'))}</strong> ${resp.elapsed_ms ? `(${resp.elapsed_ms}ms)` : ''}</div>
           <div class="subhead">Headers</div>
@@ -262,7 +260,7 @@ function renderTurnCard(trial, t, i) {
         </div>
       </details>
       ${stepsBlock}
-      <details open><summary><strong>Governance audit</strong> — AGW-side view of this turn (${audits.length} entries)</summary>
+      <details><summary><strong>Governance audit</strong> — AGW-side view of this turn (${audits.length} entries)</summary>
         <div class="section">${renderAudit(audits)}</div>
       </details>
     </div>
