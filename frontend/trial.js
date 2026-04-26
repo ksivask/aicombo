@@ -255,6 +255,41 @@ function copyPreBtn(label = "📋") {
   return `<button class="copy-btn copy-pre-btn" title="copy contents to clipboard">${label}</button>`;
 }
 
+// navigator.clipboard.writeText requires a secure context — HTTPS, OR
+// http://localhost / http://127.0.0.1. The aiplay UI is typically served
+// over http://<host-IP>:8000 (multipass/UTM/Docker host IP), which is
+// NOT a secure context. Modern Firefox/Chrome reject the modern API on
+// HTTP+IP origins (NotAllowedError / undefined). Fall back to the legacy
+// textarea+execCommand("copy") path which works on HTTP+IP.
+async function copyTextToClipboard(text) {
+  if (window.isSecureContext && navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(text);
+      return true;
+    } catch {
+      // fall through to legacy
+    }
+  }
+  // Legacy path: create off-screen textarea, select, execCommand("copy"),
+  // remove. Requires the click event to still be in the call stack
+  // (browsers gate execCommand on user-activation).
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.setAttribute("readonly", "");
+  ta.style.cssText = "position:fixed;top:0;left:0;opacity:0;pointer-events:none;";
+  document.body.appendChild(ta);
+  ta.select();
+  ta.setSelectionRange(0, text.length);
+  let ok = false;
+  try {
+    ok = document.execCommand("copy");
+  } catch {
+    ok = false;
+  }
+  document.body.removeChild(ta);
+  return ok;
+}
+
 if (!window.__copyBtnInstalled) {
   document.addEventListener("click", async (e) => {
     if (!e.target.matches?.(".copy-pre-btn")) return;
@@ -262,12 +297,8 @@ if (!window.__copyBtnInstalled) {
     const pre = wrapper?.querySelector("pre");
     if (!pre) return;
     const orig = e.target.textContent;
-    try {
-      await navigator.clipboard.writeText(pre.textContent);
-      e.target.textContent = "✓";
-    } catch {
-      e.target.textContent = "✗";
-    }
+    const ok = await copyTextToClipboard(pre.textContent);
+    e.target.textContent = ok ? "✓" : "✗";
     setTimeout(() => { e.target.textContent = orig; }, 800);
   });
   window.__copyBtnInstalled = true;
