@@ -39,9 +39,14 @@ def _ensure_adapter_on_path():
 
 
 def _cfg_responses():
+    """B-NEW-1: pin the chain-trim path on api=responses+state=T (E13a),
+    NOT on api=responses+conv. After B-NEW-1, +conv compact is an
+    honest no-op (continuity lives in the OpenAI conversation container,
+    not in `_response_history`). The chain-trim assertions below only
+    apply to chain mode."""
     return {
         "framework": "autogen",
-        "api": "responses+conv",
+        "api": "responses",
         "stream": False,
         "state": True,
         "llm": "chatgpt",
@@ -99,5 +104,57 @@ async def test_compact_responses_direct_empty_history_is_noop(trial):
         assert out["history_len_before"] == 0
         assert out["history_len_after"] == 0
         assert trial._last_response_id is None
+    finally:
+        await trial.aclose()
+
+
+# ── B-NEW-1 regression: +conv compact must be an honest no-op ──
+
+@pytest.mark.parametrize("strategy", ["drop_half", "drop_tool_calls", "summarize"])
+async def test_compact_responses_conv_is_honest_noop(monkeypatch, strategy):
+    """B-NEW-1 regression: +conv compact must report 'no client-side history'
+    not the misleading 'compacted _response_history chain instead'.
+
+    Pre-fix the autogen adapter's `_compact_responses()` fell through to
+    the chain-trim logic for +conv mode and emitted a `note` claiming it
+    had compacted the chain. But +conv keeps `_response_history` empty
+    (continuity lives server-side in the conversation container) so the
+    note was always false. Mirrors the existing langchain +conv branch."""
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://gateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    _ensure_adapter_on_path()
+    import openai
+    from framework_bridge import Trial
+
+    cfg = {
+        "framework": "autogen",
+        "api": "responses+conv",
+        "stream": False,
+        "state": True,
+        "llm": "chatgpt",
+        "mcp": "NONE",
+        "routing": "via_agw",
+    }
+    with patch.object(openai, "AsyncOpenAI", return_value=MagicMock()):
+        trial = Trial(trial_id="t-ag-conv-compact", config=cfg)
+    try:
+        # Simulate an already-minted conversation container so the note
+        # references it (matches the langchain regression's shape).
+        trial._conversation_id = "conv_test_xxx"
+
+        out = await trial.compact(strategy)
+        assert out["strategy"] == strategy
+        assert out["history_len_before"] == 0
+        assert out["history_len_after"] == 0
+        note = out.get("note", "").lower()
+        assert "conversation container" in note or "no client-side history" in note, (
+            f"misleading note for +conv compact: {out.get('note')!r}"
+        )
+        # Anti-regression: must NOT mention "chain" (the misleading old text).
+        assert "chain" not in note, (
+            f"+conv mode misreports as chain-mode: {note!r}"
+        )
+        # Must mention the conversation id so operators can correlate.
+        assert "conv_test_xxx" in out["note"]
     finally:
         await trial.aclose()

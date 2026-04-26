@@ -362,6 +362,10 @@ class Trial:
         llm-chatgpt route to map /v1/conversations to passthrough — see
         agw/config.yaml.
         """
+        # Single-trial-at-a-time runner invariant — no asyncio.Lock needed.
+        # If E18 (concurrent trials) ever lands, this needs protection: two
+        # concurrent +conv turns on the same Trial would race the if-None
+        # check and BOTH issue POST /v1/conversations, leaking one container.
         if self._conversation_id is not None:
             return self._conversation_id
         base_url = pick_llm_base_url(

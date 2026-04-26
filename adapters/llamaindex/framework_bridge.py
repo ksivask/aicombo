@@ -331,6 +331,10 @@ class Trial:
         llm-chatgpt route to map /v1/conversations to passthrough — see
         agw/config.yaml.
         """
+        # Single-trial-at-a-time runner invariant — no asyncio.Lock needed.
+        # If E18 (concurrent trials) ever lands, this needs protection: two
+        # concurrent +conv turns on the same Trial would race the if-None
+        # check and BOTH issue POST /v1/conversations, leaking one container.
         if self._conversation_id is not None:
             return self._conversation_id
         r = await self._http_client.post(
@@ -819,7 +823,35 @@ class Trial:
         }
 
     def _compact_responses(self, strategy: str) -> dict:
-        """Compact `_response_history` (responses_direct mode)."""
+        """Compact the responses_direct response-id history.
+
+        Two sub-modes share this path:
+          * api=responses + state=T (E13a) — `_response_history` is the
+            chain of `previous_response_id`s threaded across turns. We
+            trim the older half here.
+          * api=responses+conv (E13b) — `_response_history` is intentionally
+            EMPTY: continuity lives in the OpenAI Conversations API
+            container (`conv_xxx`), not in any client-side chain. The
+            Conversations API exposes no container-level compact / trim
+            primitive, so compact() is an honest no-op here. Mirrors the
+            langchain adapter's +conv branch.
+        """
+        api = self.config.get("api")
+        if api == "responses+conv":
+            # E13b: +conv tracks server-side via the conversation container;
+            # there's no client-side _response_history to trim, and OpenAI's
+            # Conversations API has no container-level compact endpoint.
+            return {
+                "strategy": strategy,
+                "history_len_before": 0,
+                "history_len_after": 0,
+                "note": (
+                    "responses+conv mode tracks state via the OpenAI "
+                    "conversation container "
+                    f"({self._conversation_id or 'not yet minted'}); "
+                    "no client-side history to compact (no-op)"
+                ),
+            }
         before = len(self._response_history)
         if strategy in ("drop_half", "drop_tool_calls", "summarize"):
             half = before // 2
