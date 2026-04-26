@@ -978,22 +978,108 @@ def verdict_i_tools_list_correlation(trial: Trial) -> Verdict:
     )
 
 
+def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
+    """(k) cross-API continuity — E24 multi-LLM-same-CID survival.
+
+    For combo trials (multi-LLM round-robin via the E24 adapter): walk
+    the audit stream by route and verify that at least one CID appears
+    on EVERY LLM route touched in this trial. If it does, the AGW CID
+    survived every LLM switch (the design promise of combo + E24); if
+    it doesn't, the framework dropped the marker on a switch and AGW
+    re-minted a fresh CID.
+
+    Verdict shape:
+      pass — at least one CID is present on every route observed
+      fail — cross-route CID intersection is empty (broken at switch),
+             OR some routes had no CIDs at all (entries lost)
+      na   — no LLM-backend audit entries (chat-only direct-mcp run)
+      na   — single route only (single-LLM trial — verdict not applicable)
+
+    The verdict consumes `backend` strings prefixed with "llm-" (matches
+    AGW's audit log convention for routed LLM calls). Routes for MCP
+    backends or direct-mcp are excluded — verdict (k) is LLM-side only.
+    """
+    audits = (
+        trial.audit_entries if hasattr(trial, "audit_entries")
+        else trial.get("audit_entries", [])
+    )
+
+    def _backend(a) -> str | None:
+        return getattr(a, "backend", None) if not isinstance(a, dict) else a.get("backend")
+
+    def _cid(a) -> str | None:
+        return getattr(a, "cid", None) if not isinstance(a, dict) else a.get("cid")
+
+    llm_audits = [
+        a for a in audits
+        if (_backend(a) or "").startswith("llm-")
+    ]
+    if not llm_audits:
+        return Verdict("na", "no llm-* backend audits in trial")
+
+    routes_seen = {_backend(a) for a in llm_audits}
+    if len(routes_seen) < 2:
+        return Verdict(
+            "na",
+            f"single-route trial ({sorted(routes_seen)}); "
+            "verdict (k) is multi-route only",
+        )
+
+    cids_per_route: dict[str, set[str]] = {}
+    for a in llm_audits:
+        route = _backend(a)
+        cid = _cid(a)
+        if cid:
+            cids_per_route.setdefault(route, set()).add(cid)
+
+    # If some routes registered zero CID entries, we can't measure
+    # continuity — that's a fail (a route had LLM traffic but no CIDs
+    # observable, suggesting cidgar wasn't in path on that hop).
+    routes_without_cid = routes_seen - set(cids_per_route)
+    if routes_without_cid:
+        return Verdict(
+            "fail",
+            f"routes {sorted(routes_without_cid)} had no CID-bearing "
+            f"audits — CID was not present on every LLM route",
+        )
+
+    common_cids = set.intersection(*cids_per_route.values())
+    if common_cids:
+        return Verdict(
+            "pass",
+            f"CID(s) {sorted(common_cids)} survived across "
+            f"{len(routes_seen)} routes ({sorted(routes_seen)})",
+        )
+    return Verdict(
+        "fail",
+        f"no CID common across all {len(routes_seen)} routes "
+        f"{sorted(routes_seen)} — CID reset at LLM switch boundary",
+    )
+
+
 def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f, h, i} verdicts.
+    """Return {a, b, c, d, e, f, h, i, k} verdicts.
 
     Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 added e;
-    E4 added h (latency overhead vs baseline pair); E20 (this commit)
-    adds i (tools_list snapshot correlation rate).
+    E4 added h (latency overhead vs baseline pair); E20 added i
+    (tools_list snapshot correlation rate); E24 (this commit) adds k
+    (cross-API continuity for multi-LLM combo trials).
 
     `pair_resolver` is injected straight through to verdict_h_overhead so
     callers (esp. tests) can avoid the disk-based matrix lookup.
     """
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na, "i": na}
+        return {
+            "a": na, "b": na, "c": na, "d": na, "e": na,
+            "f": na, "h": na, "i": na, "k": na,
+        }
     if trial.status == "aborted":
         na = Verdict("na", "trial aborted before completion")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na, "i": na}
+        return {
+            "a": na, "b": na, "c": na, "d": na, "e": na,
+            "f": na, "h": na, "i": na, "k": na,
+        }
     return {
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
@@ -1003,4 +1089,5 @@ def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
         "f": verdict_f_gar_richness(trial),
         "h": verdict_h_overhead(trial, pair_resolver=pair_resolver),
         "i": verdict_i_tools_list_correlation(trial),
+        "k": verdict_k_cross_api_continuity(trial),
     }

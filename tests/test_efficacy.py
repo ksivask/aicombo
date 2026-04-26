@@ -822,6 +822,107 @@ def test_verdict_i_na_when_no_tool_call_audits():
     assert "no tool_call audits" in v["i"].reason
 
 
+# ── E24 — verdict (k) cross-API continuity (combo / multi-LLM trials) ──
+
+
+def _llm_audit(backend: str, cid: str | None) -> AuditEntry:
+    """Build an llm-* backend AuditEntry. Mirrors the convention used by
+    AGW's audit log: backend strings for routed LLM calls are prefixed
+    `llm-<provider>` (verdict_k filters on this prefix)."""
+    return AuditEntry(
+        trial_id="t",
+        turn_id=None,
+        phase="llm_request",
+        cid=cid,
+        backend=backend,
+        raw={},
+        captured_at="2026-04-26T00:00:00+00:00",
+    )
+
+
+def test_verdict_k_pass_when_cid_common_across_routes():
+    """Two routes (llm-chatgpt, llm-claude) both carry CID ib_aaa →
+    intersection non-empty → pass. The "design promise" of E24."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "pass", f"got {v['k']}"
+    assert "ib_aaaaaaaaaaaa" in v["k"].reason
+
+
+def test_verdict_k_fail_when_no_common_cid_across_routes():
+    """Two routes, distinct CIDs (chatgpt has ib_aaa, claude has ib_bbb,
+    no overlap) → fail. CID got reset at the LLM-switch boundary."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  "ib_bbbbbbbbbbbb"),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "fail", f"got {v['k']}"
+    assert "no CID common" in v["k"].reason
+
+
+def test_verdict_k_fail_when_route_lacks_any_cid():
+    """One route had LLM traffic but no CID-bearing audits — that's a
+    failure of CID propagation, not a "verdict not applicable"."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  None),  # no CID on this route's entry
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "fail", f"got {v['k']}"
+    assert "had no CID-bearing" in v["k"].reason
+
+
+def test_verdict_k_na_for_single_route():
+    """Single LLM route → not a multi-LLM trial → verdict (k) doesn't
+    apply (it's the sibling of verdict (c) for cross-API specifically)."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "na", f"got {v['k']}"
+    assert "single-route" in v["k"].reason
+
+
+def test_verdict_k_na_for_no_llm_audits():
+    """No llm-* backend audits at all (e.g. direct-mcp run) → na."""
+    audits = [
+        AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
+                   cid=None, backend="weather-mcp", raw={}),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "na", f"got {v['k']}"
+    assert "no llm-" in v["k"].reason
+
+
+def test_verdict_k_pass_three_routes_all_share_one_cid():
+    """3 routes (chatgpt, claude, ollama) all carry the same CID ib_xxx →
+    intersection {ib_xxx} → pass. Validates the set.intersection semantics
+    when more than 2 routes are involved."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_xxxxxxxxxxxx"),
+        _llm_audit("llm-chatgpt", "ib_unique_chat"),  # extra CID on one route
+        _llm_audit("llm-claude",  "ib_xxxxxxxxxxxx"),
+        _llm_audit("llm-ollama",  "ib_xxxxxxxxxxxx"),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "pass", f"got {v['k']}"
+    assert "ib_xxxxxxxxxxxx" in v["k"].reason
+    # Must report all 3 routes in the reason (sanity check).
+    assert "3 routes" in v["k"].reason
+
+
 def test_body_has_any_tool_call_detects_both_shapes():
     """The shape-agnostic detector must trigger on either format."""
     from efficacy import _body_has_any_tool_call
