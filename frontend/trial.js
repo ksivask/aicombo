@@ -1176,8 +1176,31 @@ function renderCidFlowTab(trial) {
         ${auditOnlyCount ? `<span class="cid-legend-chip auditonly">${auditOnlyCount} audit-only (channels broke)</span>` : ""}
       </div>
       <div class="cid-flow-legend">
-        Solid edges: turn→CID (channel evidence in body) and audit→CID (governance log).
-        Dotted edges: turn→audit (header-demux or time-window correlation).
+        <div><span class="legend-glyph solid">━</span> <strong>Solid</strong> — CID was OBSERVED on the wire (turn body) or in the governance log (audit entry).</div>
+        <div><span class="legend-glyph dotted">┄</span> <strong>Dotted</strong> — turn↔audit correlation only (which audits belong to which turn). No CID claim.</div>
+        <details class="cid-flow-help">
+          <summary>What each edge means in practice</summary>
+          <div class="cid-flow-help-body">
+            <p><strong>Solid <code>turn → CID</code></strong> — the harness scanned that turn's request/response bodies and FOUND the CID. This is the strongest signal that AGW's channels did their job:</p>
+            <ul>
+              <li><strong>C1</strong> (tool args <code>_ib_cid</code>) — AGW injected the CID into the MCP <code>tools/call</code> arguments and the agent passed it through to the next turn.</li>
+              <li><strong>C2</strong> (text marker <code>&lt;!-- ib:cid=… --&gt;</code>) — AGW appended an HTML comment to the LLM's text reply and the agent kept it in subsequent turns.</li>
+              <li><strong>C3</strong> (MCP resource block) — AGW added a <code>resource</code> content block at <code>gateway-meta://conv/{cid}</code> to the tool result and the agent didn't strip it.</li>
+            </ul>
+            <p><strong>Solid <code>audit → CID</code></strong> — AGW's governance pipeline emitted a structured log entry tagged with that CID (read off the agentgateway container's stdout via <code>docker logs -f</code>). This is what AGW SAW; pair with the turn→CID edges to see if the channels actually delivered it back to the agent.</p>
+            <p><strong>Dotted <code>turn → audit</code></strong> — the harness needs to know which audits "belong" to which turn (e.g., for verdict (h) latency overhead). Two correlation strategies, in order:</p>
+            <ol>
+              <li><strong>Header-demux</strong> — if the adapter propagated <code>X-Aiplay-Trial-Id</code>/<code>X-Aiplay-Turn-Id</code> headers to AGW, the audit entry carries them and matches exactly.</li>
+              <li><strong>Time-window fallback</strong> — when headers aren't present, the harness falls back to "audits whose timestamp lies within [turn.started_at, turn.finished_at]". Less precise (cross-turn races possible) but always available.</li>
+            </ol>
+            <p><strong>What the colors on CID nodes mean</strong></p>
+            <ul>
+              <li><span class="legend-color preserved">●</span> <strong>green</strong> — CID appears in <strong>≥2 turns</strong>. Channels worked AND the agent kept the CID across turn boundaries. Verdict (c) <em>continuity</em> passes.</li>
+              <li><span class="legend-color single">●</span> <strong>yellow</strong> — CID appears in <strong>1 turn</strong> only. Fine for trivial single-turn trials; suspect for multi-turn ones.</li>
+              <li><span class="legend-color auditonly">●</span> <strong>red</strong> — CID appears <strong>only in audit logs</strong>, never on the wire. AGW emitted it but no channel landed it back into the agent's context. Channels broke; verdict (a) <em>presence</em> typically fails.</li>
+            </ul>
+          </div>
+        </details>
       </div>
       <pre class="mermaid">${escapeHtml(mer)}</pre>
       <details class="cid-flow-source">
