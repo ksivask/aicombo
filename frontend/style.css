@@ -421,6 +421,29 @@ button.btn-export {
   margin: 0 2px;
 }
 button.btn-export:hover { background: #eaeaea; border-color: #999; }
+
+/* E6 stamp: warning badge revealed on trials whose api ∈ {responses,
+   responses+conv}. Mimics a rubber-stamp look so it reads at a glance
+   even on a busy header — slight tilt, double border, monospace. */
+.e6-stamp {
+  margin-left: auto;          /* push to right edge of the flex row */
+  display: inline-block;
+  padding: 4px 10px;
+  font-family: ui-monospace, "SF Mono", monospace;
+  font-size: 12px;
+  font-weight: 700;
+  color: #b91c1c;
+  background: #fef2f2;
+  border: 2px solid #b91c1c;
+  border-radius: 3px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  cursor: help;
+  transform: rotate(-2deg);
+  box-shadow: 0 0 0 1px #fef2f2 inset;
+}
+.e6-stamp:hover { background: #fee2e2; }
+
 .verdict-card.aborted,
 .verdict-aborted {
   border-left-color: #fbbf24;
