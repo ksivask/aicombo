@@ -61,3 +61,42 @@ Session running in parent directory `/mnt/share/ws/agw-gh` where cidgar finaliza
 - User decisions on D1-D5.
 - Draft design doc at `/my/ws/aiplay/docs/design.md`.
 - Implementation plan after design approval.
+
+## 2026-04-23 — AGW review-fix bundle (B-NEW-3 + I-NEW-4 + M-NEW-2 + M-NEW-5)
+
+### Entry — Four AGW-side fixes from comprehensive code review
+
+**User prompt:** Apply four review fixes across two AGW worktrees (cidgar source + docs). B-NEW-3: pin gating contract via test + spec doc. I-NEW-4: throttle Raw fallback warn. M-NEW-2: Bedrock Raw conversion error test. M-NEW-5: byte-equality round-trip for number formats.
+
+**Reasoning:**
+- B-NEW-3: gating IS intentional (resource_block acts as master toggle). Test pins the cliff so future refactors must be conscious. Doc explicates the historical-name issue.
+- I-NEW-4: chose first-seen warn + subsequent debug pattern over 1-in-N sample because operators want to KNOW fallback happened (volume is the problem, not existence).
+- M-NEW-2: pin the clean-error path so a future refactor doesn't silently break. Verified bedrock.rs:1611-1620 already returns UnsupportedConversion.
+- M-NEW-5: tests byte-level number preservation through serde_json round-trip — operationally sensitive for OpenAI passthrough.
+
+**Actions:**
+- See conversation log entries below; final commit SHAs reported in summary.
+
+## 2026-04-23 — aiplay review-fix bundle (B-NEW-1 + B-NEW-2)
+
+### Entry — Two aiplay-side fixes from comprehensive code review
+
+**User prompt:** "yes, fix all B-NEW, I-NEW and M-NEW" — direct directive to dispatch fixes for all 12 review findings (3 bugs, 4 improvements, 5 minor) across aiplay + AGW.
+
+**Reasoning:**
+- Dispatched 2 background subagents in parallel (aiplay scope + AGW scope) plus the in-flight Services topology tab subagent.
+- All 3 hit Anthropic API rate limit (resets 5:40am UTC) before committing.
+- Salvaged work from working trees: B-NEW-1 + B-NEW-2 in aiplay (4 adapters + 2 test files), B-NEW-3 + I-NEW-4 + M-NEW-2 + M-NEW-5 in AGW (2 source files), plus 291 lines of staged Services tab work.
+- Subagent A added llamaindex test for B-NEW-1 but missed the llamaindex source fix; ported the +conv branch from autogen myself.
+- M-NEW-5 test originally failed: `max_output_tokens: 10000000000` overflowed the typed `Request` struct's `u32` field BEFORE reaching Raw fallback. Redesigned to put number sensitivity inside the input array (the Raw passthrough scope) — now passes.
+
+**Actions:**
+- Fixed llamaindex `_compact_responses` to add +conv early-return branch.
+- Redesigned M-NEW-5 test to actually exercise Raw passthrough.
+- Committed in 4 stages: aiplay code, AGW code, AGW docs, aiplay session log.
+- Verified: aiplay pytest 224 → 230. AGW B-NEW-3 + M-NEW-2 + M-NEW-5 all pass individually under --test-threads=1.
+
+**Deferred / not committed:**
+- Services topology tab (#78) — 291 lines staged in frontend/, untested. Awaits user review.
+- I-NEW-1 (NOTE registry from /info), I-NEW-2 (autogen force_state_ref verification), I-NEW-3 (test_note_registry.py) — Subagent C never dispatched (rate limit).
+- M-NEW-1, M-NEW-3, M-NEW-4 — explicitly accepted as no-action per review classification.

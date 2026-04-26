@@ -210,3 +210,45 @@ Once execution starts, turn cards appear in drawer in order. Each card: sent con
 2. Draft design doc at `/my/ws/aiplay/docs/design.md` section by section.
 3. Writing-plans skill → `/my/ws/aiplay/docs/plans/<date>-aiplay-v1-plan.md`.
 4. Subagent-driven implementation.
+
+## AGW review-fix bundle — B-NEW-3 / I-NEW-4 / M-NEW-2 / M-NEW-5 (2026-04-23)
+
+### B-NEW-3: mcp_marker_kind gating clarity
+- **Problem:** `on_tool_call_resp` gates BOTH resource block AND text marker by `cfg.channels.resource_block`. Operator who sets `resource_block: false, mcp_marker_kind: text` silently gets nothing.
+- **Decision:** Pin gating with regression test + add spec doc explaining the historical name (`resource_block` = master "emit MCP marker" toggle). Future E17 may rename to `enable_mcp_markers`.
+- **Why not flip the gate:** that would change semantics. Better to document the contract and tighten the test net.
+
+### I-NEW-4: Raw fallback warn throttle
+- **Alternatives considered:**
+  - 1-in-N sample (e.g., AtomicU64 counter, log if `n.fetch_add(1) % 10 == 0`)
+  - First-seen warn → subsequent debug (AtomicBool flag)
+- **Decision:** First-seen warn + debug. Operators want to KNOW fallback happened once; the volume from langchain stateless multi-turn is the problem, not the existence. 1-in-N pattern would still log periodically and add operator confusion.
+
+### M-NEW-2: Bedrock Raw conversion error test
+- **Problem:** `bedrock.rs:1611-1619` returns `UnsupportedConversion` for `InputCompat::Raw`. No regression test.
+- **Decision:** Add test pinning the clean-error path so a future refactor doesn't silently break. Use the same body shape that triggers Raw fallback in existing `responses.rs::tests`.
+
+### M-NEW-5: Byte-equality round-trip for number formats
+- **Concern:** serde_json::Value normalizes some number formats (`1.0` → `1`, large integers may overflow to f64). For OpenAI byte-passthrough this could cause upstream sensitivity issues.
+- **Decision:** Add test that asserts round-trip equality on a body with `temperature: 1.0` and large `max_tokens`. If FAILS, that's a real finding worth surfacing.
+
+## aiplay review-fix bundle — B-NEW-1 / B-NEW-2 (2026-04-23)
+
+### B-NEW-1: autogen + llamaindex `_compact_responses()` misleading +conv note
+- **Problem:** Both adapters fell through to chain-trim logic for `api=responses+conv` mode and emitted `note: "compacted _response_history chain instead"` — false. In +conv mode `_response_history` is intentionally empty (continuity lives server-side in the OpenAI Conversations container).
+- **Decision:** Mirror langchain's existing +conv early-return branch. Honest no-op with note referencing the conversation container.
+- **Tests:** 6 new regression tests (3 strategies × 2 adapters). Pytest 224 → 230.
+
+### B-NEW-2: `_ensure_conversation_id()` no asyncio.Lock (4 adapters)
+- **Concern:** Two concurrent +conv turns on the same Trial could race the `if-None` mint check and BOTH issue `POST /v1/conversations`, leaking one container.
+- **Decision:** Defensive comment naming E18 (concurrent trials) as the future trigger for asyncio.Lock protection. Single-trial-at-a-time runner invariant is the current safety net. No behavior change.
+
+### Deferred from this bundle
+- **I-NEW-2:** autogen `force_state_ref()` dead-code verification — Subagent A hit rate limit before tracing the call graph. Method exists at `framework_bridge.py:668` and IS the setter for `_forced_prev_id` (used at line 614 during turn dispatch). Question is whether runner.py wiring actually invokes it with the right type. Follow-up needed.
+- **I-NEW-1:** NOTE registry derive from `GET /info` — was Subagent C scope, never dispatched (rate limit).
+- **I-NEW-3:** `tests/test_note_registry.py` (5 spot-checks) — was Subagent C scope, never dispatched.
+
+### Bundle commits
+- `0049279` (aiplay/main) — aiplay B-NEW-1 + B-NEW-2
+- `ae54489b` (agw cidgar/feat/cidgar) — AGW B-NEW-3 + I-NEW-4 + M-NEW-2 + M-NEW-5
+- `125abcf6` (agw docs/ibfork/docs) — spec §14.6 gating note + CHG-242/243 ledger
