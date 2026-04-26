@@ -13,6 +13,10 @@ ADAPTER_URLS = {
     "pydantic-ai": os.environ.get("ADAPTER_PYDANTIC_AI_URL", "http://adapter-pydantic-ai:5013"),
     "autogen":     os.environ.get("ADAPTER_AUTOGEN_URL",     "http://adapter-autogen:5014"),
     "llamaindex":  os.environ.get("ADAPTER_LLAMAINDEX_URL",  "http://adapter-llamaindex:5015"),
+    # E24 — multi-LLM-same-CID adapter. Round-robins per turn across the
+    # `llm` list in RowConfig (E23 schema) and verifies AGW's CID survives
+    # cross-API LLM switches in one trial.
+    "combo":       os.environ.get("ADAPTER_COMBO_URL",       "http://adapter-combo:5008"),
 }
 
 

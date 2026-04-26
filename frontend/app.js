@@ -18,6 +18,7 @@ const ADAPTER_CAPABILITIES_JS = {
   "pydantic-ai": ["chat", "messages", "responses"], // Plan B T4
   "autogen":     ["chat", "messages", "responses", "responses+conv"], // Plan B T5
   "llamaindex":  ["chat", "responses", "responses+conv"],              // Plan B T6
+  "combo":       ["chat", "messages"],                                 // E24
 };
 
 // E19/E23 — coarse "primary value" picks the first element of list-form

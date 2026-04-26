@@ -65,6 +65,7 @@ ADAPTER_CAPABILITIES = {
     "pydantic-ai": {"chat", "messages", "responses"},  # Plan B T4: typed Agent + Model + Toolset (responses+conv via bypass — E5d)
     "autogen":     {"chat", "messages", "responses", "responses+conv"},  # Plan B T5: AssistantAgent + openai responses bypass
     "llamaindex":  {"chat", "responses", "responses+conv"},  # Plan B T6: llama_index OpenAI + openai responses bypass (messages via E5e)
+    "combo":       {"chat", "messages"},  # E24: multi-LLM-same-CID first cut (no MCP, no tool calling, no responses APIs yet — see E24a/b/c)
 }
 
 

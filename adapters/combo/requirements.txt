@@ -1,0 +1,11 @@
+fastapi>=0.110.0
+uvicorn[standard]>=0.27.0
+httpx>=0.27.0
+# Combo adapter calls openai / anthropic SDKs DIRECTLY — no langchain /
+# autogen / crewai etc. layers. Per-turn round-robin dispatch picks the
+# right SDK for the LLM at index (turn_idx % len(llm_list)). Both SDKs
+# accept `http_client=httpx.AsyncClient(...)` so a single hooked client
+# captures wire bytes for every call regardless of provider.
+openai>=1.0
+anthropic>=0.30
+pytest>=8.0.0

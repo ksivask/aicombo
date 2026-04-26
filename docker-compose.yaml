@@ -330,6 +330,38 @@ services:
     networks: [aiplay-network]
     restart: unless-stopped
 
+  # ── Adapter: combo (E24) — multi-LLM-same-CID round-robin dispatch ──
+  #   Round-robins per turn across the llm list (E23 schema) using
+  #   openai-shape providers via openai.AsyncOpenAI and claude via
+  #   anthropic.AsyncAnthropic, sharing one hooked httpx.AsyncClient so
+  #   wire-bytes capture works uniformly across providers. First cut:
+  #   chat + messages APIs only, NO MCP integration, NO tool calling,
+  #   NO streaming, NO responses APIs (deferred to E24a/b/c).
+  adapter-combo:
+    build: ./adapters/combo
+    image: aiplay-adapter-combo:local
+    environment:
+      - ADAPTER_PORT=5008
+      - AGW_LLM_BASE_URL_OLLAMA=http://agentgateway:8080/llm/ollama/v1
+      - AGW_LLM_BASE_URL_MOCK=http://agentgateway:8080/llm/mock/v1
+      - AGW_LLM_BASE_URL_OPENAI=http://agentgateway:8080/llm/chatgpt/v1
+      - AGW_LLM_BASE_URL_GEMINI=http://agentgateway:8080/llm/gemini/v1beta/openai
+      # Anthropic SDK appends /v1/messages itself — don't include /v1 suffix here.
+      - AGW_LLM_BASE_URL_ANTHROPIC=http://agentgateway:8080/llm/claude
+      - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
+      - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
+      - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
+      - DIRECT_LLM_BASE_URL_GEMINI=https://generativelanguage.googleapis.com/v1beta/openai
+      - DIRECT_LLM_BASE_URL_ANTHROPIC=https://api.anthropic.com
+      - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
+    env_file: [.env]
+    extra_hosts:
+      - "host.docker.internal:192.168.64.1"
+    depends_on:
+      - agentgateway
+    networks: [aiplay-network]
+    restart: unless-stopped
+
   # ── MCP servers (all 4 imported from demo; all on aiplay-network) ──
   mcp-weather:
     build: ./mcp/weather
