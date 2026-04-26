@@ -812,6 +812,126 @@ Total: **M-L** (~half-day to day).
 
 ---
 
+## E20 — tools/list snapshot correlation via `_ib_ss` param injection
+
+**Status: future. AGW change. ~50 LOC + tests in `crates/agentgateway/src/governance/cidgar.rs`.**
+
+### The gap
+
+Today AGW's cidgar pipeline tracks individual `tools/call` entries in the audit stream but cannot prove which `tools/list` snapshot a given call originated from. This matters because:
+
+1. **Forensics**: when an audit shows a tool was invoked, an investigator can't recover the exact tool definition the agent saw at that moment (the upstream MCP server may have changed schema since).
+2. **CID attribution**: at `tools/list` time, AGW has no CID yet (no LLM hop has happened) and one snapshot can serve N conversations — so injecting CID into tool descriptions or metadata at list-time is unsafe.
+3. **Cache busting**: AGW currently can't tell whether two `tools/call`s saw the same snapshot or whether the menu changed between them.
+
+### The proposal
+
+**Content-addressable snapshot id, carried back through the LLM as a fixed-name required parameter.**
+
+#### Hash
+
+- Compute hash over the canonicalized `tools/list` response body (sort keys, sort tools by `name`, drop `_meta`).
+- Use BLAKE3 or SHA-256, truncate to 8 hex chars (4B namespace, collision-free at trial scale).
+- Hash captures the entire snapshot, not per-tool — when ANY tool in the list changes, the hash changes (correct semantics: snapshot identity, not signature identity).
+
+#### Carrier — fixed param name + enum-constrained value
+
+For each tool in the `tools/list` response, AGW injects:
+
+```json
+{
+  "_ib_ss": {
+    "type": "string",
+    "enum": ["<hash>"],
+    "description": "Telemetry span-correlation id. Pass exactly: <hash>"
+  }
+}
+```
+
+Marked `required: true` on the tool's parameter list.
+
+**Why this carrier**:
+- Fixed param name (`_ib_ss`) → AGW always reads `args._ib_ss`, no dynamic key parsing
+- Hash carried as VALUE → no character-set restriction on hash format; future-proof for longer hashes
+- `enum: ["<hash>"]` is JSON-schema-validatable → smart parsers (OpenAI's tool validator) reject non-matching values, pushing LLM compliance up
+- "Telemetry span-correlation id" is OpenTelemetry-blessed framing → RLHF training data treats this as routine instrumentation, not a security/auth/captcha pattern
+- "Pass exactly: <hash>" gives the LLM a copy-string task (its strongest skill), not a fill-in-placeholder task
+
+**Why NOT function-name suffix** (alternative we considered): would cost 12 chars in OpenAI's 64-char tool-name budget; visible in human-readable tool names; new pattern (vs `_ib_ss` which mirrors the existing `_ib_cid` schema-injection pattern). Both work; param-name wins on parity + cleanliness.
+
+#### AGW pipeline changes
+
+- **New hook** `on_tools_list_resp(response, ctx)` in cidgar.rs:
+  1. Hash the canonicalized response body
+  2. Inject `_ib_ss` schema into each tool's `inputSchema.properties` + add to `required` array
+  3. Emit `audit{kind: tools_list, server, hash, response_body}` — full snapshot in audit stream once
+- **Extend existing hook** `on_tool_call_req(request, ctx)`:
+  1. Read `args._ib_ss` from the call's arguments
+  2. Strip it before forwarding upstream (upstream MCP server doesn't know about `_ib_ss`)
+  3. Emit `audit{kind: tools_call, cid, original_tool_name, hash, correlation_lost: <bool>}`
+  4. `correlation_lost: true` if `_ib_ss` was missing or value didn't match a known snapshot hash for this server route
+
+### Reliability ceiling — accept and instrument
+
+The `_ib_ss` carrier depends on the LLM populating a required parameter. Empirical precedent (`_ib_gar`) shows 5-15% drop rate on smaller models (ollama qwen / llama basic). High-end models (gpt-4o, claude-haiku-4-5+) typically achieve 95-99%.
+
+**Don't pretend 100% is achievable.** Instead:
+- Audit each `tools/call` with `correlation_lost: <bool>` flag
+- Add **verdict (i)** measuring `correlation_lost` rate per (framework, model) combo across a trial run
+- Threshold: e.g., correlation rate < 80% → flag the (framework, model) combo as unreliable for snapshot correlation
+- Operators see the data and can choose: tolerate the gap, escalate to a stronger model, or fall back to function-name suffix carrier (a future E20a)
+
+### Alternative carrier — MCP session-id mapping (worth considering as primary)
+
+MCP transports expose session ids (`Mcp-Session-Id` header). AGW could maintain `(server_route, session_id) → latest_tools_list_hash` in-memory. When `tools/call` arrives on the same session, AGW looks up the hash from the session — no LLM cooperation needed.
+
+| Approach | Reliability | Cost | Caveats |
+|---|---|---|---|
+| `_ib_ss` param (this E20) | 85-95% | None on AGW; trusts LLM | Drops on smaller models |
+| Session-id map | ~100% if session preserved | In-memory map per route, ~256 LRU entries | Breaks on reconnect; assumes "tools/call follows tools/list on same session" |
+
+**Recommendation**: implement session-id map as **primary** (free, reliable when it works), `_ib_ss` as **fallback** for cross-session continuity. This makes the `_ib_ss` reliability ceiling less load-bearing — it's only consulted when session correlation fails.
+
+### Open questions
+
+1. **Captcha-pattern RLHF risk**: does "Pass exactly: deadbeef" trigger any safety heuristics? Empirical test needed across 5 LLM providers × 7 framework adapters. Mitigation already in description ("telemetry span-correlation id" framing is OpenTelemetry idiom).
+2. **Schema cascade**: agents that translate MCP schema to LLM-native tool-spec format (langchain's `convert_to_openai_function`, autogen's `ToolSchema`) need to preserve `_ib_ss` + `enum`. Test before betting on the design.
+3. **MCP `_meta` field redundancy**: should AGW ALSO embed the hash in `_meta.ib_snapshot` as belt-and-suspenders? `_meta` doesn't survive LLM round-trip, but it survives MCP transport — useful for direct-mcp adapter tests where there's no LLM. Probably yes; tiny additional cost.
+4. **Hash function choice**: BLAKE3 (fastest, modern) vs SHA-256 (well-known, FIPS). Either works; pick whichever has the lighter dependency on AGW's existing crate set.
+
+### Tests
+
+- Unit: cidgar.rs `test_on_tools_list_resp_injects_ib_ss_with_enum_constraint` — pin schema mutation shape
+- Unit: cidgar.rs `test_on_tool_call_req_strips_ib_ss_before_forward` — pin the strip behavior
+- Unit: cidgar.rs `test_correlation_lost_flag_set_when_ib_ss_missing` — pin the audit-instrumented degradation path
+- Integration: aiplay test that drives langchain + ollama through a multi-tool-call trial and asserts `correlation_lost: false` on ≥80% of audits
+
+### Effort
+
+- AGW pipeline (new hook + audit fields): **S** (~50 LOC + 4 tests)
+- Optional session-id map carrier: **S-M** (~30 LOC + LRU cache + tests)
+- aiplay verdict (i): **S** (~20 LOC validator)
+- E2E smoke + cross-framework reliability survey: **S** (~1hr)
+
+Total: **S-M** (~half-day with the session-id alternative; less without).
+
+### Why now (or why later)
+
+**Argue for now**: forensic gap is real. Every `tools/call` audit entry today is shape-agnostic about which `tools/list` it came from — operators can't reconstruct the exact tool definitions an agent saw when something went wrong. This blocks meaningful incident-response on cidgar audits.
+
+**Argue for defer**: depends on cross-LLM RLHF response to "pass exactly: <hash>" framing — needs empirical test. Without baseline reliability data we'd be flying blind on whether the carrier actually works on common models.
+
+**My pick**: start with the empirical RLHF test (1 day, no AGW changes — just spike the schema mutation in one adapter, observe LLM compliance across 3-5 model/framework combos). If reliability is acceptable (>80% on gpt-4o-mini and claude-haiku-4-5), proceed with E20 + session-id map. If not, pivot to function-name suffix carrier (E20a).
+
+### Cross-references
+
+- Builds on the existing `_ib_cid` schema-injection pattern (cidgar.rs f1 hook) — same mechanism, different field, different semantics
+- E18 (header-demux) is independent but synergistic — header-demux gives AGW per-conversation isolation; E20 gives AGW per-snapshot identity within that isolation
+- E6 (Responses-API governance) is unaffected — E20 is purely an MCP-side concern
+- New verdict (i) `tools_list_correlation_rate` would join the existing (a)-(h) verdict cluster
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
