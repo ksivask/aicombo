@@ -1187,10 +1187,7 @@ function renderServicesTab(trial) {
          (MCP initialize handshakes, LLM User-Agent + body.model, route paths).
          All extraction happens harness-side from <code>framework_events</code>;
          no data here would be unavailable to AGW itself.</p>
-      <div class="pre-with-copy">
-        ${copyPreBtn()}
-        <pre class="mermaid">${escapeHtml(mer)}</pre>
-      </div>
+      <pre class="mermaid">${escapeHtml(mer)}</pre>
       <details class="services-source">
         <summary>Mermaid source (debug)</summary>
         <div class="pre-with-copy">
