@@ -104,12 +104,13 @@ async def test_trial_create_and_close_sets_up_state(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_responses_mode_state_chains_response_ids(monkeypatch):
-    """responses+conv mode: _last_response_id updates after each turn;
-    history accumulates; force_state_ref(idx) overrides the next turn's
-    previous_response_id.
+    """api=responses + state=T (E13a): _last_response_id updates after each
+    turn; history accumulates; force_state_ref(idx) overrides the next
+    turn's previous_response_id.
 
-    We fake openai.AsyncOpenAI so no real HTTP happens. Each call to
-    .responses.create returns a synthetic object with a unique .id.
+    Note: pre-E13b this test pinned api=responses+conv. After E13b that
+    api uses the Conversations API container instead of previous_response_id
+    chaining; chain semantics are now exclusive to api=responses+state=T.
     """
     _ensure_adapter_on_path()
     monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
@@ -138,7 +139,7 @@ async def test_responses_mode_state_chains_response_ids(monkeypatch):
     import openai
     with patch.object(openai, "AsyncOpenAI", return_value=fake_openai):
         trial = Trial(trial_id="t-resp", config={
-            "framework": "llamaindex", "api": "responses+conv",
+            "framework": "llamaindex", "api": "responses",
             "stream": False, "state": True,
             "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
         })
@@ -183,7 +184,11 @@ async def test_responses_mode_state_chains_response_ids(monkeypatch):
 
 
 def test_force_state_ref_rejects_out_of_range(monkeypatch):
-    """force_state_ref with an invalid index returns ok=False, doesn't crash."""
+    """force_state_ref with an invalid index returns ok=False, doesn't crash.
+
+    Pinned on api=responses + state=T (chain mode); after E13b, +conv
+    uses a conversation container with no per-turn ref to override.
+    """
     _ensure_adapter_on_path()
     monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
@@ -192,7 +197,7 @@ def test_force_state_ref_rejects_out_of_range(monkeypatch):
 
     with patch.object(openai, "AsyncOpenAI", return_value=MagicMock()):
         trial = Trial(trial_id="t-oor", config={
-            "framework": "llamaindex", "api": "responses+conv",
+            "framework": "llamaindex", "api": "responses",
             "stream": False, "state": True,
             "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
         })
@@ -259,6 +264,67 @@ async def test_state_true_on_api_responses_threads_previous_response_id(monkeypa
                 f"state=True on api=responses should have threaded "
                 f"previous_response_id; got {got!r}. Before E13a the "
                 "threading gate only fired for api=='responses+conv'."
+            )
+        finally:
+            await trial.aclose()
+
+
+# ── E13b regression: responses+conv must use Conversations API container ──
+
+@pytest.mark.asyncio
+async def test_responses_conv_uses_conversation_field_not_previous_response_id(monkeypatch):
+    """E13b: api=responses+conv must use Conversations API
+    (conversation:{id: conv_xxx}) and NOT previous_response_id chain.
+
+    Pre-caches the conversation_id so the test doesn't need to mock the
+    /v1/conversations setup call; focuses purely on per-turn wire shape.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import openai
+    from framework_bridge import Trial
+
+    call_log: list[dict] = []
+
+    async def fake_create(**kwargs):
+        call_log.append(dict(kwargs))
+        resp = MagicMock()
+        resp.id = "resp_NEW"
+        resp.output_text = "next-reply"
+        resp.output = []
+        return resp
+
+    fake_openai = MagicMock()
+    fake_openai.responses.create = fake_create
+
+    with patch.object(openai, "AsyncOpenAI", return_value=fake_openai):
+        trial = Trial(trial_id="t-conv-li", config={
+            "framework": "llamaindex", "api": "responses+conv",
+            "stream": False, "state": True,
+            "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+        })
+        try:
+            assert trial._mode == "responses_direct"
+            # Pre-cache so no real /v1/conversations POST is attempted.
+            trial._conversation_id = "conv_test_xxx"
+
+            await trial.turn("t1", "hello")
+
+            assert call_log, "fake_create was never called"
+            conv_kw = call_log[-1].get("conversation")
+            assert conv_kw is not None, (
+                f"`conversation` kwarg missing from openai SDK call; "
+                f"got kwargs={list(call_log[-1].keys())}"
+            )
+            if isinstance(conv_kw, dict):
+                assert conv_kw.get("id") == "conv_test_xxx"
+            else:
+                assert conv_kw == "conv_test_xxx"
+            assert call_log[-1].get("previous_response_id") is None, (
+                "+conv mode must NOT thread previous_response_id (chain "
+                "mode); the conversation container handles continuity "
+                "server-side."
             )
         finally:
             await trial.aclose()

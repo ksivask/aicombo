@@ -98,6 +98,14 @@ binds:
                 routes:
                   "/v1/chat/completions": completions
                   "/v1/responses": responses
+                  # E13c — Conversations API setup endpoint. Per-trial container
+                  # mint goes here: POST /v1/conversations → {id: conv_xxx}.
+                  # passthrough is correct (RouteType::Passthrough, schema!
+                  # macro renames camelCase → "passthrough" in YAML); AGW
+                  # byte-forwards without invoking the Completions/Responses
+                  # parser. Without this entry the default Completions parser
+                  # 503s on the setup body shape.
+                  "/v1/conversations": passthrough
               governance:
                 kind: cid_gar
                 log_level: debug

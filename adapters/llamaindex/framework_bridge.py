@@ -211,10 +211,15 @@ class Trial:
         # ── Conversation state ──
         # For chat: ChatMessage list, passed to llm.achat() each turn.
         self._messages: list[Any] = []
-        # For responses/responses+conv: chained response id(s).
+        # For api=responses + state=T (E13a): chained response id(s).
         self._last_response_id: str | None = None
         self._response_history: list[str] = []
         self._forced_prev_id: str | None = None
+
+        # E13b: Conversations API container ID for api=responses+conv.
+        # Lazy-minted on first +conv turn via _ensure_conversation_id()
+        # → POST /v1/conversations through the hooked httpx client.
+        self._conversation_id: str | None = None
 
         # Per-turn capture
         self._last_request: dict | None = None
@@ -317,6 +322,30 @@ class Trial:
             else ""
         )
         self._mcp_tools: list[Any] | None = None
+
+    async def _ensure_conversation_id(self) -> str:
+        """E13b: mint or return the cached OpenAI conversation_id for this trial.
+
+        POSTs /v1/conversations through the hooked httpx client (so setup
+        wire bytes get captured for cidgar pedagogy). Requires AGW's
+        llm-chatgpt route to map /v1/conversations to passthrough — see
+        agw/config.yaml.
+        """
+        if self._conversation_id is not None:
+            return self._conversation_id
+        r = await self._http_client.post(
+            f"{self._base_url.rstrip('/')}/conversations",
+            json={},
+            headers={
+                "Authorization": f"Bearer {self._api_key}",
+                "Content-Type": "application/json",
+                "X-Harness-Trial-ID": self.trial_id,
+                "X-Harness-Turn-ID": "conv-setup",
+            },
+        )
+        r.raise_for_status()
+        self._conversation_id = r.json()["id"]
+        return self._conversation_id
 
     # ── httpx factory for fastmcp ──
 
@@ -576,13 +605,18 @@ class Trial:
     async def _turn_responses_direct(self, turn_id: str, user_msg: str) -> dict:
         """Turn via direct openai.responses.create() — bypasses llamaindex entirely.
 
-        Handles both stateless (api=responses, state=F) and stateful
-        (api=responses+conv, or api=responses+state=T): in stateful mode,
-        we chain `previous_response_id`. `force_state_ref()` can override
-        the next turn's prev-id to point at an earlier response (verdict-e
-        test in T11).
+        Handles three sub-modes:
+          * stateless (api=responses, state=F): no chain, no container.
+          * state_chain (api=responses, state=T): chain `previous_response_id`
+            from the prior turn's resp_xxx (E13a). force_state_ref overrides.
+          * conv_container (api=responses+conv): bind `conversation:{id}` to
+            the lazy-minted conv_xxx for this trial (E13b). The container
+            handles continuity server-side; previous_response_id is NOT
+            threaded here.
         """
-        state_mode = bool(self.config.get("state")) or (self.config.get("api") == "responses+conv")
+        api = self.config.get("api")
+        state_chain = api == "responses" and bool(self.config.get("state"))
+        conv_container = api == "responses+conv"
 
         # MCP tool setup is not wired on the responses path in this Plan B
         # pass — mirrors adapters/autogen. MCP+responses is a bonus that
@@ -599,12 +633,19 @@ class Trial:
                         ev["tool_names"] = [getattr(t, "name", "?") for t in (self._mcp_tools or [])]
                 self._events.extend(setup_events)
 
-        # Figure out previous_response_id for this turn.
-        if state_mode:
+        # E13a: figure out previous_response_id (chain mode only).
+        if state_chain:
             effective_prev = self._forced_prev_id or self._last_response_id
         else:
             effective_prev = None
         self._forced_prev_id = None  # consumed
+
+        # E13b: mint (or fetch cached) the conv_xxx container before the
+        # /v1/responses POST so the setup call shows up first in the
+        # exchange log on turn 1.
+        conv_id_for_turn: str | None = None
+        if conv_container:
+            conv_id_for_turn = await self._ensure_conversation_id()
 
         tools_param = None  # For MCP+responses, would build FunctionToolParam list here.
 
@@ -618,6 +659,8 @@ class Trial:
             }
             if effective_prev is not None:
                 kwargs["previous_response_id"] = effective_prev
+            if conv_id_for_turn is not None:
+                kwargs["conversation"] = {"id": conv_id_for_turn}
             if tools_param:
                 kwargs["tools"] = tools_param
             resp_obj = await self._openai_client.responses.create(**kwargs)
@@ -627,10 +670,11 @@ class Trial:
             # resp_obj may carry convenient .output_text; otherwise extract.
             final_text = getattr(resp_obj, "output_text", "") or _extract_text_from_responses_obj(resp_obj)
             rid = getattr(resp_obj, "id", None)
-            if rid:
+            # E13a: only track per-response chain in state_chain mode.
+            # E13b: +conv tracks via the conversation container instead.
+            if rid and state_chain:
                 self._response_history.append(rid)
-                if state_mode:
-                    self._last_response_id = rid
+                self._last_response_id = rid
 
         if not final_text:
             final_text = "(no response)"
@@ -692,7 +736,7 @@ class Trial:
                 if last_tool_calls:
                     break
 
-        return {
+        envelope = {
             "turn_id": turn_id,
             "assistant_msg": final_text,
             "tool_calls": last_tool_calls,
@@ -707,6 +751,11 @@ class Trial:
                 if self._response_history else None
             ),
         }
+        # E13b: also expose the Conversations API container id when in
+        # +conv mode so the inspector can correlate turns by container.
+        if self.config.get("api") == "responses+conv":
+            envelope["_conversation_id"] = self._conversation_id
+        return envelope
 
     async def compact(self, strategy: str) -> dict:
         """Plan B T10 — mutate `self._messages` per the requested strategy.

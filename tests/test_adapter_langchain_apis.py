@@ -145,9 +145,12 @@ def test_build_llm_responses_rejects_non_chatgpt(langchain_env):
         Trial(trial_id="t-bad-resp", config=_cfg("responses", "claude"))
 
 
-async def test_build_llm_responses_conv_wires_state_chain(langchain_env):
-    """api=responses+conv → ChatOpenAI + use_previous_response_id=True +
-    empty per-Trial response-id state chain."""
+async def test_build_llm_responses_conv_wires_conv_container(langchain_env):
+    """E13b: api=responses+conv → ChatOpenAI(use_responses_api=True) +
+    empty conversation-container state. The previous_response_id
+    auto-thread flag is INTENTIONALLY NOT set anymore — +conv now uses
+    the OpenAI Conversations API container reference instead of the
+    chain-of-prev-ids mechanism."""
     from framework_bridge import Trial
     from langchain_openai import ChatOpenAI
 
@@ -155,60 +158,57 @@ async def test_build_llm_responses_conv_wires_state_chain(langchain_env):
     try:
         assert isinstance(trial.llm, ChatOpenAI)
         assert trial.llm.use_responses_api is True
-        assert trial.llm.use_previous_response_id is True
-        # State chain initialized empty, not-yet-forced.
-        assert trial._last_response_id is None
-        assert trial._response_history == []
-        assert trial._forced_prev_id is None
+        # E13b: NOT the chain-mode auto-thread flag — that path is now
+        # only used by api=responses + state=T.
+        assert trial.llm.use_previous_response_id is False
+        # Conversation container starts unminted; lazy-minted on first turn.
+        assert trial._conversation_id is None
     finally:
         await trial.aclose()
 
 
-# ── compact() on responses+conv chain ────────────────────────────────
+# ── compact() on responses+conv conversation container ──────────────
 
-async def test_compact_responses_conv_drops_half_of_response_history(langchain_env):
-    """compact('drop_half') on api=responses+conv halves the _response_history
-    chain and re-pegs _last_response_id to the survivors' tail."""
+async def test_compact_responses_conv_is_noop_with_note(langchain_env):
+    """E13b: compact() on api=responses+conv is a deliberate no-op.
+
+    Continuity in +conv mode lives in the OpenAI conversation container
+    (conv_xxx) which has no client-side trim primitive. The old behavior
+    (halving a fake _response_history chain) was a leftover from the
+    misnamed previous_response_id implementation — now the conversation
+    is the only state-tracking artifact, and the OpenAI Conversations
+    API doesn't expose container-level compaction at all."""
     from framework_bridge import Trial
 
     trial = Trial(trial_id="t-compact-rc", config=_cfg("responses+conv", "chatgpt"))
     try:
-        # Pre-seed a 6-id history (oldest → newest).
-        trial._response_history = [f"resp_{i:03d}" for i in range(6)]
-        trial._last_response_id = trial._response_history[-1]
-        before = len(trial._response_history)
+        # Simulate an already-minted container (so the note can reference it).
+        trial._conversation_id = "conv_test_xxx"
 
         out = await trial.compact("drop_half")
-
         assert out["strategy"] == "drop_half"
-        assert out["history_len_before"] == before
-        assert out["history_len_after"] == before - (before // 2)  # = 3
-        assert len(trial._response_history) == 3
-        # Tail survives (newest is kept).
-        assert trial._response_history[-1] == "resp_005"
-        # _last_response_id re-pegged to the survivors' tail.
-        assert trial._last_response_id == "resp_005"
-        # Note field present (mirrors autogen/llamaindex responses_direct).
+        assert out["history_len_before"] == 0
+        assert out["history_len_after"] == 0
         assert "note" in out
+        # Note mentions both the no-op nature AND the conversation id.
+        assert "conv_test_xxx" in out["note"]
+        assert "no-op" in out["note"]
     finally:
         await trial.aclose()
 
 
-async def test_compact_responses_conv_fallbacks_for_other_strategies(langchain_env):
-    """drop_tool_calls / summarize also halve the chain on responses+conv
-    (no per-message content to filter or summarize at this layer)."""
+async def test_compact_responses_conv_noop_independent_of_strategy(langchain_env):
+    """All strategies (drop_half / drop_tool_calls / summarize) are no-ops
+    on +conv — the Conversations API doesn't expose any of them."""
     from framework_bridge import Trial
 
     trial = Trial(trial_id="t-compact-rc-alt", config=_cfg("responses+conv", "chatgpt"))
     try:
-        trial._response_history = [f"resp_{i:03d}" for i in range(4)]
-        trial._last_response_id = trial._response_history[-1]
-
-        out = await trial.compact("summarize")
-        assert out["strategy"] == "summarize"
-        assert out["history_len_before"] == 4
-        assert out["history_len_after"] == 2
-        assert trial._response_history[-1] == "resp_003"
+        for strat in ("drop_half", "drop_tool_calls", "summarize"):
+            out = await trial.compact(strat)
+            assert out["strategy"] == strat
+            assert out["history_len_before"] == 0
+            assert out["history_len_after"] == 0
     finally:
         await trial.aclose()
 
@@ -219,15 +219,18 @@ async def test_compact_responses_conv_fallbacks_for_other_strategies(langchain_e
 async def test_force_state_ref_reaches_openai_responses_payload(monkeypatch):
     """Regression for code-review I1: `_forced_prev_id` must land in the
     outbound OpenAI Responses API request body — NOT get silently
-    overwritten by `use_previous_response_id=True`'s auto-compute which
-    walks `messages` backward for the most-recent AIMessage response id.
+    overwritten by langchain-openai's `_get_last_messages` auto-compute
+    which walks `messages` backward for the most-recent AIMessage
+    response id.
 
-    Before the fix, `_get_request_payload` would set
-    `payload["previous_response_id"]` to the newest AIMessage's id
-    (e.g. "resp_RECENT2"), clobbering the forced id we injected via
-    `invoke_kwargs["previous_response_id"]`. The fix strips
-    `response_metadata.id` from in-memory AIMessages when `_forced_prev_id`
-    is set, so the auto-compute returns None and our kwarg survives.
+    The fix strips `response_metadata.id` from in-memory AIMessages when
+    `_forced_prev_id` is set, so the auto-compute returns None and our
+    kwarg survives.
+
+    Note: this test originally pinned the +conv code path. After E13b,
+    +conv uses the Conversations API container (conversation kwarg) and
+    no longer threads previous_response_id, so the regression target
+    moved to the api=responses + state=T path which IS still chain-mode.
     """
     _ensure_adapter_on_path()
     monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
@@ -271,7 +274,7 @@ async def test_force_state_ref_reaches_openai_responses_payload(monkeypatch):
 
     trial = Trial(trial_id="t-fsr", config={
         "framework": "langchain",
-        "api": "responses+conv",
+        "api": "responses",          # E13b: +conv no longer chain-mode; pin on state=T
         "llm": "chatgpt",
         "stream": False,
         "state": True,
@@ -385,6 +388,95 @@ async def test_state_true_on_api_responses_threads_previous_response_id(monkeypa
             f"state=True on api=responses should have threaded "
             f"previous_response_id; got {got!r}. Before E13a the "
             "threading branch only fired for api=='responses+conv'."
+        )
+    finally:
+        await trial.aclose()
+
+
+# ── E13b regression: responses+conv must use the Conversations API container ──
+
+@pytest.mark.asyncio
+async def test_responses_conv_uses_conversation_field_not_previous_response_id(monkeypatch):
+    """E13b: api=responses+conv must use Conversations API
+    (conversation:{id: conv_xxx}) and NOT previous_response_id chain.
+
+    The two were collapsed in the pre-E13b code path (+conv was a misnomer
+    that actually threaded previous_response_id, identical to E13a's
+    state=T behavior at the wire). This test pins them apart by inspecting
+    the openai SDK boundary's outbound kwargs.
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
+
+    from framework_bridge import Trial
+
+    captured: dict = {}
+
+    async def fake_create(self, *args, **kwargs):
+        captured["kwargs"] = kwargs
+        from openai.types.responses import Response
+        return Response.model_construct(
+            id="resp_NEW",
+            object="response",
+            created_at=0,
+            model="gpt-4o-mini",
+            status="completed",
+            output=[],
+            parallel_tool_calls=False,
+            tool_choice="auto",
+            tools=[],
+            top_p=1.0,
+            temperature=0.3,
+            metadata={},
+            incomplete_details=None,
+            error=None,
+            instructions=None,
+            usage=None,
+        )
+
+    from openai.resources.responses import AsyncResponses
+    monkeypatch.setattr(AsyncResponses, "create", fake_create)
+
+    trial = Trial(trial_id="t-conv", config={
+        "framework": "langchain",
+        "api": "responses+conv",
+        "llm": "chatgpt",
+        "stream": False,
+        "state": True,
+        "mcp": "NONE",
+        "routing": "via_agw",
+    })
+    try:
+        # Pre-cache the conversation_id so the test doesn't need to mock
+        # the /v1/conversations setup call. (The setup call IS captured
+        # by _http_exchanges in real runs; this test focuses on the
+        # per-turn wire shape.)
+        trial._conversation_id = "conv_test_xxx"
+
+        try:
+            await trial.turn("t1", "hello")
+        except Exception:
+            pass  # Post-call processing not the subject here
+
+        assert captured.get("kwargs") is not None, \
+            "fake_create was never called — patch did not intercept"
+        # CRITICAL: outbound MUST contain the conversation field (E13b).
+        conv_kw = captured["kwargs"].get("conversation")
+        assert conv_kw is not None, (
+            f"`conversation` kwarg missing from openai SDK call; "
+            f"got kwargs={list(captured['kwargs'].keys())}"
+        )
+        # SDK accepts either str or {"id": str}; we pass dict-form.
+        if isinstance(conv_kw, dict):
+            assert conv_kw.get("id") == "conv_test_xxx"
+        else:
+            assert conv_kw == "conv_test_xxx"
+        # And NOT previous_response_id (would mean we still chain-threaded).
+        assert captured["kwargs"].get("previous_response_id") is None, (
+            "+conv mode must NOT thread previous_response_id (that's "
+            "chain mode). Conversations API container handles continuity "
+            "server-side."
         )
     finally:
         await trial.aclose()

@@ -254,14 +254,20 @@ class Trial:
                 pass
             raise
 
-        # Responses+conv state chain (mirrors autogen/llamaindex T11 pattern).
-        # Even though langchain-openai's `use_previous_response_id=True`
-        # would thread prev-id automatically for a simple linear chain,
+        # Responses+state=T state chain (E13a). For api=responses+state=T,
         # we maintain our own history list so `force_state_ref` can point
         # the next turn at an earlier response id (verdict-e test path).
         self._last_response_id: str | None = None
         self._response_history: list[str] = []
         self._forced_prev_id: str | None = None
+
+        # E13b: Conversations-API container ID for api=responses+conv.
+        # Lazy-minted on first +conv turn via _ensure_conversation_id()
+        # → POST /v1/conversations through the hooked httpx client (so
+        # setup wire bytes get captured for cidgar pedagogy). Cached for
+        # the trial lifetime — re-used on every subsequent turn so all
+        # turns share the same server-side conversation container.
+        self._conversation_id: str | None = None
 
         # MCP wiring (lazy — fetched on first turn that needs it).
         self.mcp_url = (
@@ -315,22 +321,21 @@ class Trial:
                     f"api={api} requires llm=chatgpt; got llm={llm}"
                 )
             from langchain_openai import ChatOpenAI
-            # Verified against langchain-openai 1.1.16: both flags exist
-            # as top-level model fields. `use_previous_response_id=True`
-            # makes ainvoke auto-thread the prior response's id on every
-            # call — we ALSO track it ourselves for force_state_ref.
-            kwargs: dict[str, Any] = {
-                "base_url": base_url,
-                "api_key": api_key,
-                "model": model,
-                "http_async_client": self._http_client,
-                "default_headers": {},
-                "temperature": 0.3,
-                "use_responses_api": True,
-            }
-            if api == "responses+conv":
-                kwargs["use_previous_response_id"] = True
-            return ChatOpenAI(**kwargs)
+            # Verified against langchain-openai 1.1.16: `use_responses_api`
+            # exists as a top-level model field. (`use_previous_response_id`
+            # was previously set on the +conv branch — see E13b. That mode
+            # is now Conversations-API-container based, so the auto-thread
+            # flag is NOT applicable: the conv_xxx id is bound per-turn
+            # via .bind(conversation={"id": ...}).)
+            return ChatOpenAI(
+                base_url=base_url,
+                api_key=api_key,
+                model=model,
+                http_async_client=self._http_client,
+                default_headers={},
+                temperature=0.3,
+                use_responses_api=True,
+            )
 
         if api == "messages":
             if llm != "claude":
@@ -393,6 +398,39 @@ class Trial:
         )
         # Stash the sync client on the Trial so aclose() can release it.
         self._anthropic_sync_http = sync_http_client
+
+    async def _ensure_conversation_id(self) -> str:
+        """E13b: mint or return the cached OpenAI conversation_id for this trial.
+
+        POSTs /v1/conversations through the same hooked httpx client used
+        for /v1/responses, so the setup call's wire bytes get captured for
+        cidgar pedagogy. AGW must have /v1/conversations: passthrough in
+        its ai.routes map (see agw/config.yaml::llm-chatgpt) for this to
+        flow through cleanly — without it, AGW defaults to the Completions
+        parser and 503s.
+
+        Returns the conv_xxx id; subsequent calls return the cached value
+        (one container per trial).
+        """
+        if self._conversation_id is not None:
+            return self._conversation_id
+        base_url = pick_llm_base_url(
+            routing=self.config["routing"], llm=self.config["llm"],
+        )
+        api_key = _pick_api_key(self.config["llm"])
+        r = await self._http_client.post(
+            f"{base_url.rstrip('/')}/conversations",
+            json={},
+            headers={
+                "Authorization": f"Bearer {api_key}",
+                "Content-Type": "application/json",
+                "X-Harness-Trial-ID": self.trial_id,
+                "X-Harness-Turn-ID": "conv-setup",
+            },
+        )
+        r.raise_for_status()
+        self._conversation_id = r.json()["id"]
+        return self._conversation_id
 
     # ── httpx factory for langchain-mcp-adapters ──
     #
@@ -627,63 +665,68 @@ class Trial:
         last_assistant_content = ""
         last_tool_calls: list[dict] = []
 
-        # E13a: state-chain modes — both api=responses+conv AND
-        # api=responses + state=True must thread previous_response_id
-        # across turns (chain semantics). The validator/UI permit
-        # state=True on (api=responses, llm=chatgpt); before E13a only
-        # responses+conv was honored at runtime, so state=T silently
-        # behaved like state=F (full history). Now both go through the
-        # same threading path.
-        state_chain = (
-            api == "responses+conv"
-            or (api == "responses" and bool(self.config.get("state")))
-        )
+        # E13a/E13b: split previously-conflated modes.
+        #   state_chain (api=responses + state=True)
+        #     → previous_response_id chaining (server-side response link).
+        #   conv_container (api=responses+conv)
+        #     → Conversations API container reference; mints conv_xxx once
+        #       per trial and binds it on every turn via the openai SDK
+        #       `conversation` kwarg. NOT chained via previous_response_id
+        #       (the conversation tracks history server-side; mixing both
+        #       fields is undefined behavior at the OpenAI boundary).
+        state_chain = api == "responses" and bool(self.config.get("state"))
+        conv_container = api == "responses+conv"
+
+        # E13b: for api=responses+conv, mint (or fetch cached) the
+        # Conversations-API container id BEFORE the hop loop. This makes
+        # the setup POST /v1/conversations call show up in _http_exchanges
+        # as the first event of the FIRST turn (subsequent turns reuse the
+        # cached id and skip this network call).
+        conv_id_for_turn: str | None = None
+        if conv_container:
+            conv_id_for_turn = await self._ensure_conversation_id()
 
         # Iterative agent loop, max MAX_LLM_HOPS LLM hops.
         for hop in range(MAX_LLM_HOPS):
-            # On hop=0 (cross-turn link), thread previous_response_id as a
-            # per-call kwarg whenever the trial is in a state-chain mode.
-            # On hop > 0 we don't override (the hop exchange is internal).
-            #
-            # For api=responses+conv: ChatOpenAI was built with
-            # `use_previous_response_id=True` so the framework auto-threads
-            # the most recent response id from messages history. We only
-            # need to OVERRIDE that when `_forced_prev_id` is set.
+            # Per-hop LLM selection + invoke kwargs.
             #
             # For api=responses + state=T (E13a): `use_previous_response_id`
             # is NOT set on the LLM, so we must explicitly pass our
             # `_last_response_id` (or `_forced_prev_id` override) to chain.
             # Without this kwarg the request would replay full message
             # history (state=F semantics), which is the bug E13a fixes.
+            #
+            # For api=responses+conv (E13b): bind `conversation={"id": ...}`
+            # on the LLM for this turn via .bind() so the openai SDK call
+            # carries the kwarg. This replaces the previous misnamed
+            # previous_response_id chain — the conv container is now the
+            # ONLY state-tracking mechanism for +conv mode.
             invoke_kwargs: dict[str, Any] = {}
             messages_for_invoke = self.messages
-            if state_chain and hop == 0:
-                effective_prev = self._forced_prev_id or (
-                    self._last_response_id
-                    if api == "responses" and self.config.get("state")
-                    else None
+            llm_for_hop = llm_to_use
+            if conv_container and hop == 0:
+                # Bind the conversation kwarg onto the underlying llm
+                # (NOT on llm_with_tools — bind_tools result composes with
+                # subsequent .bind() calls). For MCP+conv (rare combo),
+                # bind on top of the tool-bound llm so tools survive.
+                llm_for_hop = (llm_to_use).bind(
+                    conversation={"id": conv_id_for_turn},
                 )
-                # responses+conv only needs explicit threading on a forced
-                # override (the rest is handled by use_previous_response_id).
-                if api == "responses+conv":
-                    effective_prev = self._forced_prev_id
+            if state_chain and hop == 0:
+                effective_prev = (
+                    self._forced_prev_id or self._last_response_id
+                )
                 if effective_prev:
                     invoke_kwargs["previous_response_id"] = effective_prev
-                    # I1 fix: langchain-openai's `use_previous_response_id=True`
-                    # auto-computes previous_response_id by walking `messages`
-                    # backward for an AIMessage whose `response_metadata["id"]`
-                    # starts with "resp_" — and that auto-computed value
-                    # OVERWRITES our kwarg at payload-build time (see
-                    # langchain_openai.chat_models.base._get_request_payload:
-                    # payload["previous_response_id"] = previous_response_id).
-                    # Strip those ids on a shallow-copied message list so the
-                    # auto-compute returns None and our explicit kwarg survives
-                    # to the outbound OpenAI Responses request.
-                    #
-                    # For api=responses + state=T this scrub is doubly
-                    # important: even though the LLM has no auto-thread
-                    # flag set, openai SDK won't reject the kwarg, but
-                    # we also want clean, minimal outbound payloads.
+                    # I1 fix: even though `use_previous_response_id` is
+                    # not enabled here, langchain-openai's
+                    # _get_last_messages still walks `messages` backward
+                    # for an AIMessage whose `response_metadata["id"]`
+                    # starts with "resp_" and could clobber our kwarg.
+                    # Strip those ids on a shallow-copied message list
+                    # so the auto-compute returns None and our explicit
+                    # kwarg survives to the outbound OpenAI Responses
+                    # request.
                     messages_for_invoke = [copy.copy(m) for m in self.messages]
                     for m in messages_for_invoke:
                         md = getattr(m, "response_metadata", None)
@@ -693,7 +736,7 @@ class Trial:
                             }
                     # Consumed — future turns fall back to the natural chain.
                     self._forced_prev_id = None
-            resp = await llm_to_use.ainvoke(messages_for_invoke, **invoke_kwargs)
+            resp = await llm_for_hop.ainvoke(messages_for_invoke, **invoke_kwargs)
             # Record this LLM hop
             if first_request is None:
                 first_request = copy.deepcopy(self._last_request)
@@ -709,16 +752,22 @@ class Trial:
             # is preserved correctly for the next-hop wire format.
             self.messages.append(resp)
 
-            # Record the response id for responses/responses+conv modes so
-            # force_state_ref + _response_id envelope field work. The id
-            # lives on resp.response_metadata["id"] for the OpenAI
-            # Responses API path in langchain-openai 1.1.x.
+            # Record the response id for responses modes so force_state_ref
+            # + _response_id envelope field work. The id lives on
+            # resp.response_metadata["id"] for the OpenAI Responses API
+            # path in langchain-openai 1.1.x.
             #
-            # `_last_response_id` is updated whenever the trial is in a
-            # state-chain mode (responses+conv OR responses+state=T per
-            # E13a), so the next turn's threading branch above can pick
-            # it up as the natural prev-id.
-            if api in ("responses", "responses+conv"):
+            # E13a: `_last_response_id` is updated whenever the trial is
+            # in state_chain mode (api=responses + state=T), so the next
+            # turn's threading branch above picks it up as the natural
+            # prev-id.
+            #
+            # E13b: api=responses+conv intentionally does NOT append to
+            # _response_history — that history is a chain artifact, not
+            # a conversation artifact. Continuity in +conv mode is
+            # tracked entirely by self._conversation_id (the conv_xxx
+            # container holds the server-side message log).
+            if api == "responses":
                 md = getattr(resp, "response_metadata", None) or {}
                 rid = md.get("id") or md.get("response_id")
                 if rid:
@@ -797,11 +846,17 @@ class Trial:
         }
         # T11: expose the latest Responses-API response id so the runner
         # can thread it through a subsequent force_state_ref turn.
-        if api in ("responses", "responses+conv"):
+        # E13b: api=responses+conv has no per-message response chain
+        # (continuity is via the conversation container instead) — expose
+        # the conversation_id under a dedicated envelope field so the
+        # runner / inspector can correlate turns by container.
+        if api == "responses":
             envelope["_response_id"] = (
                 self._response_history[-1]
                 if self._response_history else None
             )
+        elif api == "responses+conv":
+            envelope["_conversation_id"] = self._conversation_id
         return envelope
 
     async def compact(self, strategy: str) -> dict:
@@ -814,33 +869,28 @@ class Trial:
           * summarize — drop_half + inject a SystemMessage summary marker at
             the head of the kept (non-system) segment.
 
-        For api=responses+conv the framework has no per-message history we
-        own — only the response-id chain. compact trims `_response_history`
-        and re-pegs `_last_response_id` to the surviving tail. All three
-        strategies fall through to drop_half on this path (mirrors
-        autogen/llamaindex responses_direct compact shape).
+        For api=responses+conv (E13b) the framework has no per-message
+        history we own AND the OpenAI Conversations API doesn't expose a
+        compact / trim primitive at the container level. compact() is a
+        no-op here — we report the strategy + a note. Continuity remains
+        intact (server-side) for subsequent turns.
 
         Returns a small envelope the runner captures as the compact turn's
         response body.
         """
         api = self.config.get("api", "chat")
         if api == "responses+conv":
-            before = len(self._response_history)
-            half = before // 2
-            self._response_history = self._response_history[half:]
-            self._last_response_id = (
-                self._response_history[-1] if self._response_history else None
-            )
-            out: dict = {
+            return {
                 "strategy": strategy,
-                "history_len_before": before,
-                "history_len_after": len(self._response_history),
+                "history_len_before": 0,
+                "history_len_after": 0,
                 "note": (
-                    "responses+conv has no per-message history — "
-                    "compacted _response_history chain instead"
+                    "responses+conv compact is a no-op: continuity lives "
+                    "in the OpenAI conversation container "
+                    f"({self._conversation_id or 'not yet minted'}); "
+                    "the Conversations API has no client-side trim primitive."
                 ),
             }
-            return out
 
         # Lazy import matches the turn() path — tests don't need langchain
         # until a real turn runs.
