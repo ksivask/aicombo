@@ -17,7 +17,7 @@ from audit_tail import AuditTail
 from efficacy import compute_verdicts
 from providers import get_providers
 from runner import run_trial
-from templates import default_turn_plan
+from templates import default_turn_plan, get_default_turn_count, set_default_turn_count
 from trials import AuditEntry, Trial, TrialConfig, TrialStore, TurnPlan
 from validator import validate as validate_row
 
@@ -193,6 +193,22 @@ def validate_endpoint(payload: dict = Body(...)):
         if env_key:
             available[env_key] = p["available"]
     return validate_row(row, available_keys=available)
+
+
+@router.get("/settings")
+def settings_get():
+    """Return persisted user settings (default turn count, etc.).
+    Backed by $DATA_DIR/settings.json."""
+    return {"default_turn_count": get_default_turn_count()}
+
+
+@router.put("/settings")
+def settings_put(payload: dict = Body(...)):
+    """Update settings. Currently only `default_turn_count` is supported.
+    Returns the new persisted state (with clamping applied)."""
+    if "default_turn_count" in payload:
+        set_default_turn_count(int(payload["default_turn_count"]))
+    return {"default_turn_count": get_default_turn_count()}
 
 
 @router.post("/templates/preview")
