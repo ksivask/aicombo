@@ -15,10 +15,15 @@ class TrialConfig:
     api: str
     stream: bool
     state: bool
-    llm: str
-    mcp: str
+    # E19/E23 — list-form `llm` and `mcp` mirror the RowConfig schema so a
+    # row's matrix entry round-trips through TrialConfig without coercion.
+    # Adapters that haven't opted in (the default) coerce list[0] back to a
+    # single string at the call boundary; multi-aware adapters consume the
+    # list directly.
+    llm: str | list[str]
+    mcp: str | list[str]
     routing: str
-    model: str | None = None
+    model: str | list[str] | None = None
 
 
 @dataclass

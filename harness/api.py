@@ -102,15 +102,26 @@ class RowConfig(BaseModel):
     api: str
     stream: bool = False
     state: bool = False
-    llm: str
-    mcp: str
+    # E23 — list-form `llm` lets multi-LLM-aware adapters (initially
+    # the combo adapter from E24) round-robin per turn across multiple
+    # providers in one trial. Single-string form remains the default
+    # and is what every existing adapter consumes today.
+    llm: str | list[str]
+    # E19 — list-form `mcp` lets multi-MCP-aware adapters merge tool
+    # sets from several MCP servers in one trial. No adapter is opted
+    # in yet (MULTI_MCP_FRAMEWORKS is empty); the schema lands now so
+    # adapter wiring can opt in incrementally without a second schema
+    # migration.
+    mcp: str | list[str]
     routing: str = "via_agw"
     # E9 — optional per-row model override, populated by the matrix UI's
     # Model dropdown. Empty string / None means "use the adapter's
     # DEFAULT_<PROVIDER>_MODEL env fallback". Curated values are surfaced
     # by GET /providers/{id}/models; "__custom__" is a UI-only sentinel
     # that's never persisted (the frontend prompts for free text).
-    model: str | None = None
+    # E23 — list-form pairs 1:1 with list-form `llm` (the combo adapter
+    # picks model[i] for the i-th LLM); validator enforces length match.
+    model: str | list[str] | None = None
     # Plan B T10 — opt-in flag that switches the row's default turn plan to
     # `with_mcp_with_compact` so verdict (d) has a compact turn to bracket.
     with_compact: bool = False

@@ -138,3 +138,106 @@ def test_missing_provider_key_disables_option():
     }, available_keys=available_keys)
     llm_disabled = {o["id"] for o in result.get("disabled_dropdown_options", {}).get("llm", [])}
     assert "chatgpt" in llm_disabled
+
+
+# ── E19 — multi-MCP per-row schema ──
+
+def test_validator_accepts_str_mcp_legacy_form():
+    """Backwards compat: single-string `mcp` continues to validate as
+    runnable for the existing single-MCP path."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "weather", "routing": "via_agw",
+    })
+    assert result["runnable"] is True
+    assert not any("multi-MCP" in w for w in result["warnings"])
+
+
+def test_validator_rejects_list_mcp_for_non_multi_mcp_framework():
+    """E19: list-form `mcp` is not runnable until a framework opts into
+    MULTI_MCP_FRAMEWORKS (intentionally empty in the first cut)."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": ["weather", "fetch"], "routing": "via_agw",
+    })
+    assert result["runnable"] is False
+    assert any("multi-MCP" in w for w in result["warnings"])
+
+
+def test_validator_warns_on_none_in_mcp_list():
+    """A literal 'NONE' inside a multi-MCP list is a user mistake — warn so
+    it surfaces in the row tooltip instead of silently passing through."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": ["weather", "NONE"], "routing": "via_agw",
+    })
+    assert any("'NONE'" in w for w in result["warnings"])
+
+
+# ── E23 — multi-LLM per-row schema ──
+
+def test_validator_accepts_str_llm_legacy_form():
+    """Backwards compat: single-string `llm` continues to validate cleanly
+    on the existing single-LLM path; no E23 warnings emitted."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is True
+    assert not any("multi-LLM" in w for w in result["warnings"])
+
+
+def test_validator_accepts_list_llm_for_combo_framework():
+    """combo is the sole opt-in framework today (E24). list-form `llm`
+    with API-compatible providers is runnable."""
+    result = validate({
+        "framework": "combo", "api": "chat",
+        "stream": False, "state": False,
+        "llm": ["ollama", "chatgpt"], "mcp": "NONE", "routing": "via_agw",
+    })
+    # combo isn't in ADAPTER_CAPABILITIES so the api-capability rule still
+    # marks unrunnable for that reason — but no E23-multi-LLM warning fires.
+    assert not any("multi-LLM" in w for w in result["warnings"])
+
+
+def test_validator_rejects_list_llm_for_non_multi_llm_framework():
+    """E23: list-form `llm` on a framework without combo capability is
+    explicitly non-runnable with a multi-LLM warning."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": ["ollama", "chatgpt"], "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is False
+    assert any("multi-LLM" in w for w in result["warnings"])
+
+
+def test_validator_rejects_api_incompatible_llm_in_list():
+    """Each LLM in the list must be in API_TO_PROVIDERS for the row's api.
+    chat doesn't include claude — flagging it keeps the combo adapter from
+    silently dispatching to an incompatible provider."""
+    result = validate({
+        "framework": "combo", "api": "chat",
+        "stream": False, "state": False,
+        "llm": ["ollama", "claude"], "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is False
+    assert any("claude" in w and "compatible" in w for w in result["warnings"])
+
+
+def test_validator_rejects_model_list_length_mismatch():
+    """If `model` is also a list, it must align 1:1 with `llm` so the combo
+    adapter can pick model[i] for llm[i]."""
+    result = validate({
+        "framework": "combo", "api": "chat",
+        "stream": False, "state": False,
+        "llm": ["ollama", "chatgpt"],
+        "model": ["llama3.2"],  # length 1 vs llm length 2
+        "mcp": "NONE", "routing": "via_agw",
+    })
+    assert result["runnable"] is False
+    assert any("model list length" in w for w in result["warnings"])

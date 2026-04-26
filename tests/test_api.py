@@ -471,3 +471,44 @@ def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state)
         r2 = client.post(f"/matrix/row/{src_id}/clone-baseline")
         assert r2.status_code == 400
         assert "already" in r2.json().get("detail", "").lower()
+
+
+# ── E19 + E23 — list-form mcp/llm round-trip through the matrix API ──
+
+def test_matrix_row_accepts_list_form_mcp_and_llm_roundtrip(tmp_data_dir, reset_api_state):
+    """POST/GET/PATCH /matrix/row preserve list-form `mcp` and `llm` exactly.
+
+    Verifies the schema (RowConfig) and the JSON round-trip, independent of
+    whether the resulting row would be runnable (validator gates that
+    separately — adapter wiring lands later for both fields)."""
+    with TestClient(app) as client:
+        # POST with list-form mcp + llm
+        r = client.post("/matrix/row", json={
+            "framework": "combo", "api": "chat",
+            "stream": False, "state": False,
+            "llm": ["ollama", "chatgpt"],
+            "mcp": ["weather", "fetch"],
+            "model": ["llama3.2", "gpt-4o-mini"],
+            "routing": "via_agw",
+        })
+        assert r.status_code == 200, r.text
+        row_id = r.json()["row_id"]
+
+        # GET preserves both list shapes
+        r = client.get(f"/matrix/row/{row_id}")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["llm"] == ["ollama", "chatgpt"]
+        assert body["mcp"] == ["weather", "fetch"]
+        assert body["model"] == ["llama3.2", "gpt-4o-mini"]
+
+        # PATCH that swaps to single-string form (legacy) still validates
+        r = client.patch(f"/matrix/row/{row_id}", json={
+            "llm": "ollama", "mcp": "weather", "model": "llama3.2",
+        })
+        assert r.status_code == 200
+        r = client.get(f"/matrix/row/{row_id}")
+        body = r.json()
+        assert body["llm"] == "ollama"
+        assert body["mcp"] == "weather"
+        assert body["model"] == "llama3.2"
