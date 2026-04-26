@@ -116,10 +116,31 @@ const LIBRARY_NATIVE_SUPPORT = {
 };
 
 const CELL_GLYPH = {
-  yes: {glyph: "✓", className: "cell-yes",  title: "native support"},
-  via: {glyph: "⚠", className: "cell-via",  title: "via wrapper / litellm / community plugin"},
-  no:  {glyph: "✗", className: "cell-no",   title: "no support"},
-  na:  {glyph: "—", className: "cell-na",   title: "not applicable"},
+  yes:    {glyph: "✓", className: "cell-yes",    title: "native support"},
+  via:    {glyph: "⚠", className: "cell-via",    title: "via wrapper / litellm / community plugin"},
+  bypass: {glyph: "⊘", className: "cell-bypass", title: "bypass — aiplay adapter calls the API directly via SDK, sidestepping the framework's own abstractions (still exercises the AGW route + governance)"},
+  no:     {glyph: "✗", className: "cell-no",     title: "no support / not implemented"},
+  na:     {glyph: "—", className: "cell-na",     title: "not applicable"},
+};
+
+// ADAPTER_BYPASS_APIS — which APIs aiplay's adapter implements via a
+// bypass path (driving the underlying SDK directly instead of through
+// the framework's higher-level abstractions). Source: comments in
+// harness/validator.py::ADAPTER_CAPABILITIES (e.g., autogen comment
+// reads "AssistantAgent + openai responses bypass").
+//
+// Why bypass exists: some frameworks either don't natively expose the
+// API yet (e.g., responses+conv missing from the framework's client
+// classes) OR their native path is too opaque to test the AGW
+// governance hooks. Bypass lets aiplay still exercise the AGW route
+// for that API+framework combo, even when the framework itself wouldn't.
+//
+// Note: bypass-capable but NOT-in-supported_apis combos (crewai +conv,
+// pydantic-ai +conv) are documented in validator.py comments but the
+// adapter chose not to wire them up. They surface as ✗ here, not ⊘.
+const ADAPTER_BYPASS_APIS = {
+  autogen:    new Set(["responses", "responses+conv"]),
+  llamaindex: new Set(["responses", "responses+conv"]),
 };
 
 function renderCell(value) {
@@ -144,10 +165,13 @@ function renderAdapterTable(infoFrameworks) {
   const head = `<tr><th>framework</th>${apiCols.map(c => `<th title="${c.title}">${c.label}</th>`).join("")}</tr>`;
   const rows = FRAMEWORKS.map(fw => {
     const supported = new Set((infoFrameworks?.[fw]?.supported_apis) || []);
+    const bypassSet = ADAPTER_BYPASS_APIS[fw] || new Set();
     return `<tr><td class="fw-name">${fw}</td>${apiCols.map(c => {
       // direct-mcp has no LLM APIs; show "—" not "✗"
       if (fw === "direct-mcp") return renderCell("na");
-      return renderCell(supported.has(c.key) ? "yes" : "no");
+      if (!supported.has(c.key)) return renderCell("no");
+      // Supported AND in bypass set → ⊘; otherwise → native ✓
+      return renderCell(bypassSet.has(c.key) ? "bypass" : "yes");
     }).join("")}</tr>`;
   }).join("");
   return `<table class="support-matrix"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
@@ -158,9 +182,22 @@ function renderLegend() {
     <div class="support-legend">
       <span><span class="cell-yes">✓</span> native</span>
       <span><span class="cell-via">⚠</span> via wrapper / litellm / community plugin</span>
-      <span><span class="cell-no">✗</span> no support</span>
+      <span><span class="cell-bypass">⊘</span> bypass (adapter calls SDK directly, sidesteps framework)</span>
+      <span><span class="cell-no">✗</span> no support / not implemented</span>
       <span><span class="cell-na">—</span> N/A</span>
-    </div>`;
+    </div>
+    <p class="modal-note" style="margin-top:6px;">
+      <strong>Bypass</strong> means aiplay's adapter exposes the API by
+      calling the underlying SDK (e.g., openai-python's Responses client)
+      directly, sidestepping the framework's own higher-level abstractions.
+      The AGW route + governance still fire; what's bypassed is only the
+      framework's wrapping. Used today by <code>autogen</code> and
+      <code>llamaindex</code> for OpenAI Responses (per
+      <code>validator.py</code> comments). <code>crewai</code> and
+      <code>pydantic-ai</code> have bypass <em>documented as possible</em>
+      for <code>+conv</code> but not actually wired in — those cells
+      show ✗.
+    </p>`;
 }
 
 async function openAboutModal() {

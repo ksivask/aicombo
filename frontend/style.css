@@ -659,10 +659,11 @@ table.support-matrix td.fw-name {
   text-align: left; font-family: ui-monospace, monospace;
   background: #fafafa; font-weight: 500;
 }
-table.support-matrix td.cell-yes { color: #28a745; font-weight: 600; }
-table.support-matrix td.cell-via { color: #d97706; font-weight: 600; }
-table.support-matrix td.cell-no  { color: #dc3545; font-weight: 600; }
-table.support-matrix td.cell-na  { color: #999; }
+table.support-matrix td.cell-yes    { color: #28a745; font-weight: 600; }
+table.support-matrix td.cell-via    { color: #d97706; font-weight: 600; }
+table.support-matrix td.cell-bypass { color: #6f42c1; font-weight: 600; }
+table.support-matrix td.cell-no     { color: #dc3545; font-weight: 600; }
+table.support-matrix td.cell-na     { color: #999; }
 
 .support-legend {
   display: flex; gap: 16px; flex-wrap: wrap;
@@ -670,7 +671,8 @@ table.support-matrix td.cell-na  { color: #999; }
   border-top: 1px dashed #ddd;
 }
 .support-legend > span { display: inline-flex; align-items: center; gap: 4px; }
-.support-legend .cell-yes { color: #28a745; font-weight: 600; }
-.support-legend .cell-via { color: #d97706; font-weight: 600; }
-.support-legend .cell-no  { color: #dc3545; font-weight: 600; }
-.support-legend .cell-na  { color: #999; }
+.support-legend .cell-yes    { color: #28a745; font-weight: 600; }
+.support-legend .cell-via    { color: #d97706; font-weight: 600; }
+.support-legend .cell-bypass { color: #6f42c1; font-weight: 600; }
+.support-legend .cell-no     { color: #dc3545; font-weight: 600; }
+.support-legend .cell-na     { color: #999; }
