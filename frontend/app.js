@@ -615,6 +615,92 @@ document.getElementById("btn-add-row").addEventListener("click", async () => {
   gridApi.applyTransaction({add: [{row_id: j.row_id, ...newRow}]});
 });
 
+// + Add Bulk — enumerates every (framework × supported_api) combo and
+// creates one row per combo. LLM = first API-compatible provider from
+// API_TO_PROVIDERS (chat→ollama, messages→claude, responses/+conv→chatgpt);
+// MCP = randomly picked from {weather, news, library, fetch}; routing =
+// via_agw; model = null (lets the runner use DEFAULT_<PROVIDER>_MODEL env).
+//
+// Source of truth: /info.frameworks (the I-NEW-1 endpoint backed by
+// validator.py::ADAPTER_CAPABILITIES). Falls back to the in-JS
+// ADAPTER_CAPABILITIES_JS mirror when /info doesn't expose frameworks
+// (older harness builds — pre-b0e0aca).
+const BULK_API_TO_FIRST_LLM = {
+  "chat":           "ollama",
+  "messages":       "claude",
+  "responses":      "chatgpt",
+  "responses+conv": "chatgpt",
+};
+const BULK_MCPS = ["weather", "news", "library", "fetch"];
+
+async function getBulkSupportedApis() {
+  try {
+    const info = await fetch(`${API_BASE}/info`).then(r => r.json());
+    if (info?.frameworks) {
+      return Object.fromEntries(
+        Object.entries(info.frameworks).map(([k, v]) => [k, v.supported_apis || []])
+      );
+    }
+  } catch (e) {
+    console.warn("Add Bulk: /info.frameworks unavailable, falling back to in-JS map:", e);
+  }
+  // Fallback for harness builds pre-I-NEW-1
+  return {...ADAPTER_CAPABILITIES_JS, "direct-mcp": []};
+}
+
+document.getElementById("btn-add-bulk").addEventListener("click", async () => {
+  const supported = await getBulkSupportedApis();
+  // Build the combo list
+  const combos = [];
+  for (const [fw, apis] of Object.entries(supported)) {
+    if (fw === "direct-mcp") continue;  // handled as a single llm=NONE row below
+    for (const api of apis) {
+      const llm = BULK_API_TO_FIRST_LLM[api];
+      if (!llm) continue;  // unknown api → skip
+      combos.push({
+        framework: fw, api,
+        stream: false, state: false,
+        llm, mcp: BULK_MCPS[Math.floor(Math.random() * BULK_MCPS.length)],
+        routing: "via_agw", model: null,
+      });
+    }
+  }
+  // Always add one direct-mcp row (mcp-only, llm=NONE)
+  combos.push({
+    framework: "direct-mcp", api: "chat",  // api ignored when llm=NONE
+    stream: false, state: false,
+    llm: "NONE", mcp: BULK_MCPS[Math.floor(Math.random() * BULK_MCPS.length)],
+    routing: "via_agw", model: null,
+  });
+
+  if (!confirm(`Add ${combos.length} rows (${Object.keys(supported).length} frameworks × supported APIs + 1 direct-mcp)?`)) return;
+
+  // POST each. Sequential keeps row order deterministic and avoids
+  // hammering the harness's _save_matrix lock.
+  let ok = 0, fail = 0;
+  const newRows = [];
+  for (const r of combos) {
+    try {
+      const resp = await fetch(`${API_BASE}/matrix/row`, {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(r),
+      });
+      if (resp.ok) {
+        const j = await resp.json();
+        newRows.push({row_id: j.row_id, ...r});
+        ok++;
+      } else {
+        fail++;
+      }
+    } catch {
+      fail++;
+    }
+  }
+  if (newRows.length) gridApi.applyTransaction({add: newRows});
+  alert(`Added ${ok} row${ok === 1 ? "" : "s"}${fail ? ` (${fail} failed — check console)` : ""}.`);
+});
+
 document.getElementById("btn-run-all").addEventListener("click", async () => {
   const rows = await fetchMatrix();
   for (const row of rows) {
