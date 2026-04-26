@@ -35,6 +35,39 @@ let __servicesLastSourceHash = null;
 let __cidFlowNeedsMermaid = false;
 let __servicesNeedsMermaid = false;
 
+// I-NEW-1: framework-capability cache. The NOTE-tab's framework rules
+// (e.g. "crewai doesn't implement responses") used to hardcode the
+// supported_apis sets, mirroring `harness/validator.py::ADAPTER_CAPABILITIES`.
+// They now read from this cache, populated once at page-load via /info.
+// `null` means "not fetched yet" — rules that depend on this gracefully
+// no-op until it's available, then re-render on the next SSE/poll tick.
+let __frameworksInfo = null;
+
+async function ensureFrameworksInfo() {
+  if (__frameworksInfo !== null) return __frameworksInfo;
+  try {
+    const r = await fetch(`${API_BASE}/info`);
+    if (!r.ok) return null;
+    const data = await r.json();
+    __frameworksInfo = data.frameworks || {};
+  } catch {
+    // Defensive: leave as null so a later tick can retry.
+  }
+  return __frameworksInfo;
+}
+
+// Test helper — lets the NOTE-tab rules consult capabilities without
+// caring whether the fetch has completed yet. Returns true when the
+// adapter implements the API per ADAPTER_CAPABILITIES; false when it
+// definitely does NOT; null when capability data isn't loaded yet
+// (caller should treat as "unknown" and skip the rule).
+function adapterSupportsApi(framework, api) {
+  if (!__frameworksInfo) return null;
+  const fw = __frameworksInfo[framework];
+  if (!fw || !Array.isArray(fw.supported_apis)) return null;
+  return fw.supported_apis.includes(api);
+}
+
 // Run mermaid.init on the given tab IF it's currently visible. Returns
 // true on success (caller should clear the corresponding NeedsMermaid
 // flag), false otherwise (tab hidden, no nodes, init threw).
@@ -779,35 +812,48 @@ function collectNotes(c) {
   }
 
   // ── Per-framework limitations ──
-  if (framework === "crewai" && (api === "responses" || api === "responses+conv")) {
-    notes.push({
-      category: "Framework limitations",
-      severity: "warn",
-      icon: "⚠",
+  // I-NEW-1: framework-capability rules consult /info.frameworks
+  // (mirror of harness/validator.py::ADAPTER_CAPABILITIES) instead of
+  // duplicating the supported-API sets in JS. If a contributor extends
+  // ADAPTER_CAPABILITIES, this code automatically picks it up — no
+  // parallel JS edit required.
+  const FRAMEWORK_CAPABILITY_NOTES = [
+    {
+      framework: "crewai", apis: ["responses", "responses+conv"],
       title: "crewai adapter does not implement responses/responses+conv (E5c)",
-      body: "crewai 1.14 has no first-class Responses API support. Validator may have allowed this combo but the adapter will reject. ADAPTER_CAPABILITIES['crewai'] = {chat, messages} only.",
+      body: "crewai 1.14 has no first-class Responses API support. Validator may have allowed this combo but the adapter will reject.",
       docref: "harness/validator.py + docs/enhancements.md#e5c",
-    });
-  }
-  if (framework === "pydantic-ai" && api === "responses+conv") {
-    notes.push({
-      category: "Framework limitations",
-      severity: "warn",
-      icon: "⚠",
+    },
+    {
+      framework: "pydantic-ai", apis: ["responses+conv"],
       title: "pydantic-ai adapter does not implement responses+conv (E5d)",
-      body: "pydantic-ai 1.86 doesn't first-class-support previous_response_id chaining. Validator-blocked. ADAPTER_CAPABILITIES['pydantic-ai'] = {chat, messages, responses}.",
+      body: "pydantic-ai 1.86 doesn't first-class-support previous_response_id chaining. Validator-blocked.",
       docref: "docs/enhancements.md#e5d",
-    });
-  }
-  if (framework === "llamaindex" && api === "messages") {
-    notes.push({
-      category: "Framework limitations",
-      severity: "warn",
-      icon: "⚠",
+    },
+    {
+      framework: "llamaindex", apis: ["messages"],
       title: "llamaindex adapter does not implement messages (E5e)",
-      body: "llamaindex's OpenAI wrapper is OpenAI-only. Messages support would require llama-index-llms-anthropic package. ADAPTER_CAPABILITIES['llamaindex'] = {chat, responses, responses+conv}.",
+      body: "llamaindex's OpenAI wrapper is OpenAI-only. Messages support would require llama-index-llms-anthropic package.",
       docref: "docs/enhancements.md#e5e",
-    });
+    },
+  ];
+  for (const rule of FRAMEWORK_CAPABILITY_NOTES) {
+    if (framework !== rule.framework) continue;
+    if (!rule.apis.includes(api)) continue;
+    // Only fire when /info.frameworks confirms the adapter genuinely
+    // does NOT implement this api. `null` (cache cold) → skip silently;
+    // `true` (capability surfaced after the JS rule was authored) →
+    // also skip (the rule no longer applies).
+    if (adapterSupportsApi(framework, api) === false) {
+      notes.push({
+        category: "Framework limitations",
+        severity: "warn",
+        icon: "⚠",
+        title: rule.title,
+        body: rule.body,
+        docref: rule.docref,
+      });
+    }
   }
   if (framework === "langgraph") {
     notes.push({
@@ -1454,6 +1500,10 @@ function startRowWatchPoll() {
 
 // ── Bootstrap ──
 (async () => {
+  // I-NEW-1: prime the framework-capability cache before first render so
+  // NOTE-tab rules that consult it get accurate answers on the first paint
+  // (rather than null → skip → reappear on the second SSE tick).
+  await ensureFrameworksInfo();
   const initialStatus = await fetchAndRender();
   if (currentTrialId && initialStatus === "running") {
     attachPoll(currentTrialId);

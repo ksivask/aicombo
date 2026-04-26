@@ -94,6 +94,37 @@ def test_info_reports_adapter_discovery():
         assert "adapters" in data
 
 
+def test_info_frameworks_mirrors_validator_capabilities():
+    """I-NEW-1 regression: /info.frameworks is the single source of truth
+    consumed by the trial-detail page's NOTE-tab UI. If a contributor
+    adds a new framework or changes a supported_apis set in
+    ADAPTER_CAPABILITIES, the /info payload must reflect it (otherwise
+    the NOTE-tab silently falls behind)."""
+    from validator import ADAPTER_CAPABILITIES
+    with TestClient(app) as client:
+        r = client.get("/info")
+        assert r.status_code == 200
+        info = r.json()
+    assert "frameworks" in info, "I-NEW-1: /info missing 'frameworks' key"
+    info_fw = info["frameworks"]
+    # Every framework in the validator must appear in /info.
+    for name, caps in ADAPTER_CAPABILITIES.items():
+        assert name in info_fw, (
+            f"framework {name!r} missing from /info.frameworks — JS NOTE "
+            f"rules will silently misfire"
+        )
+        # The supported_apis list mirrors the validator's set, sorted.
+        assert info_fw[name]["supported_apis"] == sorted(caps), (
+            f"supported_apis drift for {name}: validator={sorted(caps)} "
+            f"vs /info={info_fw[name]['supported_apis']}"
+        )
+    # Conversely: /info shouldn't invent frameworks the validator
+    # doesn't know about.
+    assert set(info_fw.keys()) == set(ADAPTER_CAPABILITIES.keys()), (
+        "/info.frameworks set differs from ADAPTER_CAPABILITIES set"
+    )
+
+
 # ── Plan B T12 — turn_plan_override + /templates/validate ──
 
 def test_templates_validate_accepts_minimal_plan():

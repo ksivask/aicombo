@@ -140,11 +140,26 @@ def health():
 
 @router.get("/info")
 def info():
+    """Harness info + framework capability mirror.
+
+    I-NEW-1: `frameworks` is the single source of truth consumed by the
+    trial-detail page's NOTE-tab rules. Built from
+    `harness/validator.py::ADAPTER_CAPABILITIES` so the JS UI never
+    duplicates capability data and silently drifts when ADAPTER_CAPABILITIES
+    is edited. Only `supported_apis` is exposed today — that's the only
+    field ADAPTER_CAPABILITIES carries; do not add new metadata here
+    without first extending the validator dict.
+    """
+    from validator import ADAPTER_CAPABILITIES
     return {
         "harness_version": "plan-a-mvp",
         "adapters": [
             {"framework": "langchain", "url": "http://adapter-langchain:5001"},
         ],
+        "frameworks": {
+            name: {"supported_apis": sorted(caps)}
+            for name, caps in ADAPTER_CAPABILITIES.items()
+        },
     }
 
 
