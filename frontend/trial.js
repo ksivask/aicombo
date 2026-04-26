@@ -26,6 +26,43 @@ const elRowSummary = document.getElementById("row-summary");
 let __cidFlowLastSourceHash = null;
 // Services topology render-cache: same pattern as cidflow above.
 let __servicesLastSourceHash = null;
+// Mermaid render-deferral state. Mermaid 9.4.3's getBBox()-based label
+// measurement returns 0×0 in Firefox when the parent element is
+// display:none — collapsing the SVG to a 16×16 viewBox with all labels
+// invisible. Solution: only run mermaid.init when the target tab is
+// visible. The flag tracks whether a render is pending so the
+// tab-switch click handler can trigger it on first navigation.
+let __cidFlowNeedsMermaid = false;
+let __servicesNeedsMermaid = false;
+
+// Run mermaid.init on the given tab IF it's currently visible. Returns
+// true on success (caller should clear the corresponding NeedsMermaid
+// flag), false otherwise (tab hidden, no nodes, init threw).
+function runMermaidIfVisible(tabKey) {
+  const el = tabContents[tabKey];
+  if (!el || !el.classList.contains("active")) return false;
+  if (typeof mermaid === "undefined") return false;
+  const nodes = el.querySelectorAll(".mermaid");
+  if (!nodes.length) return false;
+  // Reset Mermaid's own dedup mark — without this, nodes that were
+  // measured 0×0 on a previous hidden-tab attempt are skipped on retry.
+  for (const n of nodes) n.removeAttribute("data-processed");
+  try {
+    mermaid.initThrowsErrors(undefined, nodes);
+    // SVG-presence sanity check — Mermaid 9.4.3 occasionally returns
+    // without throwing but also without writing the SVG (e.g., a CSS
+    // path collapsed it). Surface the silent-failure mode.
+    for (const n of nodes) {
+      if (!n.querySelector("svg")) {
+        console.warn(`${tabKey}: pre.mermaid has no SVG child after init; source:`, n.textContent.slice(0, 200));
+      }
+    }
+    return true;
+  } catch (e) {
+    console.warn(`${tabKey} Mermaid render failed:`, e);
+    return false;
+  }
+}
 
 // Tiny non-cryptographic string hash (djb2-ish, sufficient for change-
 // detection on rendered HTML — collisions only manifest as a missed
@@ -115,7 +152,15 @@ tabBtns.forEach(btn => btn.addEventListener("click", () => {
   tabBtns.forEach(b => b.classList.remove("active"));
   Object.values(tabContents).forEach(c => c.classList.remove("active"));
   btn.classList.add("active");
-  tabContents[btn.dataset.tab].classList.add("active");
+  const tab = btn.dataset.tab;
+  tabContents[tab].classList.add("active");
+  // First-visibility Mermaid render — see runMermaidIfVisible comment for
+  // the Firefox getBBox-on-hidden-element rationale.
+  if (tab === "cidflow" && __cidFlowNeedsMermaid) {
+    if (runMermaidIfVisible("cidflow")) __cidFlowNeedsMermaid = false;
+  } else if (tab === "services" && __servicesNeedsMermaid) {
+    if (runMermaidIfVisible("services")) __servicesNeedsMermaid = false;
+  }
 }));
 
 if (!explicitTrialId && !rowId) {
@@ -431,55 +476,26 @@ async function renderTrial(tid) {
     // innerHTML write. Firefox is stricter than Chrome about running
     // mermaid.run synchronously after innerHTML — it can measure the pre
     // before layout settles and produce a 0×0 SVG.
+    // Mark for render. If the cidflow tab is currently visible, init runs
+    // immediately (deferred via setTimeout(0) so the browser commits the
+    // innerHTML write first). If hidden, the tab-switch click handler
+    // will pick it up on first navigation.
+    __cidFlowNeedsMermaid = true;
     setTimeout(() => {
-      try {
-        if (typeof mermaid !== "undefined") {
-          const mermaidNodes = tabContents.cidflow.querySelectorAll(".mermaid");
-          if (mermaidNodes.length) {
-            // Mermaid 9.4.3 API: mermaid.init(config?, nodes, callback?).
-            // NOT .run() — that's v10+ and would throw TypeError here. Use
-            // initThrowsErrors so parse errors surface to our catch instead
-            // of being swallowed with a div-id error placeholder.
-            mermaid.initThrowsErrors(undefined, mermaidNodes);
-            // Sanity check: catch the silent-failure mode where init returns
-            // OK but produced no SVG child (e.g., CSS collapsed it, or a
-            // Firefox foreignObject quirk).
-            for (const n of mermaidNodes) {
-              if (!n.querySelector("svg")) {
-                console.warn("Mermaid: pre.mermaid has no SVG child after init; source:", n.textContent.slice(0, 200));
-              }
-            }
-          }
-        } else {
-          console.warn("Mermaid lib not loaded; CID flow graph will be source-only");
-        }
-      } catch (e) {
-        console.warn("Mermaid render failed:", e);
-      }
+      if (runMermaidIfVisible("cidflow")) __cidFlowNeedsMermaid = false;
     }, 0);
   }
 
-  // Services topology tab — same render-cache + setTimeout(0) Mermaid
-  // kickoff pattern as cidflow above. See cidflow comments for the
-  // Firefox-stricter-about-mermaid-after-innerHTML rationale.
+  // Services topology tab — same render-cache + visibility-deferred init
+  // as cidflow above.
   const servicesHtml = renderServicesTab(trial);
   const servicesHash = _hashStr(servicesHtml);
   if (servicesHash !== __servicesLastSourceHash) {
     tabContents.services.innerHTML = servicesHtml;
     __servicesLastSourceHash = servicesHash;
+    __servicesNeedsMermaid = true;
     setTimeout(() => {
-      try {
-        if (typeof mermaid !== "undefined") {
-          const nodes = tabContents.services.querySelectorAll(".mermaid");
-          if (nodes.length) {
-            // Mermaid 9.4.3 API — see cidflow above for the .init vs .run
-            // rationale. initThrowsErrors so syntax errors hit the catch.
-            mermaid.initThrowsErrors(undefined, nodes);
-          }
-        }
-      } catch (e) {
-        console.warn("Services Mermaid render failed:", e);
-      }
+      if (runMermaidIfVisible("services")) __servicesNeedsMermaid = false;
     }, 0);
   }
 
