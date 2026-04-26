@@ -66,11 +66,14 @@ const LIBRARY_NATIVE_SUPPORT = {
     tool_calling:      "yes",
   },
   crewai: {
-    // Routes LLM calls through litellm — chat + messages via that layer
-    chat:              "via",
-    messages:          "via",
-    responses:         "no",   // litellm exposes /v1/chat/completions shape
-    "responses+conv":  "no",
+    // crewai 1.14+ routes openai/anthropic/gemini/etc. to NATIVE provider
+    // classes (OpenAICompletion, AnthropicCompletion, GeminiCompletion)
+    // wrapping the vendor SDKs directly. litellm is only the fallback for
+    // unrecognized model strings.
+    chat:              "yes",  // OpenAICompletion via native openai SDK
+    messages:          "yes",  // AnthropicCompletion via native anthropic SDK
+    responses:         "yes",  // OpenAICompletion has first-class responses.create + previous_response_id
+    "responses+conv":  "no",   // no /v1/conversations container support in crewai's responses path
     mcp:               "yes",  // crewai-tools[mcp] adapter
     streaming:         "yes",
     tool_calling:      "yes",
@@ -85,11 +88,16 @@ const LIBRARY_NATIVE_SUPPORT = {
     tool_calling:      "yes",
   },
   autogen: {
-    // Microsoft AutoGen 0.4+
+    // Microsoft AutoGen 0.7+. autogen-ext ships OpenAIChatCompletionClient
+    // and AnthropicChatCompletionClient but NO Responses-API client (verified
+    // against autogen-ext 0.7.5: exports only OpenAIChatCompletionClient and
+    // AzureOpenAIChatCompletionClient). aiplay's autogen adapter exposes
+    // Responses by bypassing AssistantAgent and calling the openai SDK
+    // directly — see ADAPTER_BYPASS_APIS below.
     chat:              "yes",
     messages:          "yes",
-    responses:         "yes",
-    "responses+conv":  "yes",
+    responses:         "no",   // no native OpenAIResponsesChatCompletionClient in autogen-ext
+    "responses+conv":  "no",   // no Responses → no Conversations API container support
     mcp:               "yes",  // autogen-ext mcp tools
     streaming:         "yes",
     tool_calling:      "yes",
