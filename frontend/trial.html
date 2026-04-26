@@ -4,11 +4,17 @@
   <meta charset="utf-8">
   <title>aiplay — trial</title>
   <link rel="stylesheet" href="/style.css">
-  <!-- Mermaid 10.9.1: text-as-diagrams renderer used by the CID flow tab.
-       Vendored locally (frontend/vendor/) to eliminate the CDN dependency
-       and avoid Firefox strict-tracking-protection blocking the third-party
-       script load. The CID flow tab serializes a `graph LR` definition from
-       the trial JSON and Mermaid renders it client-side. -->
+  <!-- Mermaid 9.4.3 (UMD). Not v10 — v10's UMD render path collapses to
+       16×16 in Firefox due to getBBox() returning 0 on detached elements
+       during pre-render measurement (Mermaid 10 pre-renders into a
+       hidden container, measures, then attaches; Firefox can't measure
+       detached SVG elements). The same root cause defeats the
+       htmlLabels:false workaround: even with native <text>/<tspan>
+       labels, label-container rects came out 15×15 and viewBox 16×16.
+       v9.4.3 attaches before measuring, works correctly in Firefox.
+       Per Mozilla source-docs Mermaid integration page. Vendored
+       locally to eliminate CDN dependency and avoid Firefox strict
+       tracking-protection blocking third-party script loads. -->
   <script src="/vendor/mermaid.min.js"></script>
 </head>
 <body class="trial-page">
@@ -40,7 +46,7 @@
     <div id="tab-verdicts" class="tab-content"></div>
     <div id="tab-note" class="tab-content"></div>
     <div id="tab-cidflow" class="tab-content"></div>
-    <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
+    <div id="tab-raw" class="tab-content"><div class="pre-with-copy"><button class="copy-btn copy-pre-btn" title="copy contents to clipboard">📋</button><pre id="raw-json"></pre></div></div>
   </main>
   <script type="module" src="/trial.js"></script>
 </body>

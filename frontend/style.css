@@ -605,3 +605,19 @@ button.btn-pairs:hover { background: #e3f2fd; border-radius: 3px; }
 .note-body { font-size: 13px; color: #333; margin-top: 4px; line-height: 1.5; }
 .note-docref { font-size: 11px; color: #666; margin-top: 4px; font-family: ui-monospace, monospace; }
 .note-docref code { background: #eee; padding: 1px 4px; border-radius: 2px; }
+
+/* ── Copy-to-clipboard buttons (snippet areas) ── */
+.copy-btn {
+  background: transparent; border: 1px solid #ccc; cursor: pointer;
+  font-size: 11px; padding: 1px 6px; border-radius: 3px;
+  margin-left: 6px; vertical-align: middle;
+  color: #666; line-height: 1;
+}
+.copy-btn:hover { background: #f0f0f0; color: #333; }
+.pre-with-copy {
+  position: relative;
+}
+.pre-with-copy .copy-btn {
+  position: absolute; top: 4px; right: 4px;
+  background: rgba(255,255,255,0.9); z-index: 2;
+}

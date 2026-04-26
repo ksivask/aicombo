@@ -93,13 +93,16 @@ if (typeof mermaid !== "undefined") {
     startOnLoad: false,
     theme: "default",
     securityLevel: "loose",
-    // Firefox foreignObject measurement bug: HTML labels (the default)
-    // get rendered with width=0/height=0 because Firefox doesn't
-    // measure foreignObject content synchronously during SVG layout.
-    // Result: SVG viewBox collapses to 16×16, diagram invisible.
-    // Switching to native SVG <text> labels — measured synchronously —
-    // works in Firefox + Chrome + Safari. Loses HTML <br> support;
-    // labels using `\n` become multi-line via tspan instead.
+    // Mermaid 9.4.3 (vendored). v10's UMD render path collapses to
+    // 16×16 in Firefox: it pre-renders into a detached/hidden DOM
+    // container, calls getBBox() to measure, then attaches to the
+    // visible DOM — but Firefox returns 0 from getBBox() on detached
+    // elements, so layout uses 0-sized labels. This is also why
+    // flowchart:{htmlLabels:false} didn't help on v10: the bug isn't
+    // foreignObject-specific, it's hidden-container measurement.
+    // v9.4.3 attaches before measuring, works in Firefox/Chrome/Safari.
+    // htmlLabels:false retained for crisp SVG <text>/<tspan> labels
+    // (no foreignObject, no HTML <br>; line breaks via \n → <tspan>).
     flowchart: { htmlLabels: false },
   });
 }
@@ -141,17 +144,17 @@ function renderBody(b) {
     if (parsed !== null) {
       return `
         <details open><summary><strong>Parsed</strong> — JSON payload(s) from SSE data: lines</summary>
-          <pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre>
+          <div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(JSON.stringify(parsed, null, 2))}</pre></div>
         </details>
         <details><summary><strong>Raw</strong> — wire bytes (${b.length} chars)</summary>
-          <pre>${escapeHtml(b)}</pre>
+          <div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(b)}</pre></div>
         </details>`;
     }
     // Plain string, not SSE — show as raw string
-    return `<pre>${escapeHtml(b)}</pre>`;
+    return `<div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(b)}</pre></div>`;
   }
   // Dict/list: pretty JSON
-  return `<pre>${escapeHtml(JSON.stringify(b, null, 2))}</pre>`;
+  return `<div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(JSON.stringify(b, null, 2))}</pre></div>`;
 }
 
 function tryParseSSE(s) {
@@ -180,7 +183,7 @@ function renderAudit(entries) {
       <span class="badge">cid: ${a.cid || '∅'}</span>
       <span class="badge">backend: ${shortenBackend(a.backend)}</span>
       ${a.captured_at ? `<span class="badge">ts: ${a.captured_at.slice(11, 23)}</span>` : ''}
-      <details><summary>raw governance log</summary><pre>${escapeHtml(JSON.stringify(a.raw, null, 2))}</pre></details>
+      <details><summary>raw governance log</summary><div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(JSON.stringify(a.raw, null, 2))}</pre></div></details>
     </div>
   `).join("");
 }
@@ -191,6 +194,35 @@ function shortenBackend(b) {
 }
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// ── Copy-to-clipboard helpers ──
+// copyPreBtn() returns the HTML for a small icon button; place it inside a
+// <div class="pre-with-copy"> alongside a <pre>. The global click handler
+// (installed once below) finds the sibling <pre> and copies its textContent.
+// We use this pre-relative pattern (rather than embedding the text in a data
+// attribute) because some snippets (raw trial JSON) can be hundreds of KB
+// and would balloon the DOM.
+function copyPreBtn(label = "📋") {
+  return `<button class="copy-btn copy-pre-btn" title="copy contents to clipboard">${label}</button>`;
+}
+
+if (!window.__copyBtnInstalled) {
+  document.addEventListener("click", async (e) => {
+    if (!e.target.matches?.(".copy-pre-btn")) return;
+    const wrapper = e.target.closest(".pre-with-copy");
+    const pre = wrapper?.querySelector("pre");
+    if (!pre) return;
+    const orig = e.target.textContent;
+    try {
+      await navigator.clipboard.writeText(pre.textContent);
+      e.target.textContent = "✓";
+    } catch {
+      e.target.textContent = "✗";
+    }
+    setTimeout(() => { e.target.textContent = orig; }, 800);
+  });
+  window.__copyBtnInstalled = true;
 }
 function renderRowChips(c) {
   const chips = [
@@ -1031,7 +1063,10 @@ function renderCidFlowTab(trial) {
       <pre class="mermaid">${escapeHtml(mer)}</pre>
       <details class="cid-flow-source">
         <summary>Mermaid source (debug)</summary>
-        <pre>${escapeHtml(mer)}</pre>
+        <div class="pre-with-copy">
+          ${copyPreBtn()}
+          <pre>${escapeHtml(mer)}</pre>
+        </div>
       </details>
     </div>
   `;
