@@ -124,3 +124,57 @@ The salvaged Services tab from the rate-limited subagent was syntactically clean
 - aiplay HEAD: `d78262a`
 - 6 commits added in this exchange (Services tab feat + 5 fix commits)
 - Tree clean except untracked `.agentdiff/` tooling artifacts
+
+## 2026-04-26 — Subagent C deferred review-fix bundle (I-NEW-1, I-NEW-2, I-NEW-3)
+
+### Entry 1 — Kickoff
+**User:** Three deferred review-fix items in `/my/ws/aiplay/`. ONE commit (or split into 2-3 if logical separation is cleaner). HEAD: `89244da`. Pytest target: 230 → 233+.
+
+**Items:**
+- I-NEW-1 — derive NOTE registry from /info instead of duplicating ADAPTER_CAPABILITIES
+- I-NEW-2 — autogen `Trial.force_state_ref(int)` dead-code verification + (if live) clarifying comment
+- I-NEW-3 — `tests/test_note_registry.py` with 5 spot-checks against the NOTE-tab logic
+
+**Reasoning:** Three logically distinct concerns — backend `/info` shape change, Python adapter clarifier, test additions. Splitting into 3 commits gives clean review boundaries and lets I-NEW-3 land independently of the I-NEW-1 refactor. Approach: 1 commit per item.
+
+### Entry 2 — Investigation findings
+
+**I-NEW-1 scope:**
+- `harness/validator.py::ADAPTER_CAPABILITIES` is `{framework: set(api)}` only — no streaming / state-mode / mcp / notes metadata. Task says don't add new fields, only expose what exists. So `/info.frameworks[framework].supported_apis = sorted list` is the only mirror needed.
+- 21 total `notes.push()` calls in `frontend/trial.js::collectNotes()`. Only **3** are framework-capability rules (mirroring ADAPTER_CAPABILITIES):
+  - L782 crewai + responses/responses+conv
+  - L792 pydantic-ai + responses+conv
+  - L802 llamaindex + messages
+- The other 18 rules describe AGW gaps (E6/E8/E13c), implementation caveats (autogen bypass, llamaindex bypass, anthropic httpx hook), provider/state semantics, routing, MCP — none are duplicating capability sets. Do not touch.
+- /info consumers verified safe: `frontend/app.js:663` (Settings modal pretty-prints whole JSON) + `tests/test_api.py:91` (asserts `adapters` key only). Adding `frameworks` is additive.
+
+**I-NEW-2 outcome (b) — live code, confusingly named:**
+Call-graph trace:
+- runner.py path: `drive_turn(turn_kind="force_state_ref", target_response_id=<str>)` → `adapters_registry.py` POSTs body containing `target_response_id` to `/trials/{id}/turn` → autogen `main.py:121-132` directly assigns `trial._forced_prev_id = req.target_response_id` (string) → `framework_bridge.py:614` reads it for next outbound `previous_response_id`.
+- `Trial.force_state_ref(int)` at `framework_bridge.py:668` is reached via TWO non-runner paths:
+  1. Standalone HTTP route `POST /trials/{id}/force_state_ref` at `main.py:147-159`
+  2. Direct unit-test calls at `tests/test_adapter_autogen.py:181, 217, 220` and `tests/test_adapter_llamaindex.py:171, 205, 208`
+- So NOT dead code — but the runner doesn't use it. Action: add clarifying comment, plus a regression test pinning the runner-path wire shape (analogous in spirit to langchain's I1 test).
+
+**I-NEW-3 strategy:**
+NOTE registry is purely JS-side. So tests target `ADAPTER_CAPABILITIES` directly (the source of truth that I-NEW-1 routes through `/info`). 5 spot-checks pin the specific capability bits the JS rules depend on, so if a contributor changes a capability, these tests fail BEFORE the JS rule silently misfires.
+
+### Entry 3 — Implementation
+
+**Actions:**
+- Read harness/api.py, harness/validator.py, frontend/trial.js — confirmed scope:
+  - ADAPTER_CAPABILITIES is `{framework: set(api)}` only (no streaming/state metadata)
+  - 21 notes.push() in collectNotes; only 3 mirror ADAPTER_CAPABILITIES (crewai, pydantic-ai, llamaindex)
+  - /info has 2 consumers (Settings modal + 1 test) — both safe with additive `frameworks` field
+- Traced force_state_ref: runner uses string `target_response_id` directly (main.py:121-132); `Trial.force_state_ref(int)` only reached from standalone HTTP route + unit tests. Outcome (b).
+- 3 commits created:
+  - `b0e0aca` — I-NEW-1: /info.frameworks SoT + JS NOTE rules consume it + regression test
+  - `fbd00a5` — I-NEW-2: clarifying docstring + runner-path wire-shape regression test
+  - `1f1b242` — I-NEW-3: tests/test_note_registry.py with 5 capability spot-checks
+
+**Verified:**
+- pytest 230 → 237 (delta +7: 1 I-NEW-1, 1 I-NEW-2, 5 I-NEW-3)
+- All commits land on local main (NOT pushed per constraint)
+- aiplay HEAD: 1f1b242
+
+**No unexpected findings; no scope deferrals.**

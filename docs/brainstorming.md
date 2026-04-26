@@ -277,3 +277,26 @@ Once execution starts, turn cards appear in drawer in order. Each card: sent con
 - The CID flow tab "appeared to work" earlier because the user had only viewed it after clicking into it (giving Mermaid a visible parent). Adding a second Mermaid tab forced the test of the cold-render path and surfaced 4 bugs that were latent in cidflow too.
 - Mermaid 9.4.3 vendored UMD's API (`init`, not `run`) is not v10-compatible — the comments in the code referenced `.run` because they were written against v10's docs.
 - Default-active-tab + Mermaid-on-page = always test the OFF tab, not just the active one.
+
+## 2026-04-26 — I-NEW review-fix bundle (subagent C)
+
+### I-NEW-1 — single source of truth for framework capabilities
+**Decision:** Extend `/info` payload with `frameworks` dict; refactor 3 JS NOTE rules to consume it.
+**Schema:** `{framework: {supported_apis: [sorted list]}}` only — task explicitly forbids adding new metadata to ADAPTER_CAPABILITIES.
+**JS caching:** Lazy-fetch `/info.frameworks` once on trial-detail page load, cache in module scope. Falls back to undefined → preserves existing behavior if /info is briefly unreachable (defensive).
+**Why only 3 rules refactored:** Of 21 `notes.push()` calls, only 3 mirror ADAPTER_CAPABILITIES literals (crewai, pydantic-ai, llamaindex unsupported APIs). The rest describe AGW gaps, runtime caveats, and routing — not capability assertions.
+
+### I-NEW-2 — autogen `Trial.force_state_ref(int)` lives in a separate non-runner path
+**Outcome (b) confirmed.** Runner uses string `target_response_id` via `drive_turn` POST body → adapter `main.py` sets `_forced_prev_id` directly. The `Trial.force_state_ref(int)` method is only reached via the standalone `POST /trials/{id}/force_state_ref` HTTP route AND direct unit-test calls. Two parallel paths, both alive.
+**Action:** Clarifying docstring on `Trial.force_state_ref` + regression test for runner-path wire shape. Don't delete the method (would break unit tests + standalone HTTP route).
+
+### I-NEW-3 — test against ADAPTER_CAPABILITIES (no Python NOTE registry exists)
+**Decision:** Spot-check the 5 capability invariants the JS rules depend on, plus verify they surface via `/info.frameworks` (the I-NEW-1 channel).
+**5 picks:**
+1. langchain supports all 4 APIs (chat, messages, responses, responses+conv)
+2. crewai supports {chat, messages} only — NOT responses/responses+conv (JS rule 1)
+3. pydantic-ai supports {chat, messages, responses} — NOT responses+conv (JS rule 2)
+4. llamaindex supports {chat, responses, responses+conv} — NOT messages (JS rule 3)
+5. direct-mcp supports {} — used when llm=NONE (JS no-MCP rule depends on this)
+
+Each test asserts BOTH the validator dict AND the /info exposure mirror. If a contributor changes one without updating the other, two failure surfaces.
