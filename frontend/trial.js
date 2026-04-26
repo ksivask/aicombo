@@ -1329,8 +1329,19 @@ function sanitizeId(s) {
 }
 
 function escapeMermaid(s) {
-  // Mermaid label-text escaping: protect quotes + the bracket pair
-  return String(s ?? "").replace(/["[\]]/g, "");
+  // Mermaid label-text safe-encoding for ["..."] node syntax. The outer
+  // Mermaid grammar mis-parses bare quotes, brackets, AND parens inside
+  // labels (rejecting on the first ")" that closes "[" prematurely).
+  // Encode via HTML numeric entities — Mermaid decodes them at label-
+  // render time. Without paren-escape, labels like "MCP server (fetch)"
+  // throw inside mermaid.run() and the diagram silently stays as source.
+  return String(s ?? "")
+    .replace(/&/g, "&amp;")
+    .replace(/"/g, "&quot;")
+    .replace(/\[/g, "&#91;")
+    .replace(/\]/g, "&#93;")
+    .replace(/\(/g, "&#40;")
+    .replace(/\)/g, "&#41;");
 }
 
 function truncate(s, n) {
