@@ -1224,6 +1224,238 @@ Building E22 standalone is wasted effort — it has no measurable signal without
 
 ---
 
+## E23 — multi-LLM per row schema (parallel to E19's multi-MCP)
+
+**Status: future. Schema-impacting; touches RowConfig + validator + UI. Bundle with E19 to share the list-form plumbing.**
+
+### The gap
+
+Today the matrix's `llm` column is a single string per row (`ollama` | `mock` | `chatgpt` | `claude` | `gemini` | `NONE`). Each Trial gets exactly one LLM bound at construction. Real production agents commonly use multiple LLMs in one conversation — cheap model for routing, expensive for hard turns; or fallback patterns; or cross-provider parallel hedging.
+
+Limiting trials to one LLM narrows the matrix's coverage in three ways:
+
+1. **CID survival across LLM-switching** untested — does a CID minted on /llm/chatgpt persist when the agent's next turn hits /llm/claude?
+2. **Cross-API governance fidelity** untested — when a single conversation crosses chat → messages API boundaries, does AGW's per-route cidgar config produce consistent audit attribution?
+3. **Realistic agent topologies** can't be exercised — no router/fallback/hedging tests possible.
+
+### Schema change
+
+`harness/api.py::RowConfig`:
+```python
+class RowConfig(BaseModel):
+    framework: str
+    api: str | list[str]      # already list-capable for multi-API per-turn (future)
+    llm: str | list[str]      # was: str. Accept either form.
+                              # str = single-LLM (legacy); list = multi-LLM.
+                              # "NONE" still means no LLM.
+    mcp: str | list[str]      # E19. Multi-MCP per row.
+    routing: str
+    model: str | list[str] | None = None  # one model per LLM in list-form
+```
+
+`harness/trials.py::TrialConfig` mirror.
+
+### Validator updates
+
+`harness/validator.py`: extend the LLM cell rule to accept either form. New rules:
+- list-form valid only with frameworks declared in `MULTI_LLM_FRAMEWORKS = {"combo"}` (E24's combo adapter; can extend later if other adapters add iteration)
+- Each LLM in the list must be API-compatible per `API_TO_PROVIDERS`
+- model field: if string, applies to all LLMs in list; if list, must match list length
+
+### Frontend
+
+UI multi-select cell editor for the `llm` column. Reuse the same multi-select component E19 needs for the `mcp` column. Probably a custom AG-Grid cell editor (community edition's built-in `agSelectCellEditor` is single-select only).
+
+### Round-robin per-turn dispatch
+
+The combo adapter (E24) consumes the multi-LLM list:
+```python
+def _llm_for_turn(self, turn_idx: int) -> str:
+    llms = self.config.llm if isinstance(self.config.llm, list) else [self.config.llm]
+    return llms[turn_idx % len(llms)]
+```
+
+Other adapters (langchain / autogen / etc.) can adopt the same pattern later if they want multi-LLM in their own framework's idiom; out of scope for E23/E24 first cut.
+
+### Tests
+
+- Unit: validator accepts `llm: list[str]` and rejects with non-multi-LLM frameworks
+- Unit: validator API-compatibility check across list (e.g., `llm: ["ollama", "claude"]` with `api: "chat"` → fail because claude only supports messages)
+- Integration: roundtrip through `PATCH /matrix/row/{id}` with list form
+
+### Effort
+
+- Backend (RowConfig + validator): **S** (~30 LOC + 3 tests)
+- Frontend multi-select (shared with E19): **S-M** (~50 LOC if AG-Grid Community has decent editor support; M if a custom editor is needed)
+- E2E: **XS** (~30 min once UI lands)
+
+Total: **S** standalone; **S** marginal cost when bundled with E19 (the UI component is the bulk).
+
+### Why bundle with E19
+
+Both E19 and E23 extend RowConfig with `str | list[str]` for different fields. Doing them together means:
+- One PR cycle for the schema change
+- One validator update touches both list-form rules
+- One UI multi-select cell editor (reusable component for both columns)
+- Saves ~2-3h of plumbing duplication
+
+### Cross-references
+
+- E19 — companion enhancement (multi-MCP); bundle the schema/validator/UI work
+- E24 — depends on E23 schema; combo adapter consumes the multi-LLM list via round-robin
+- E18 (header-demux) — synergistic but independent; multi-LLM per row would multiply audit volume, so E18's per-trial isolation is helpful for safe concurrent execution
+
+---
+
+## E24 — `adapters/combo/` adapter (multi-LLM-same-CID)
+
+**Status: future. Aiplay-only. ~600-800 LOC + ~10 tests. Depends on E23 (schema). Optionally bundles with E19 for multi-MCP day-one support.**
+
+### The gap
+
+Even with E23's multi-LLM schema in place, no adapter actually KNOWS how to drive multiple LLMs in one trial. The 7 existing adapters each bind to a single LLM at construction. We need a new framework-style adapter that:
+- Accepts a list of LLMs at trial init
+- Uses round-robin per-turn dispatch
+- Preserves message history (with AGW's CID markers) across LLM switches
+- Translates the canonical history into each API's required shape per turn
+
+The test goal: verify that AGW's CID survives an agent talking to multiple LLMs in one conversation, and that cross-API governance fidelity holds.
+
+### Why this works at all
+
+AGW is stateless (verified). CID continuity is entirely derived from incoming request content — message history Channel-2 text markers (`<!-- ib:cid=... -->`), Channel-1 `_ib_cid` in tool args, `previous_response_id` chains, `conversation` fields, `X-IB-CID` headers. State is carried in the agent's accumulated context.
+
+So an adapter that preserves the AGW-injected text marker across LLM switches will see CID continuity automatically. AGW's marker scanner uses an API-shape-agnostic regex that walks message history regardless of whether `messages[i].content` is a string (chat) or `[{type: text, text: ...}]` (messages) or `[{type: output_text, text: ...}]` (responses input).
+
+The combo adapter's job is just **shape translation hygiene** — keep the marker in the right field as the canonical history is rendered into each API's shape.
+
+### Carrier mechanics
+
+**Primary**: Channel-2 text marker — survives the API translation as long as the marker text lands in the assistant `content` text field of whatever shape is being emitted.
+
+**Defense-in-depth**: capture `X-IB-CID` from each response, replay as request header on the next turn regardless of LLM. Bypasses message-shape translation entirely. AGW reuses the CID via either signal.
+
+**Channel-1 `_ib_cid` in tool args**: AGW's job, NOT the adapter's. cidgar's f4 hook injects on outbound `tools/call` and the adapter just receives the modified args from AGW's response. No combo-adapter code needed for this.
+
+### Implementation sketch
+
+`adapters/combo/framework_bridge.py::Trial`:
+```python
+class Trial:
+    def __init__(self, ...):
+        # Multiple per-LLM clients (one per provider in self.config.llm list)
+        self._clients = self._build_clients()  # {"openai": AsyncOpenAI(...), "anthropic": AsyncAnthropic(...), ...}
+        # Single shared canonical history — source of truth for shape translation
+        self._canonical_history = []  # list of {role, content_text, [tool_calls]}
+        # Track latest X-IB-CID header for defense-in-depth
+        self._observed_cid_header = None
+
+    async def turn(self, turn_idx: int, user_msg: str):
+        self._canonical_history.append({"role": "user", "content_text": user_msg})
+
+        llm = self._llm_for_turn(turn_idx)        # round-robin
+        api_shape = self._to_shape(self._canonical_history, llm)
+        client = self._clients[llm]
+
+        # Dispatch + capture
+        if llm in ("openai", "ollama", "chatgpt"):
+            resp = await client.chat.completions.create(messages=api_shape, ...)
+            assistant_text = resp.choices[0].message.content
+        elif llm == "anthropic":
+            resp = await client.messages.create(messages=api_shape, ...)
+            assistant_text = "".join(b.text for b in resp.content if b.type == "text")
+
+        # Append to canonical with marker intact (AGW already added it)
+        self._canonical_history.append({"role": "assistant", "content_text": assistant_text})
+
+        # Defense-in-depth: capture + replay X-IB-CID header
+        cid_h = resp.response.headers.get("X-IB-CID") if hasattr(resp, "response") else None
+        if cid_h:
+            self._observed_cid_header = cid_h
+            self._http_client.headers["X-IB-CID"] = cid_h
+
+        return resp
+
+    def _to_shape(self, canonical, llm):
+        if llm in ("openai", "ollama", "chatgpt"):
+            # OpenAI chat shape
+            return [{"role": h["role"], "content": h["content_text"]} for h in canonical]
+        if llm == "anthropic":
+            # Anthropic messages shape
+            return [{"role": h["role"], "content": [{"type": "text", "text": h["content_text"]}]} for h in canonical]
+        raise ValueError(f"unsupported llm: {llm}")
+```
+
+**First-cut API coverage**: chat + messages only. Responses + +conv defer to E24a (would need 2 more shape translators + handling of `previous_response_id`-style state across providers, which is more delicate).
+
+### New verdict (k) — `cross_api_continuity`
+
+Per-trial measurement: does the CID survive every LLM switch?
+
+```python
+def verdict_k_cross_api_continuity(trial):
+    """E24: for combo trials with multi-LLM lists, walk the audit
+    stream by route. CIDs observed on N distinct LLM routes within
+    one trial = pass; CID resetting at any LLM-switch boundary = fail."""
+    audits = trial.get("audit_entries", [])
+    llm_audits = [a for a in audits if a.get("backend", "").startswith("llm-")]
+    if not llm_audits:
+        return {"verdict": "na", "why": "no llm audits"}
+    routes_seen = set(a.get("backend") for a in llm_audits)
+    if len(routes_seen) < 2:
+        return {"verdict": "na", "why": "single-route trial"}
+
+    cids_per_route = {}
+    for a in llm_audits:
+        route = a.get("backend")
+        cid = a.get("cid")
+        if cid:
+            cids_per_route.setdefault(route, set()).add(cid)
+
+    # Pass: at least one CID appears on ALL routes (continuity)
+    if not cids_per_route:
+        return {"verdict": "na", "why": "no CIDs in audit stream"}
+    common_cids = set.intersection(*cids_per_route.values())
+    if common_cids:
+        return {"verdict": "pass", "why": f"CID(s) {sorted(common_cids)} survived across {len(routes_seen)} routes"}
+    return {"verdict": "fail", "why": f"no CID common across all {len(routes_seen)} routes"}
+```
+
+### Tests
+
+- Unit: shape translators round-trip canonical history with marker intact
+- Unit: round-robin LLM selection picks correct LLM per turn idx
+- Unit: X-IB-CID header capture + replay
+- Integration (skip-marked unless live OpenAI + Anthropic keys): 4-turn trial with `llm: ["chatgpt", "claude"]`, assert verdict (k) passes
+- Verdict (k) regression: synthetic audit stream with known cross-route CID survival; assert verdict computes correctly
+
+### Effort
+
+- `adapters/combo/` skeleton (Dockerfile + main.py + requirements.txt): **S** (~50 LOC scaffold)
+- `adapters/combo/framework_bridge.py` (canonical history + 2 shape translators + dispatch): **M** (~500 LOC)
+- New verdict (k): **S** (~40 LOC + 3 tests)
+- Integration tests: **S** (~150 LOC)
+- Docker compose entry + AGW route compatibility check: **XS** (~10 lines)
+
+Total: **M** (~day to day-and-a-half).
+
+### Open questions before implementation
+
+1. **Tool calling with multi-LLM**: when one turn hits OpenAI which emits `tool_calls`, the next turn (Anthropic) needs to see those as `tool_use` blocks in Anthropic's shape. The shape translator must handle both directions for tool messages, not just text. Adds complexity — might defer to E24b if the first cut just covers user/assistant text.
+2. **MCP tool calls under multi-LLM**: the MCP path is unaffected (AGW handles `_ib_cid` injection). But the agent's TOOL CALL is still emitted by whichever LLM was driving — so the tool-call message in canonical history must translate correctly when the NEXT turn hits a different LLM.
+3. **Streaming under multi-LLM**: defer to a future enhancement; first cut is non-streaming.
+4. **Round-robin vs policy-driven LLM selection**: round-robin per the decision. Future variants (cheapest-first, fallback-on-error, hedging) can be filed as E24b/c.
+
+### Cross-references
+
+- E23 — required prerequisite (schema)
+- E19 — optional companion (multi-MCP); without it, combo adapter is single-MCP per trial
+- E18 (header-demux) — synergistic; multi-LLM means more audit traffic, header-demux helps if also running concurrently
+- New verdict (k) `cross_api_continuity` joins (a)-(j) cluster
+- E20 `_ib_ss` snapshot correlation — independent; but `_ib_ss` should survive LLM switches the same way `_ib_cid` does (as a required tool param). Worth verifying in an E24 integration test.
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
