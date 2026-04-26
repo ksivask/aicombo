@@ -249,3 +249,44 @@ Independent review of two data tables added to frontend/about.js. Verify against
 
 ### Tests
 - Pytest delta: 230 → 237 (carry-over from I-NEW work; no new tests added in this session segment, but no regressions either).
+
+## 2026-04-26 — E22 implementation session
+
+**User prompt:** Implement E22 per docs/enhancements.md (mcp/mutable/ test MCP server + mcp_admin turn kind). Aiplay-only; ONE commit (or 2-3). Constraints: NO touch to harness/efficacy.py (E20 sibling in flight); NO verdict (j) (out of scope). Auto-execute mode.
+
+**Reasoning approach:**
+1. Read E22 spec + existing mcp/weather scaffold + runner.py turn-kind dispatch + Turn dataclass.
+2. Verified fastmcp 3.2.4 API — confirmed add_tool/remove_tool dynamic API + custom_route for admin paths.
+3. Confirmed: Turn dataclass already accepts arbitrary request/response dicts; turn_spec field reads work without dataclass extension. Only `templates_validate` (api.py) needs to learn the new kind.
+4. Confirmed: no existing helper for resolving `mcp_name → base_url` from harness — adding `_pick_mcp_base_url` in runner.py (env-var driven, mirrors adapter convention).
+
+**Plan:**
+1. Build mcp/mutable/ (Dockerfile, requirements.txt, main.py).
+2. Update docker-compose.yaml + agw/config.yaml (admin route ordering matters).
+3. Update runner.py — add mcp_admin dispatch + base-url helper.
+4. Update api.py templates_validate to accept mcp_admin.
+5. New tests/test_mcp_mutable.py + 2 cases in tests/test_runner.py.
+6. ONE commit.
+
+**Actions / outcomes:**
+- Created mcp/mutable/{Dockerfile,requirements.txt,main.py} — 4-tool KV-backed initial set; admin endpoints under /_admin/{state,set_tools,reset}; FastMCP custom_route.
+- Used `local_provider.remove_tool` (FastMCP 3.x non-deprecated API) for tool churn.
+- Stub tools for set_tools spec via `FunctionTool.from_function(stub).model_copy(update={'parameters': inputSchema})` — bypasses **kwargs restriction.
+- docker-compose.yaml: + mcp-mutable service; +AGW_MCP_MUTABLE/+DIRECT_MCP_MUTABLE on harness-api and adapter-langchain.
+- agw/config.yaml: +mcp-mutable-admin (no governance) BEFORE mcp-mutable (full cidgar governance) — declaration order matters.
+- harness/runner.py: + `_pick_mcp_base_url` + new `mcp_admin` dispatch branch (URL = base + /_admin/op; 404 → skipped; no env → skipped; HTTPError → turn.error).
+- harness/api.py: `templates_validate` now accepts mcp_admin (requires `op`).
+- tests/test_mcp_mutable.py — 5 new tests (init state, set_tools/counter, reset, list_tools post-mutation via mcp.list_tools(), no admin in tools).
+- tests/test_runner.py — 3 new tests (set_tools dispatch URL/payload, 404 no-op, no-base-url no-op).
+
+**Test count:** 237 baseline → 245 after (+8 new, all green). Full suite green.
+
+**Constraints respected:**
+- harness/efficacy.py untouched (verified: `git diff harness/efficacy.py` empty).
+- No verdict added (no efficacy.py edits, no new VERDICTS dict entry, no compute_verdicts call).
+- Single commit.
+
+**Surprises:**
+- FastMCP rejected **kwargs in tool fns — used `payload: dict | None = None` stub + parameters override pattern.
+- Module-name collision: `mcp/mutable/main.py` was loaded as `main` and clashed with `harness/main.py` already in sys.modules (which other tests had imported). Fixed by loading via `importlib.util.spec_from_file_location` under a private module name.
+- FastMCP HTTP transport requires lifespan to be initialized for /mcp/ — couldn't use vanilla httpx.AsyncClient with ASGITransport. Switched to direct `mcp.list_tools()` call (same code path as the JSON-RPC tools/list method dispatches to).

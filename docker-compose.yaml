@@ -16,6 +16,11 @@ services:
       - AGW_CONTAINER_NAME=agentgateway
       - AGW_ADMIN_URL=http://agentgateway:15000
       - DATA_DIR=/data
+      # E22 — mcp_admin turn kind needs MCP base URLs to dispatch
+      # admin POSTs to the mutable MCP. Two flavors so the same code
+      # path serves via_agw and direct routings.
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
     # Read .env so providers.py can detect API key presence for the UI dropdown.
     # The harness doesn't USE the keys (adapters do), but it needs them in env
     # to report availability to the frontend.
@@ -65,6 +70,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
       - DIRECT_LLM_BASE_URL_GEMINI=https://generativelanguage.googleapis.com/v1beta/openai
@@ -73,6 +79,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -95,10 +102,12 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_MCP_WEATHER=http://mcp-weather:8000/mcp
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
     extra_hosts:
       - "host.docker.internal:192.168.64.1"
     depends_on:
@@ -125,6 +134,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
@@ -134,6 +144,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -165,6 +176,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
@@ -174,6 +186,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -206,6 +219,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
@@ -215,6 +229,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -249,6 +264,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
@@ -258,6 +274,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -293,6 +310,7 @@ services:
       - AGW_MCP_NEWS=http://agentgateway:8080/mcp/news
       - AGW_MCP_LIBRARY=http://agentgateway:8080/mcp/library
       - AGW_MCP_FETCH=http://agentgateway:8080/mcp/fetch
+      - AGW_MCP_MUTABLE=http://agentgateway:8080/mcp/mutable
       - DIRECT_LLM_BASE_URL_OLLAMA=http://host.docker.internal:11434/v1
       - DIRECT_LLM_BASE_URL_MOCK=http://mock-llm:8000/v1
       - DIRECT_LLM_BASE_URL_OPENAI=https://api.openai.com/v1
@@ -302,6 +320,7 @@ services:
       - DIRECT_MCP_NEWS=http://mcp-news:8000/mcp
       - DIRECT_MCP_LIBRARY=http://mcp-library:8000/mcp
       - DIRECT_MCP_FETCH=http://mcp-fetch:8000/mcp
+      - DIRECT_MCP_MUTABLE=http://mcp-mutable:8000/mcp
       - DEFAULT_OLLAMA_MODEL=qwen2.5:7b
     env_file: [.env]
     extra_hosts:
@@ -333,6 +352,17 @@ services:
   mcp-fetch:
     build: ./mcp/fetch
     image: aiplay-mcp-fetch:local
+    networks: [aiplay-network]
+    restart: unless-stopped
+
+  # ── MCP server: mutable (E22 — test infra for E20 verification) ──
+  #   Standard MCP protocol on /mcp/* + admin endpoints under /_admin/*
+  #   for runtime tool-list mutation. Single port; admin shares with MCP
+  #   via path-prefix routing. Resets to INITIAL_TOOLS on container restart
+  #   (in-memory state, no persistence).
+  mcp-mutable:
+    build: ./mcp/mutable
+    image: aiplay-mcp-mutable:local
     networks: [aiplay-network]
     restart: unless-stopped
 

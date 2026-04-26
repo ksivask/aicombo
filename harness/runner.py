@@ -2,12 +2,42 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import os
 import uuid
 from datetime import datetime, timezone
 from typing import Callable
 
+import httpx
+
 from trials import Trial, TrialStore, Turn, AuditEntry
 from efficacy import compute_verdicts
+
+
+_log = logging.getLogger(__name__)
+
+
+def _pick_mcp_base_url(mcp_name: str, routing: str = "via_agw") -> str | None:
+    """Resolve an MCP base URL for harness-direct calls (E22 mcp_admin).
+
+    Mirrors the AGW_MCP_<NAME> / DIRECT_MCP_<NAME> env-var convention
+    that adapters already use. Returns None if neither var is set —
+    callers should treat that as "skip this turn".
+
+    routing="via_agw"  → AGW_MCP_<NAME> (governed path, but admin route
+                         in agw/config.yaml has policies: {} so the
+                         admin sub-path bypasses cidgar).
+    routing="direct"   → DIRECT_MCP_<NAME> (skip AGW entirely).
+    """
+    name = (mcp_name or "").upper()
+    if not name:
+        return None
+    if routing == "direct":
+        return os.environ.get(f"DIRECT_MCP_{name}")
+    return (
+        os.environ.get(f"AGW_MCP_{name}")
+        or os.environ.get(f"DIRECT_MCP_{name}")
+    )
 
 
 async def run_trial(
@@ -186,6 +216,85 @@ async def run_trial(
                     except Exception as e:
                         turn.error = {
                             "reason": f"force_state_ref turn failed: {e}",
+                        }
+            elif kind == "mcp_admin":
+                # E22 — harness-direct admin call against an MCP server's
+                # /_admin/* endpoint. Adapter-naive: the agent never sees
+                # this happen, which is the WHOLE POINT for E20's
+                # snapshot-correlation tests (mutation drives the agent
+                # to discover a new tools/list on the next fetch).
+                #
+                # Resolution order for the target MCP name:
+                #   turn_spec.mcp  >  trial.config.mcp
+                # Resolution order for the op + payload: turn_spec only
+                # (these are mutation parameters, not trial config).
+                mcp_name = turn_spec.get("mcp") or trial.config.mcp
+                op = turn_spec.get("op")
+                payload = turn_spec.get("payload") or {}
+                base = _pick_mcp_base_url(
+                    mcp_name, routing=trial.config.routing,
+                )
+                turn.request = {
+                    "mcp": mcp_name,
+                    "op": op,
+                    "payload": payload,
+                }
+                if not op:
+                    turn.error = {
+                        "reason": "mcp_admin: missing required field 'op'",
+                    }
+                elif base is None:
+                    # No env var configured for this MCP — likely a
+                    # non-mutable MCP that has no admin endpoint at all.
+                    # Log + skip rather than fail the trial.
+                    _log.info(
+                        "mcp_admin called for mcp=%s which has no MCP base "
+                        "URL env var set; skipped (turn=%s)",
+                        mcp_name, turn_id,
+                    )
+                    turn.response = {"skipped": True, "reason": "no_base_url"}
+                else:
+                    url = f"{base}/_admin/{op}"
+                    try:
+                        async with httpx.AsyncClient(timeout=5.0) as c:
+                            resp = await c.post(url, json=payload)
+                        body: dict | str
+                        try:
+                            body = resp.json()
+                        except Exception:
+                            body = resp.text
+                        # 404 on /_admin/* = MCP doesn't expose the admin
+                        # surface (e.g. weather/news). Treat as a no-op
+                        # rather than an error so trial scripts can use
+                        # mcp_admin defensively without per-MCP guards.
+                        if resp.status_code == 404:
+                            _log.info(
+                                "mcp_admin: %s returned 404 (no _admin "
+                                "endpoint); skipped (turn=%s)",
+                                url, turn_id,
+                            )
+                            turn.response = {
+                                "skipped": True,
+                                "reason": "admin_not_found",
+                                "status": 404,
+                                "url": url,
+                            }
+                        else:
+                            turn.response = {
+                                "status": resp.status_code,
+                                "url": url,
+                                "body": body,
+                            }
+                            if resp.status_code >= 400:
+                                turn.error = {
+                                    "reason": (
+                                        f"mcp_admin {op} returned "
+                                        f"{resp.status_code}"
+                                    ),
+                                }
+                    except httpx.HTTPError as e:
+                        turn.error = {
+                            "reason": f"mcp_admin transport error: {e}",
                         }
             else:
                 # Catch-all: any unknown / deferred kind (e.g. the

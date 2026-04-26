@@ -56,3 +56,10 @@ User owns build + tag lifecycle externally. aiplay compose references static tag
 
 ### Subagent blockage on /my/ws/aiplay/ writes
 Background subagent hit permission denial on Bash + Write to `/my/ws/aiplay/`. Main session can write there. If future subagents need to write to aiplay paths, pre-create the files or dispatch from main session.
+
+## 2026-04-26 — E22 implementation complete
+
+- mcp/mutable test MCP server + admin endpoints + mcp_admin turn kind landed on main.
+- Tests: 237 → 245 pytest (+8). All green. No touch to harness/efficacy.py (E20 sibling work).
+- Open follow-up: when E21 lands (refresh_tools turn kind), add a `with_mutation` template variant to defaults.yaml exercising mcp_admin + refresh_tools composition. Spec calls this out as the canonical E20 verification trial.
+- Open follow-up: integration test that drives the full pipeline (docker-compose up, real http POSTs). Currently the mcp-mutable container is built but no test boots it. Spec calls this out under §Tests > Integration; deferred since requires running services.

@@ -1,6 +1,6 @@
 """Tests for harness/runner.py — turn plan executor using mock adapter."""
 import pytest
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from trials import Trial, TrialConfig, TurnPlan, AuditEntry, TrialStore
 from runner import run_trial
@@ -336,3 +336,203 @@ async def test_runner_continues_subsequent_turns_after_user_msg_failure(tmp_data
     for i, t in enumerate(loaded.turns):
         assert t.error is not None, f"turn {i} should have error captured"
         assert "upstream 503" in t.error.get("reason", "")
+
+
+# ── E22 — mcp_admin turn kind ──
+
+@pytest.mark.asyncio
+async def test_mcp_admin_set_tools_dispatches_to_admin_endpoint(
+    tmp_data_dir, monkeypatch,
+):
+    """mcp_admin POSTs to <AGW_MCP_<NAME>>/_admin/<op> with the payload.
+
+    Mocks httpx.AsyncClient at runner-import time so no network is
+    touched. Verifies the URL composition (base + /_admin/op), the JSON
+    body, and that the run completes cleanly.
+    """
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="mutable", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {
+            "kind": "mcp_admin",
+            "mcp": "mutable",
+            "op": "set_tools",
+            "payload": {"tools": [{"name": "only_one", "description": "x"}]},
+        },
+    ])
+    trial = Trial(
+        trial_id="trial-mcpadmin", config=cfg, turn_plan=plan, status="running",
+    )
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    monkeypatch.setenv(
+        "AGW_MCP_MUTABLE", "http://agentgateway:8080/mcp/mutable",
+    )
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+    # No drive_turn calls expected (mcp_admin is harness-direct).
+    adapter.drive_turn = AsyncMock(
+        side_effect=AssertionError("adapter.drive_turn must NOT be called"),
+    )
+
+    # Mock the httpx.AsyncClient class as imported into runner module.
+    fake_resp = MagicMock(status_code=200)
+    fake_resp.json.return_value = {"ok": True, "version_counter": 1}
+    fake_client = MagicMock()
+    fake_client.post = AsyncMock(return_value=fake_resp)
+    fake_async_ctx = MagicMock()
+    fake_async_ctx.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_async_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("runner.httpx.AsyncClient", return_value=fake_async_ctx):
+        await run_trial(
+            trial_id="trial-mcpadmin",
+            store=store,
+            adapter_client=adapter,
+            audit_entries_provider=lambda: [],
+        )
+
+    # Verify the POST: URL composed from AGW_MCP_MUTABLE + /_admin/set_tools,
+    # JSON body is the turn's payload.
+    fake_client.post.assert_called_once()
+    call_args = fake_client.post.call_args
+    url = call_args.args[0] if call_args.args else call_args.kwargs.get("url")
+    assert url == (
+        "http://agentgateway:8080/mcp/mutable/_admin/set_tools"
+    ), url
+    posted_json = call_args.kwargs.get("json")
+    assert posted_json == {
+        "tools": [{"name": "only_one", "description": "x"}],
+    }
+
+    loaded = store.load("trial-mcpadmin")
+    assert len(loaded.turns) == 1
+    turn = loaded.turns[0]
+    assert turn.kind == "mcp_admin"
+    assert turn.error is None, turn.error
+    assert turn.request["op"] == "set_tools"
+    assert turn.request["mcp"] == "mutable"
+    assert turn.response["status"] == 200
+
+
+@pytest.mark.asyncio
+async def test_mcp_admin_against_non_mutable_mcp_is_no_op(
+    tmp_data_dir, monkeypatch,
+):
+    """mcp_admin against an MCP whose admin endpoint 404s logs + skips.
+
+    Non-mutable MCPs (weather/news/library/fetch) don't expose /_admin/*.
+    The harness should treat 404 as "skipped" rather than as a
+    trial-failing error so trial scripts can use mcp_admin defensively.
+    """
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="weather", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {
+            "kind": "mcp_admin",
+            "mcp": "weather",
+            "op": "set_tools",
+            "payload": {"tools": []},
+        },
+    ])
+    trial = Trial(
+        trial_id="trial-mcpadmin-noop", config=cfg, turn_plan=plan,
+        status="running",
+    )
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    monkeypatch.setenv(
+        "AGW_MCP_WEATHER", "http://agentgateway:8080/mcp/weather",
+    )
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock()
+
+    # Mock httpx to return 404 on the admin POST (no /_admin endpoint
+    # on the weather MCP).
+    fake_resp = MagicMock(status_code=404)
+    fake_resp.json.side_effect = ValueError("not json")
+    fake_resp.text = "Not Found"
+    fake_client = MagicMock()
+    fake_client.post = AsyncMock(return_value=fake_resp)
+    fake_async_ctx = MagicMock()
+    fake_async_ctx.__aenter__ = AsyncMock(return_value=fake_client)
+    fake_async_ctx.__aexit__ = AsyncMock(return_value=False)
+
+    with patch("runner.httpx.AsyncClient", return_value=fake_async_ctx):
+        await run_trial(
+            trial_id="trial-mcpadmin-noop",
+            store=store,
+            adapter_client=adapter,
+            audit_entries_provider=lambda: [],
+        )
+
+    loaded = store.load("trial-mcpadmin-noop")
+    turn = loaded.turns[0]
+    # 404 → skipped sentinel; turn is NOT marked as an error so the
+    # trial doesn't fail just because the chosen MCP lacks _admin.
+    assert turn.error is None, turn.error
+    assert turn.response.get("skipped") is True
+    assert turn.response.get("reason") == "admin_not_found"
+    assert turn.response.get("status") == 404
+
+
+@pytest.mark.asyncio
+async def test_mcp_admin_with_no_base_url_skips_with_log(
+    tmp_data_dir, monkeypatch,
+):
+    """mcp_admin against an MCP with no AGW_MCP_<NAME> env logs + skips.
+
+    Defensive path for trial scripts that reference MCPs the harness
+    isn't configured for. Distinct from the 404 path (the env var is
+    missing entirely) so the audit trail can distinguish "no URL" from
+    "URL but no admin endpoint".
+    """
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="library", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {
+            "kind": "mcp_admin", "mcp": "library", "op": "set_tools",
+            "payload": {},
+        },
+    ])
+    trial = Trial(
+        trial_id="trial-mcpadmin-nourl", config=cfg, turn_plan=plan,
+        status="running",
+    )
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    # Make sure neither env var is set so _pick_mcp_base_url returns None.
+    monkeypatch.delenv("AGW_MCP_LIBRARY", raising=False)
+    monkeypatch.delenv("DIRECT_MCP_LIBRARY", raising=False)
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock()
+
+    await run_trial(
+        trial_id="trial-mcpadmin-nourl",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
+
+    loaded = store.load("trial-mcpadmin-nourl")
+    turn = loaded.turns[0]
+    assert turn.error is None, turn.error
+    assert turn.response.get("skipped") is True
+    assert turn.response.get("reason") == "no_base_url"

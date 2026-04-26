@@ -345,7 +345,9 @@ def templates_validate(payload: dict = Body(...)):
                 continue
             if "kind" not in t:
                 errors.append(f"turn {i}: missing 'kind'")
-            elif t["kind"] not in ("user_msg", "compact", "force_state_ref"):
+            elif t["kind"] not in (
+                "user_msg", "compact", "force_state_ref", "mcp_admin",
+            ):
                 errors.append(f"turn {i}: invalid kind '{t['kind']}'")
             if "turn_id" not in t:
                 errors.append(f"turn {i}: missing 'turn_id'")
@@ -353,6 +355,10 @@ def templates_validate(payload: dict = Body(...)):
                 errors.append(f"turn {i}: user_msg requires 'text'")
             if t.get("kind") == "force_state_ref" and "lookback" not in t:
                 errors.append(f"turn {i}: force_state_ref requires 'lookback' (int)")
+            # E22 — mcp_admin requires `op`; `mcp` and `payload` are
+            # optional (mcp falls back to trial.config.mcp; payload to {}).
+            if t.get("kind") == "mcp_admin" and "op" not in t:
+                errors.append(f"turn {i}: mcp_admin requires 'op'")
     return {"ok": not errors, "errors": errors}
 
 

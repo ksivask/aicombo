@@ -350,3 +350,45 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - Carrier choice rationale: param-name pattern (parity with _ib_cid) + value-as-hash (no length cost) + enum-constrained (schema validator enforcement) + "telemetry span-correlation id" framing (RLHF-blessed OpenTelemetry idiom).
 - Reliability ceiling acknowledged (~85-95% on smaller models per _ib_gar precedent); audit instrumentation via `correlation_lost` flag + new verdict (i) measures the cliff.
 - Decision: dropped session-id-mapping alternative — transport-layer artifact, semantics differ across MCP clients, builds correlation on the wrong primitive.
+
+## E22 — mcp/mutable test server + mcp_admin turn kind (this session)
+
+### Constraints (from prompt)
+- Aiplay-only changes; do NOT touch `harness/efficacy.py` (E20 sibling subagent in flight).
+- Verdict (j) explicitly OUT OF SCOPE — E20's verdict (i) covers correlation-rate measurement; redundant.
+- ONE commit (or 2-3 logical).
+
+### Design decisions
+
+**Mutable MCP server (Python, fastmcp 3.2.4)**
+- Mutate `tools/list` at runtime via fastmcp's `mcp.add_tool`/`mcp.remove_tool` plus a stub function template that accepts `payload: dict | None = None` (FastMCP rejects `**kwargs`).
+- Stub tools log args + return `{"ok": True, "name": ..., "payload": ...}` — sufficient because the test surface is the LIST shape, not call semantics.
+- Admin endpoints under `/_admin/*` via `@mcp.custom_route` (sibling to existing `/health`); single port 8000.
+- KV store backs the four INITIAL_TOOLS (`get/set/list/delete`) so a) the initial tool set is functionally usable in an LLM-driven trial, b) realism matches spec.
+- `version_counter` increments on every set_tools (audit-debug signal); `reset` zeroes it.
+
+**AGW route ordering (CRITICAL gotcha to verify)**
+- Per spec: admin route MUST match BEFORE the parent /mcp/mutable route — more specific first.
+- AGW uses ORDER OF DECLARATION for routes within a listener (per code I've read in agentgateway prior). Putting mcp-mutable-admin BEFORE mcp-mutable in config.yaml is the correct guard.
+- Both backends point at the SAME upstream (mcp-mutable:8000); only the route policy differs (admin route has NO governance).
+
+**Turn kind `mcp_admin`**
+- Harness-direct httpx POST — no adapter, agent never sees it.
+- Resolves base URL via NEW helper `_pick_mcp_base_url(mcp_name, routing)` (no existing helper to reuse — verified by grep).
+- For non-mutable MCPs: graceful skip + log (admin endpoint returns 404; we catch HTTPStatusError and log without raising).
+- Reads optional fields `turn_spec.get('mcp')`, `turn_spec.get('op')`, `turn_spec.get('payload', {})`. Trial config defaults if `mcp` not given.
+
+**Turn pydantic/dataclass model**
+- Existing Turn dataclass in `harness/trials.py` carries free-form `request` + `response` dicts. The `mcp`, `op`, `payload` fields live on the **turn_spec** (which is the YAML/dict on `turn_plan.turns`), NOT on the persisted Turn dataclass. So we just READ from turn_spec and persist details into `turn.request`. No dataclass change needed.
+- Update `api.py::templates_validate` to accept `mcp_admin` as a valid kind.
+
+**Tests**
+- `tests/test_mcp_mutable.py` — uses Starlette TestClient against the FastMCP app; tests the admin handlers and tools/list MCP method directly. No docker required for unit tests.
+- `tests/test_runner.py` — add 2 `mcp_admin` cases mocking httpx via `unittest.mock.patch` on `httpx.AsyncClient`.
+
+### Open questions resolved
+1. Should mcp_admin admin events be visible to operators or silent → SILENT per spec lean (no governance on admin route; harness logs only at INFO level).
+2. Adapter-aware vs adapter-naive → ADAPTER-NAIVE per spec; harness directly calls admin endpoint.
+
+### Risks / unknowns
+- mcp_admin templates aren't being added to defaults.yaml YET — spec says template variant is OPTIONAL; mention as TODO since refresh_tools (E21) hasn't landed. Easier to add when needed.
