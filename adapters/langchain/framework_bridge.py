@@ -944,6 +944,71 @@ class Trial:
             "history_len_after": len(self.messages),
         }
 
+    async def _drive_reset(self) -> dict:
+        """E21 — wipe agent-side LLM history at a reset_context boundary.
+
+        Per-API matrix (design doc §E21):
+          chat / messages       → self.messages = []
+          responses (state=F)   → self._input_history = [] (n/a here — this
+                                  adapter doesn't maintain a separate
+                                  _input_history list; messages serves both)
+          responses (state=T)   → _response_history = [],
+                                  _last_response_id = None,
+                                  _forced_prev_id = None
+          responses+conv        → _conversation_id = None (next turn POSTs
+                                  a fresh /v1/conversations container —
+                                  network event, audit-visible, may fail)
+
+        Uses hasattr() to be tolerant of attrs that may not exist in
+        every code path (e.g. anthropic-only state on chat trials).
+        """
+        api = self.config.get("api")
+        cleared: list[str] = []
+
+        # Common chat history (langchain Trial uses self.messages, NOT _messages)
+        if hasattr(self, "messages"):
+            self.messages = []
+            cleared.append("messages")
+        for attr in ("_messages", "_input_history", "_response_history"):
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+                cleared.append(attr)
+        for attr in ("_last_response_id", "_forced_prev_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+                cleared.append(attr)
+
+        # +conv special case: next turn re-mints the container.
+        if api == "responses+conv" and hasattr(self, "_conversation_id"):
+            self._conversation_id = None
+            cleared.append("_conversation_id")
+
+        return {"reset": True, "api": api, "cleared": cleared}
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — force MCP tools/list re-fetch on the next turn.
+
+        langchain caches the resolved tool list on `self._mcp_tools` and
+        the bound LLM on `self._llm_with_tools`. Setting both to None
+        causes the next turn's `_setup_mcp_tools()` to re-call
+        `load_mcp_tools(...)` against MCP, hitting AGW and producing a
+        fresh tools/list snapshot.
+        """
+        if self.config.get("mcp") == "NONE":
+            return {"refresh_tools": "skipped", "reason": "mcp=NONE"}
+
+        prior_count = len(self._mcp_tools or [])
+        self._mcp_tools = None
+        self._llm_with_tools = None
+        return {
+            "refresh_tools": True,
+            "prior_tool_count": prior_count,
+            "note": (
+                "_mcp_tools + _llm_with_tools cleared; next turn will "
+                "re-fetch tools/list via load_mcp_tools()"
+            ),
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

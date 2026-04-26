@@ -906,6 +906,67 @@ class Trial:
             "note": note,
         }
 
+    async def _drive_reset(self) -> dict:
+        """E21 — wipe agent-side LLM history at a reset_context boundary.
+
+        autogen's Trial uses `_agentchat_messages` as the chat history
+        passed back into AssistantAgent.run() each turn. For
+        api=responses(+conv): `_response_history` / `_last_response_id`
+        / `_forced_prev_id` track the chain (state=T case) and
+        `_conversation_id` tracks the +conv container.
+
+        We also drop the cached `_agent` so the NEXT turn rebuilds it
+        with whatever toolset is current — matters when the trial mixes
+        reset_context with refresh_tools (the rebuilt agent picks up
+        the fresh _mcp_tools).
+        """
+        api = self.config.get("api")
+        cleared: list[str] = []
+        # autogen's chat history attr
+        if hasattr(self, "_agentchat_messages"):
+            self._agentchat_messages = []
+            cleared.append("_agentchat_messages")
+        for attr in ("_messages", "_input_history", "_response_history"):
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+                cleared.append(attr)
+        for attr in ("_last_response_id", "_forced_prev_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+                cleared.append(attr)
+        if api == "responses+conv" and hasattr(self, "_conversation_id"):
+            self._conversation_id = None
+            cleared.append("_conversation_id")
+        # Force agent rebuild on next turn so a freshly-cleared toolset
+        # (if refresh_tools is also queued) is picked up cleanly.
+        if hasattr(self, "_agent"):
+            self._agent = None
+            cleared.append("_agent")
+        return {"reset": True, "api": api, "cleared": cleared}
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — force MCP tools/list re-fetch on the next turn.
+
+        autogen caches the MCP tool wrappers on `self._mcp_tools` and
+        embeds them in the AssistantAgent at construction. Clear both
+        so the next turn re-fetches tools/list AND rebuilds the agent
+        around the fresh wrappers.
+        """
+        if self.config.get("mcp") == "NONE":
+            return {"refresh_tools": "skipped", "reason": "mcp=NONE"}
+        prior_count = len(self._mcp_tools or [])
+        self._mcp_tools = None
+        if hasattr(self, "_agent"):
+            self._agent = None
+        return {
+            "refresh_tools": True,
+            "prior_tool_count": prior_count,
+            "note": (
+                "_mcp_tools + _agent cleared; next turn re-fetches "
+                "tools/list and rebuilds AssistantAgent"
+            ),
+        }
+
     async def aclose(self) -> None:
         # Close autogen model client first (releases its own resources).
         client = getattr(self, "_model_client", None)

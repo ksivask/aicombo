@@ -123,6 +123,24 @@ async def compact_trial(trial_id: str, req: CompactReq):
     return await trial.compact(req.strategy)
 
 
+@app.post("/trials/{trial_id}/reset")
+async def reset_trial(trial_id: str):
+    """E21 — wipe agent-side LLM history (reset_context boundary)."""
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial._drive_reset()
+
+
+@app.post("/trials/{trial_id}/refresh_tools")
+async def refresh_tools_trial(trial_id: str):
+    """E21 — force MCP tools/list re-fetch on next turn."""
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial._drive_refresh_tools()
+
+
 @app.delete("/trials/{trial_id}")
 async def delete_trial(trial_id: str):
     trial = TRIALS.pop(trial_id, None)

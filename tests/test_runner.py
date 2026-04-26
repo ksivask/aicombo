@@ -487,6 +487,175 @@ async def test_mcp_admin_against_non_mutable_mcp_is_no_op(
     assert turn.response.get("status") == 404
 
 
+# ── E21 — reset_context + refresh_tools turn kinds ─────────────────────
+
+@pytest.mark.asyncio
+async def test_runner_dispatches_reset_context_to_adapter(tmp_data_dir):
+    """reset_context turn invokes adapter_client.reset_context(trial_id);
+    the boundary turn is recorded so verdict_c can find it later."""
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": "first conversation"},
+        {"kind": "reset_context"},
+        {"kind": "user_msg", "content": "second conversation"},
+    ])
+    trial = Trial(trial_id="trial-reset", config=cfg, turn_plan=plan,
+                  status="running")
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    user_turn_response = {
+        "turn_id": "tu",
+        "assistant_msg": "ok",
+        "tool_calls": [],
+        "request_captured": {"body": {}},
+        "response_captured": {"status": 200, "body": {"choices": [
+            {"message": {"content": "ok"}},
+        ]}},
+    }
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(return_value=user_turn_response)
+    adapter.reset_context = AsyncMock(return_value={
+        "reset": True, "api": "chat", "cleared": ["messages"],
+    })
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    await run_trial(
+        trial_id="trial-reset",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
+
+    # reset_context dispatched once, with trial_id keyword
+    adapter.reset_context.assert_called_once()
+    assert adapter.reset_context.call_args.kwargs["trial_id"] == "trial-reset"
+
+    loaded = store.load("trial-reset")
+    assert len(loaded.turns) == 3
+    reset_turn = loaded.turns[1]
+    assert reset_turn.kind == "reset_context"
+    assert reset_turn.error is None, reset_turn.error
+    # The adapter's response is preserved on the turn for trial-debug viewing.
+    assert reset_turn.response["body"]["reset"] is True
+    assert reset_turn.response["body"]["cleared"] == ["messages"]
+
+
+@pytest.mark.asyncio
+async def test_runner_dispatches_refresh_tools_to_adapter(tmp_data_dir):
+    """refresh_tools turn invokes adapter_client.refresh_tools(trial_id);
+    response envelope captured on the persisted turn."""
+    cfg = TrialConfig(
+        framework="langchain", api="chat", stream=False, state=False,
+        llm="ollama", mcp="weather", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": "use the weather tool"},
+        {"kind": "refresh_tools"},
+        {"kind": "user_msg", "content": "use it again"},
+    ])
+    trial = Trial(trial_id="trial-rt", config=cfg, turn_plan=plan,
+                  status="running")
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    user_turn_response = {
+        "turn_id": "tu",
+        "assistant_msg": "ok",
+        "tool_calls": [],
+        "request_captured": {"body": {}},
+        "response_captured": {"status": 200, "body": {"choices": [
+            {"message": {"content": "ok"}},
+        ]}},
+    }
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(return_value=user_turn_response)
+    adapter.refresh_tools = AsyncMock(return_value={
+        "refresh_tools": True, "prior_tool_count": 4,
+        "note": "_mcp_tools cleared",
+    })
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    await run_trial(
+        trial_id="trial-rt",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
+
+    adapter.refresh_tools.assert_called_once()
+    assert adapter.refresh_tools.call_args.kwargs["trial_id"] == "trial-rt"
+
+    loaded = store.load("trial-rt")
+    assert len(loaded.turns) == 3
+    rt_turn = loaded.turns[1]
+    assert rt_turn.kind == "refresh_tools"
+    assert rt_turn.error is None, rt_turn.error
+    assert rt_turn.response["body"]["refresh_tools"] is True
+    assert rt_turn.response["body"]["prior_tool_count"] == 4
+
+
+@pytest.mark.asyncio
+async def test_runner_records_reset_context_error_on_adapter_failure(
+    tmp_data_dir,
+):
+    """If the adapter's reset_context HTTP call raises (e.g. +conv container
+    POST failure), the turn lands with .error and the loop continues."""
+    cfg = TrialConfig(
+        framework="langchain", api="responses+conv", stream=False, state=True,
+        llm="chatgpt", mcp="NONE", routing="via_agw",
+    )
+    plan = TurnPlan(turns=[
+        {"kind": "user_msg", "content": "first"},
+        {"kind": "reset_context"},
+        {"kind": "user_msg", "content": "second"},
+    ])
+    trial = Trial(trial_id="trial-reset-err", config=cfg, turn_plan=plan,
+                  status="running")
+    store = TrialStore(tmp_data_dir / "trials")
+    store.save(trial)
+
+    user_turn_response = {
+        "turn_id": "tu",
+        "assistant_msg": "ok",
+        "tool_calls": [],
+        "request_captured": {"body": {}},
+        "response_captured": {"status": 200, "body": {}},
+    }
+
+    adapter = MagicMock()
+    adapter.create_trial = AsyncMock(return_value={"ok": True})
+    adapter.drive_turn = AsyncMock(return_value=user_turn_response)
+    adapter.reset_context = AsyncMock(
+        side_effect=RuntimeError("conversation POST failed"),
+    )
+    adapter.delete_trial = AsyncMock(return_value={"ok": True})
+
+    await run_trial(
+        trial_id="trial-reset-err",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
+
+    loaded = store.load("trial-reset-err")
+    # All 3 turns persisted; reset turn carries the error.
+    assert len(loaded.turns) == 3
+    reset_turn = loaded.turns[1]
+    assert reset_turn.error is not None
+    assert "conversation POST failed" in reset_turn.error.get("reason", "")
+    # Loop continued — third user_msg ran too.
+    assert loaded.turns[2].kind == "user_msg"
+    assert loaded.turns[2].error is None
+
+
 @pytest.mark.asyncio
 async def test_mcp_admin_with_no_base_url_skips_with_log(
     tmp_data_dir, monkeypatch,

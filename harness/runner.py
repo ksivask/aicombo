@@ -296,6 +296,32 @@ async def run_trial(
                         turn.error = {
                             "reason": f"mcp_admin transport error: {e}",
                         }
+            elif kind == "reset_context":
+                # E21 — wipe agent-side LLM history. AGW is stateless — no
+                # AGW signal needed; the next request lands without prior
+                # CID evidence and AGW naturally mints a fresh CID via
+                # Cid::generate(). Per-API state matrix is in the
+                # adapter's Trial._drive_reset() (framework_bridge.py).
+                #
+                # Boundary turns are STILL recorded as turns so verdict_c
+                # can find them and bracket segments correctly.
+                try:
+                    res = await adapter_client.reset_context(trial_id=trial_id)
+                    turn.request = {"kind": "reset_context"}
+                    turn.response = {"body": res}
+                except Exception as e:
+                    turn.error = {"reason": f"reset_context failed: {e}"}
+            elif kind == "refresh_tools":
+                # E21 — force MCP tools/list re-fetch. Framework-specific;
+                # some adapters cache the toolset and need explicit
+                # invalidation, others re-fetch per call. Safe to call
+                # when mcp=NONE (adapter returns skipped sentinel).
+                try:
+                    res = await adapter_client.refresh_tools(trial_id=trial_id)
+                    turn.request = {"kind": "refresh_tools"}
+                    turn.response = {"body": res}
+                except Exception as e:
+                    turn.error = {"reason": f"refresh_tools failed: {e}"}
             else:
                 # Catch-all: any unknown / deferred kind (e.g. the
                 # design-doc-only `inject_ambient_cid`) lands here so the

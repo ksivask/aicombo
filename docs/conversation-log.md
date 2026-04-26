@@ -290,3 +290,27 @@ Independent review of two data tables added to frontend/about.js. Verify against
 - FastMCP rejected **kwargs in tool fns — used `payload: dict | None = None` stub + parameters override pattern.
 - Module-name collision: `mcp/mutable/main.py` was loaded as `main` and clashed with `harness/main.py` already in sys.modules (which other tests had imported). Fixed by loading via `importlib.util.spec_from_file_location` under a private module name.
 - FastMCP HTTP transport requires lifespan to be initialized for /mcp/ — couldn't use vanilla httpx.AsyncClient with ASGITransport. Switched to direct `mcp.list_tools()` call (same code path as the JSON-RPC tools/list method dispatches to).
+
+## 2026-04-26 — E21 implementation session
+
+### User prompt
+Implement E21 (reset_context + refresh_tools turn kinds) per design doc. Aiplay-only; do not touch verdict_i/E20 helpers; do not touch mcp/mutable/E22 work. Auto-execute with pre-allowed tools; ≤25 min wall-clock.
+
+### My reasoning
+- Read enhancements.md §E21 + existing efficacy.py to find the verdict_c boundary line (E20 sits in the SAME file from 5cbee8fb but in distinct functions/helpers; will surgically edit only verdict_c_continuity).
+- Surveyed all 7 adapters' framework_bridge.py to learn the canonical attr-set per API and the tool-cache invalidation handle per framework.
+- Decided on per-adapter HTTP routes (clean parallel to /compact) rather than overloading /turn with optional fields.
+
+### Actions
+- Updated brainstorming.md with E21 design notes.
+- Implementation forthcoming in this session.
+
+### Implementation notes (E21 done)
+- Verdict_c refactored to be bracket-aware. Pre-existing single-segment trials hit a backwards-compat branch that preserves the legacy "consecutive turns" pass message and the legacy "<2 audit-bearing CIDs (need ≥2)" error message — keeps 4 legacy verdict_c tests passing.
+- New `_drive_reset()` and `_drive_refresh_tools()` per Trial across 7 adapters; refresh_tools is functional for langchain/langgraph/crewai/autogen/llamaindex (clears `_mcp_tools` plus companion caches `_graph` / `_llm_with_tools` / `_agent`); pydantic-ai + direct-mcp ship as no-op + log per design-doc fallback policy.
+- AdapterClient gained `reset_context(trial_id)` and `refresh_tools(trial_id)` (parallel to `compact()`); cleaner than overloading `drive_turn` with optional turn_id/user_msg.
+- `with_reset` template + row flag added; turn-plan validator extended.
+- 248 → 282 pytest tests (+34); zero regressions.
+
+### Status: ready to commit
+Sticking to ONE commit per task spec (could split reset_context+verdict-c-refactor from refresh_tools but the surfaces are intertwined enough that one logical commit is cleaner).

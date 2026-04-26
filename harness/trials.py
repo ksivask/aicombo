@@ -30,10 +30,11 @@ class TurnPlan:
 class Turn:
     turn_id: str
     turn_idx: int
-    kind: str  # "user_msg" | "compact" | "force_state_ref"
-    # Note: design.md lists `inject_ambient_cid` as a fourth kind; it is
-    # deferred in v1. Runner treats unknown kinds as an error via its
-    # default branch, so templates carrying it fail loudly at runtime.
+    kind: str  # "user_msg" | "compact" | "force_state_ref" | "mcp_admin"
+    #          | "reset_context" | "refresh_tools"
+    # Note: design.md lists `inject_ambient_cid` as a future kind; it is
+    # deferred. Runner treats unknown kinds as an error via its default
+    # branch, so templates carrying unsupported kinds fail loudly at runtime.
     request: dict[str, Any] = field(default_factory=dict)
     response: dict[str, Any] = field(default_factory=dict)
     framework_events: list[dict[str, Any]] = field(default_factory=list)

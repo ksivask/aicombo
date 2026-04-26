@@ -119,6 +119,10 @@ class RowConfig(BaseModel):
     # turn to bracket. Only meaningful for api in responses/responses+conv
     # with state=True + a supporting framework (autogen / llamaindex).
     with_force_state_ref: bool = False
+    # E21 — opt-in flag that switches the row's default turn plan to
+    # `with_reset` so verdict (c) exercises bracket-aware multi-segment
+    # continuity (reset_context boundary + cross-segment leak detection).
+    with_reset: bool = False
     # Plan B T12 — when present, takes precedence over default_turn_plan(row).
     # Shape: {"turns": [...]} matching TurnPlan. Edited via the row drawer's
     # CodeMirror JSON editor; persisted via PATCH /matrix/row/{id}; cleared
@@ -296,6 +300,7 @@ def matrix_clone_baseline(row_id: str):
         "routing": "direct",
         "with_compact": src.get("with_compact", False),
         "with_force_state_ref": src.get("with_force_state_ref", False),
+        "with_reset": src.get("with_reset", False),
         # Carry the same turn_plan_override so the comparison runs the
         # same exact prompts on both rows.
         "turn_plan_override": src.get("turn_plan_override"),
@@ -347,6 +352,7 @@ def templates_validate(payload: dict = Body(...)):
                 errors.append(f"turn {i}: missing 'kind'")
             elif t["kind"] not in (
                 "user_msg", "compact", "force_state_ref", "mcp_admin",
+                "reset_context", "refresh_tools",
             ):
                 errors.append(f"turn {i}: invalid kind '{t['kind']}'")
             if "turn_id" not in t:
@@ -359,6 +365,8 @@ def templates_validate(payload: dict = Body(...)):
             # optional (mcp falls back to trial.config.mcp; payload to {}).
             if t.get("kind") == "mcp_admin" and "op" not in t:
                 errors.append(f"turn {i}: mcp_admin requires 'op'")
+            # E21 — reset_context and refresh_tools have no required fields
+            # beyond `kind`; both are zero-arg dispatch markers.
     return {"ok": not errors, "errors": errors}
 
 

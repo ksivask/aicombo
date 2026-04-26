@@ -303,6 +303,129 @@ def test_verdict_c_pass_with_header_demux():
     assert v["c"].verdict == "pass"
 
 
+# ── E21: Verdict (c) bracket-aware reset_context tests ────────────────
+
+def test_verdict_c_segments_at_reset_context_no_leak_passes():
+    """Two segments separated by reset_context, distinct CIDs per segment,
+    no cross-segment overlap → pass with the new multi-segment message.
+    """
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-26T10:00:00", finished_at="2026-04-26T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-26T10:00:10", finished_at="2026-04-26T10:00:15"),
+        Turn(turn_id="t-reset", turn_idx=2, kind="reset_context"),
+        Turn(turn_id="t3", turn_idx=3, kind="user_msg",
+             started_at="2026-04-26T10:00:30", finished_at="2026-04-26T10:00:35"),
+        Turn(turn_id="t4", turn_idx=4, kind="user_msg",
+             started_at="2026-04-26T10:00:40", finished_at="2026-04-26T10:00:45"),
+    ]
+    audit = [
+        # Segment 0: ib_aaa across both turns
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:12"),
+        # Segment 1: ib_bbb across both turns (distinct from segment 0)
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:32"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:42"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "pass", v["c"].reason
+    # The new branch surfaces segment count + total CID count.
+    assert "2 segment" in v["c"].reason
+    assert "no cross-segment leak" in v["c"].reason
+
+
+def test_verdict_c_detects_cross_segment_leak_fails():
+    """Same CID appears in BOTH pre-reset and post-reset segments — that's
+    a CID isolation breach (AGW failed to mint a fresh CID after the
+    reset boundary, or framework leaked old context). New verdict signal."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-26T10:00:00", finished_at="2026-04-26T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-26T10:00:10", finished_at="2026-04-26T10:00:15"),
+        Turn(turn_id="t-reset", turn_idx=2, kind="reset_context"),
+        Turn(turn_id="t3", turn_idx=3, kind="user_msg",
+             started_at="2026-04-26T10:00:30", finished_at="2026-04-26T10:00:35"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:12"),
+        # CRITICAL: same cid appears AFTER the reset boundary.
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:32"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "fail", v["c"].reason
+    assert "leak" in v["c"].reason.lower()
+    assert "ib_leakedcid12" in v["c"].reason
+
+
+def test_verdict_c_handles_no_resets_unchanged_behavior():
+    """Trial with NO reset_context turns falls through to the legacy
+    single-segment branch, preserving the pre-E21 message format."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-26T10:00:00", finished_at="2026-04-26T10:00:05"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-04-26T10:00:10", finished_at="2026-04-26T10:00:15"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_singlecid01", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_singlecid01", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:12"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "pass", v["c"].reason
+    # Legacy single-segment message uses "consecutive turns" wording.
+    assert "consecutive" in v["c"].reason
+
+
+def test_verdict_c_refresh_tools_does_not_split_segments():
+    """refresh_tools is a tool-cache event, not a CID boundary. A trial
+    with the SAME cid spanning a refresh_tools turn passes (no leak,
+    same single segment) — the cid is allowed to cross refresh_tools."""
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-04-26T10:00:00", finished_at="2026-04-26T10:00:05"),
+        Turn(turn_id="t-refresh", turn_idx=1, kind="refresh_tools"),
+        Turn(turn_id="t2", turn_idx=2, kind="user_msg",
+             started_at="2026-04-26T10:00:20", finished_at="2026-04-26T10:00:25"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_continuous1", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:02"),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_continuous1", backend="ollama", raw={},
+                   captured_at="2026-04-26T10:00:22"),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["c"].verdict == "pass", v["c"].reason
+    # Single-segment branch — CID continuity preserved (legacy message).
+    assert "consecutive" in v["c"].reason
+
+
 # ── Verdict (d) compaction resilience tests ────────────────────────────
 
 def test_verdict_d_pass_when_cid_survives_compact():

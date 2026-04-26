@@ -818,6 +818,56 @@ class Trial:
             "history_len_after": len(self._messages),
         }
 
+    async def _drive_reset(self) -> dict:
+        """E21 — wipe agent-side LLM history at a reset_context boundary.
+
+        Per-API matrix per design doc §E21. langgraph's Trial uses
+        `_messages` for chat/messages history and `_response_history` /
+        `_last_response_id` / `_forced_prev_id` for the Responses-API
+        state-mode chain; `_conversation_id` for +conv mode.
+        """
+        api = self.config.get("api")
+        cleared: list[str] = []
+
+        for attr in ("_messages", "_input_history", "_response_history"):
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+                cleared.append(attr)
+        for attr in ("_last_response_id", "_forced_prev_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+                cleared.append(attr)
+        if api == "responses+conv" and hasattr(self, "_conversation_id"):
+            self._conversation_id = None
+            cleared.append("_conversation_id")
+        return {"reset": True, "api": api, "cleared": cleared}
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — force MCP tools/list re-fetch on the next turn.
+
+        langgraph caches both the MCP tool list AND the compiled ReAct
+        agent (which embeds those tools) — both must be invalidated for
+        the next turn to re-fetch tools/list AND rebuild the graph
+        around the fresh tool set.
+        """
+        if self.config.get("mcp") == "NONE":
+            return {"refresh_tools": "skipped", "reason": "mcp=NONE"}
+
+        prior_count = len(self._mcp_tools or [])
+        self._mcp_tools = None
+        # `_graph` is the compiled langgraph StateGraph built from the
+        # cached tool list — invalidate so _setup_mcp_tools rebuilds it.
+        if hasattr(self, "_graph"):
+            self._graph = None
+        return {
+            "refresh_tools": True,
+            "prior_tool_count": prior_count,
+            "note": (
+                "_mcp_tools + _graph cleared; next turn rebuilds the ReAct "
+                "agent around a fresh tools/list snapshot"
+            ),
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

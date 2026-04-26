@@ -72,6 +72,19 @@ turn_plan_templates:
       - {kind: force_state_ref, lookback: 2, content: "Refer back to the earlier fact."}
       - {kind: user_msg, content: "Summarize what we discussed."}
 
+  # E21 — with_reset rows exercise the reset_context boundary semantic.
+  # Two distinct conversations on different topics in one trial. Verdict (c)
+  # treats the reset_context turn as a segment boundary and asserts no CID
+  # leaks across it (cross-segment overlap = isolation breach = verdict fail).
+  # NOT resized — verdict (c)'s segment math depends on this exact shape.
+  with_reset:
+    turns:
+      - {kind: user_msg, content: "Tell me a fact about quantum computing."}
+      - {kind: user_msg, content: "Elaborate."}
+      - {kind: reset_context}
+      - {kind: user_msg, content: "Hello, what's a fun fact about ocean exploration?"}
+      - {kind: user_msg, content: "Anything else?"}
+
   direct_mcp:
     turns:
       - {kind: user_msg, content: "{mcp_specific_query}"}

@@ -722,6 +722,51 @@ class Trial:
             out["note"] = note
         return out
 
+    async def _drive_reset(self) -> dict:
+        """E21 — wipe agent-side LLM history at a reset_context boundary.
+
+        crewai's Trial uses `_messages` as the canonical conversation log
+        spliced into each Task description. crewai doesn't implement
+        Responses-API state-mode in this adapter (chat + messages only),
+        so the response-id attrs don't exist — hasattr() makes the wipe
+        safe.
+        """
+        api = self.config.get("api")
+        cleared: list[str] = []
+        for attr in ("_messages", "_input_history", "_response_history"):
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+                cleared.append(attr)
+        for attr in ("_last_response_id", "_forced_prev_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+                cleared.append(attr)
+        if api == "responses+conv" and hasattr(self, "_conversation_id"):
+            self._conversation_id = None
+            cleared.append("_conversation_id")
+        return {"reset": True, "api": api, "cleared": cleared}
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — force MCP tools/list re-fetch on the next turn.
+
+        crewai caches the MCP tool wrapper list on `self._mcp_tools`; the
+        Crew + Agent are rebuilt fresh per turn (no cached tool-bound
+        agent), so clearing _mcp_tools is sufficient to trigger a new
+        _setup_mcp_tools() call on the next turn.
+        """
+        if self.config.get("mcp") == "NONE":
+            return {"refresh_tools": "skipped", "reason": "mcp=NONE"}
+        prior_count = len(self._mcp_tools or [])
+        self._mcp_tools = None
+        return {
+            "refresh_tools": True,
+            "prior_tool_count": prior_count,
+            "note": (
+                "_mcp_tools cleared; next turn re-fetches tools/list "
+                "via fastmcp Client + builds fresh McpFastmcpTool wrappers"
+            ),
+        }
+
     async def aclose(self) -> None:
         try:
             await self._http_client.aclose()

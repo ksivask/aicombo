@@ -133,6 +133,15 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
             and "with_responses_state_force_ref" in templates):
         return templates["with_responses_state_force_ref"]
 
+    # E21 — row requests the reset_context bracket-test plan. Checked
+    # BEFORE the mcp=NONE early-return because verdict (c)'s multi-segment
+    # math doesn't depend on whether an MCP is bound — the reset turn is
+    # purely about LLM-history wipe + cross-segment CID isolation. NOT
+    # resized — verdict (c)'s segment math depends on the exact 5-turn
+    # shape (2 user_msg → reset_context → 2 user_msg).
+    if row.get("with_reset") and "with_reset" in templates:
+        return templates["with_reset"]
+
     if mcp == "NONE":
         return {"turns": _resize_turns(templates["no_mcp_chat"]["turns"], target)}
 

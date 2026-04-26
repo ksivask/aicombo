@@ -448,42 +448,146 @@ def _cids_for_turn_window(trial: Trial, turn) -> set[str]:
 def verdict_c_continuity(trial: Trial) -> Verdict:
     """(c) multi-turn continuity — CID preserved across consecutive turns.
 
-    Per design doc §7.4: framework correctly propagates the per-turn CID
-    across turn boundaries when its conversation history survives. A break
-    means the framework dropped the marker (e.g. state=off compaction) and
-    AGW re-minted a fresh CID on the next turn.
+    E21 — bracket-aware. `reset_context` turns split the trial into segments;
+    we compute consecutive-pair continuity WITHIN each segment, and flag any
+    cross-segment CID overlap as a leak (the new "CID isolation broken at
+    reset boundary" signal).
+
+    `refresh_tools` turns do NOT split segments — they're tool-cache events,
+    not CID events.
+
+    Algorithm:
+      1. Walk user_msg turns; bracket into segments separated by
+         reset_context turn occurrences.
+      2. For each segment, every consecutive pair of CID-bearing turns must
+         share at least one CID. (Preserves the pre-E21 single-segment
+         failure mode for trials with no resets.)
+      3. Any CID observed in two DIFFERENT segments = leak = fail (this is
+         the new isolation-violation signal).
+      4. Total verdict = pass iff every segment with ≥2 CID-bearing turns
+         passes AND no cross-segment leak.
+
+    Per design doc §7.4 (pre-E21 behavior is preserved when no reset turns
+    are present): framework correctly propagates the per-turn CID across
+    turn boundaries when its conversation history survives. A break means
+    the framework dropped the marker (e.g. state=off compaction) and AGW
+    re-minted a fresh CID on the next turn.
     """
-    user_turns = _user_msg_turns(trial)
-    if len(user_turns) < 2:
-        return Verdict("na", "needs ≥2 user_msg turns for continuity check")
+    # Walk ALL turns (not just user_msg) so we can detect reset boundaries
+    # at their actual position in the plan.
+    turns = trial.turns
+    if not turns:
+        return Verdict("na", "no turns")
 
-    cids_per_turn: list[set[str]] = [
-        _cids_for_turn_window(trial, t) for t in user_turns
-    ]
+    # Bracket: each reset_context turn opens a fresh segment. user_msg turns
+    # land in the current segment; non-user, non-reset turns (compact /
+    # force_state_ref / refresh_tools / mcp_admin) are passed through
+    # without splitting.
+    segments: list[list] = [[]]
+    for t in turns:
+        if t.kind == "reset_context":
+            segments.append([])
+        elif t.kind == "user_msg":
+            segments[-1].append(t)
+        # other kinds: ignore (don't split, don't include in continuity walk)
 
-    # Keep only turns that actually have at least one cid-bearing audit entry.
-    indexed = [(i, cids) for i, cids in enumerate(cids_per_turn) if cids]
-    if len(indexed) < 2:
-        return Verdict("error",
-            f"only {len(indexed)} turn(s) have audit-bearing CIDs (need ≥2)")
+    # Drop empty trailing segment if the trial ends on a reset.
+    segments = [s for s in segments if s] or [[]]
 
-    # Every consecutive indexed pair must share at least one cid.
-    breaks: list[str] = []
-    for (i_a, cids_a), (i_b, cids_b) in zip(indexed, indexed[1:]):
-        if not (cids_a & cids_b):
-            breaks.append(
-                f"turn {i_a} cids {sorted(cids_a)} ↔ turn {i_b} cids {sorted(cids_b)}"
+    # Per-segment CID sets (window-correlated)
+    segment_cids: list[set[str]] = [set() for _ in segments]
+    # Per-segment per-turn CIDs for in-segment consecutive-pair check
+    segment_per_turn: list[list[set[str]]] = []
+    for i, seg in enumerate(segments):
+        per_turn = [_cids_for_turn_window(trial, t) for t in seg]
+        segment_per_turn.append(per_turn)
+        for cids in per_turn:
+            segment_cids[i].update(cids)
+
+    # Cross-segment leak check (only meaningful when ≥2 segments)
+    if len(segments) >= 2:
+        leaks = []
+        for i in range(len(segments)):
+            for j in range(i + 1, len(segments)):
+                overlap = segment_cids[i] & segment_cids[j]
+                if overlap:
+                    leaks.append((i, j, sorted(overlap)))
+        if leaks:
+            return Verdict(
+                "fail",
+                "cross-segment CID leak (reset boundary breached): "
+                + "; ".join(
+                    f"seg{a} ∩ seg{b} = {cids}" for a, b, cids in leaks[:3]
+                ),
             )
 
-    if breaks:
-        return Verdict("fail",
-            f"CID continuity broken across {len(breaks)} turn boundary(ies): "
-            + " | ".join(breaks))
+    # Per-segment continuity. For trials with NO reset_context turns this
+    # collapses to the pre-E21 single-segment behavior.
+    multi_segment = len(segments) >= 2
+    breaks: list[str] = []
+    insufficient: list[int] = []
+    for seg_idx, per_turn in enumerate(segment_per_turn):
+        # Indexed list of (orig_idx, cids) for turns that have ≥1 CID.
+        indexed = [(i, cids) for i, cids in enumerate(per_turn) if cids]
+        seg = segments[seg_idx]
+        if len(indexed) < 2:
+            # If there are <2 user_msg turns in this segment we can't
+            # measure continuity here. Single-segment trials need ≥2 to
+            # report (na/error); multi-segment trials accept short tail
+            # segments after a reset, but flag a fully-empty (no CID)
+            # segment that contains user_msg turns.
+            if seg and not indexed:
+                insufficient.append(seg_idx)
+            continue
+        for (i_a, cids_a), (i_b, cids_b) in zip(indexed, indexed[1:]):
+            if not (cids_a & cids_b):
+                breaks.append(
+                    f"seg{seg_idx} turn {i_a} cids {sorted(cids_a)} ↔ "
+                    f"turn {i_b} cids {sorted(cids_b)}"
+                )
 
-    cids_overall: set[str] = set().union(*[cs for _, cs in indexed])
-    return Verdict("pass",
-        f"CID preserved across {len(indexed)} consecutive turns "
-        f"(unique CIDs: {sorted(cids_overall)})")
+    if breaks:
+        return Verdict(
+            "fail",
+            f"CID continuity broken across {len(breaks)} turn boundary(ies): "
+            + " | ".join(breaks),
+        )
+
+    if not multi_segment:
+        # Backwards-compatible single-segment branch — preserve the legacy
+        # error / na messages tests rely on.
+        only_seg_per_turn = segment_per_turn[0]
+        only_seg_user_count = len(segments[0])
+        if only_seg_user_count < 2:
+            return Verdict(
+                "na", "needs ≥2 user_msg turns for continuity check",
+            )
+        indexed = [(i, c) for i, c in enumerate(only_seg_per_turn) if c]
+        if len(indexed) < 2:
+            return Verdict(
+                "error",
+                f"only {len(indexed)} turn(s) have audit-bearing CIDs (need ≥2)",
+            )
+        cids_overall = set().union(*[c for _, c in indexed])
+        return Verdict(
+            "pass",
+            f"CID preserved across {len(indexed)} consecutive turns "
+            f"(unique CIDs: {sorted(cids_overall)})",
+        )
+
+    # Multi-segment success path
+    if insufficient:
+        return Verdict(
+            "fail",
+            f"segment(s) {insufficient} carry user_msg turns but no "
+            f"CID-bearing audit entries (CID never appeared post-reset?)",
+        )
+    total_cids = sum(len(c) for c in segment_cids)
+    return Verdict(
+        "pass",
+        f"{len(segments)} segment(s), {total_cids} unique CID(s) total, "
+        f"no cross-segment leak",
+    )
 
 
 def verdict_d_resilience(trial: Trial) -> Verdict:

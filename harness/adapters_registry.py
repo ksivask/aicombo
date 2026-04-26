@@ -83,6 +83,33 @@ class AdapterClient:
         r.raise_for_status()
         return r.json()
 
+    async def reset_context(self, trial_id: str) -> dict:
+        """E21 — wipe agent-side LLM history (per-adapter Trial._drive_reset).
+
+        AGW is stateless: the boundary effect emerges from the agent's
+        next request having no prior CID evidence. Adapter returns a small
+        envelope describing what was cleared (used for trial-level audit /
+        debug). All adapters expose this endpoint; direct-mcp returns a
+        no-op envelope (no LLM context to wipe).
+        """
+        r = await self.client.post(f"/trials/{trial_id}/reset")
+        r.raise_for_status()
+        return r.json()
+
+    async def refresh_tools(self, trial_id: str) -> dict:
+        """E21 — force MCP tools/list re-fetch (per-adapter
+        Trial._drive_refresh_tools).
+
+        Framework-specific: some adapters cache the toolset across turns
+        and must invalidate it explicitly; others re-fetch per call and
+        treat this as a no-op. When `mcp == "NONE"` the adapter returns
+        a skipped sentinel without error so trial scripts can call this
+        defensively.
+        """
+        r = await self.client.post(f"/trials/{trial_id}/refresh_tools")
+        r.raise_for_status()
+        return r.json()
+
     async def delete_trial(self, trial_id: str) -> dict:
         r = await self.client.delete(f"/trials/{trial_id}")
         r.raise_for_status()

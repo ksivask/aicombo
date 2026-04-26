@@ -872,6 +872,49 @@ class Trial:
             ),
         }
 
+    async def _drive_reset(self) -> dict:
+        """E21 — wipe agent-side LLM history at a reset_context boundary.
+
+        llamaindex's Trial uses `_messages` (list[ChatMessage]) for the
+        chat path and `_response_history` / `_last_response_id` /
+        `_forced_prev_id` / `_conversation_id` for the responses-direct
+        bypass paths.
+        """
+        api = self.config.get("api")
+        cleared: list[str] = []
+        for attr in ("_messages", "_input_history", "_response_history"):
+            if hasattr(self, attr):
+                setattr(self, attr, [])
+                cleared.append(attr)
+        for attr in ("_last_response_id", "_forced_prev_id"):
+            if hasattr(self, attr):
+                setattr(self, attr, None)
+                cleared.append(attr)
+        if api == "responses+conv" and hasattr(self, "_conversation_id"):
+            self._conversation_id = None
+            cleared.append("_conversation_id")
+        return {"reset": True, "api": api, "cleared": cleared}
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — force MCP tools/list re-fetch on the next turn.
+
+        llamaindex caches MCP tool wrappers on `self._mcp_tools` (rebuilt
+        by `_setup_mcp_tools()` when None). The chat path reads
+        `_mcp_tools` directly each turn, so simply clearing it is enough.
+        """
+        if self.config.get("mcp") == "NONE":
+            return {"refresh_tools": "skipped", "reason": "mcp=NONE"}
+        prior_count = len(self._mcp_tools or [])
+        self._mcp_tools = None
+        return {
+            "refresh_tools": True,
+            "prior_tool_count": prior_count,
+            "note": (
+                "_mcp_tools cleared; next turn re-fetches tools/list and "
+                "rebuilds llamaindex tool wrappers"
+            ),
+        }
+
     async def aclose(self) -> None:
         # Close the shared httpx client.
         try:

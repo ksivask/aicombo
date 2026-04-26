@@ -111,6 +111,26 @@ async def compact_trial(trial_id: str, req: CompactReq):
     return await trial.compact(req.strategy)
 
 
+@app.post("/trials/{trial_id}/reset")
+async def reset_trial(trial_id: str):
+    """E21 — no-op for direct-mcp (no LLM context). Kept on the endpoint
+    surface for contract parity so multi-conversation trial scripts can
+    call reset_context defensively without per-adapter guards."""
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial._drive_reset()
+
+
+@app.post("/trials/{trial_id}/refresh_tools")
+async def refresh_tools_trial(trial_id: str):
+    """E21 — no-op for direct-mcp (re-fetches tools/list each turn already)."""
+    trial = TRIALS.get(trial_id)
+    if trial is None:
+        raise HTTPException(404, "trial not found")
+    return await trial._drive_refresh_tools()
+
+
 @app.delete("/trials/{trial_id}")
 async def delete_trial(trial_id: str):
     trial = TRIALS.pop(trial_id, None)

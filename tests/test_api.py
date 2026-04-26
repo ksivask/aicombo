@@ -164,6 +164,20 @@ def test_templates_validate_force_state_ref_requires_lookback():
     assert any("lookback" in e for e in out["errors"])
 
 
+def test_templates_validate_accepts_reset_context_and_refresh_tools():
+    """E21 — both new turn kinds parse without errors; no required
+    fields beyond `kind` and `turn_id`."""
+    from api import templates_validate
+    out = templates_validate({"turn_plan": {"turns": [
+        {"turn_id": "t0", "kind": "user_msg", "text": "hi"},
+        {"turn_id": "t1", "kind": "reset_context"},
+        {"turn_id": "t2", "kind": "refresh_tools"},
+        {"turn_id": "t3", "kind": "user_msg", "text": "hi again"},
+    ]}})
+    assert out["ok"] is True, out["errors"]
+    assert out["errors"] == []
+
+
 def test_templates_validate_rejects_empty_turns():
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": []}})

@@ -406,6 +406,40 @@ class Trial:
             "history_len_after": 0,
         }
 
+    async def _drive_reset(self) -> dict:
+        """E21 — no-op for direct-mcp (no LLM context to wipe).
+
+        Per design doc §E21: direct-mcp has no agent-side LLM history;
+        every turn is an independent tools/list + tools/call. The reset
+        is structurally a no-op but still gets routed so the trial-script
+        contract is uniform across adapters.
+        """
+        return {
+            "reset": True,
+            "api": self.config.get("api", "NONE"),
+            "cleared": [],
+            "note": "direct-mcp has no LLM context to wipe",
+        }
+
+    async def _drive_refresh_tools(self) -> dict:
+        """E21 — no-op for direct-mcp.
+
+        direct-mcp re-opens an MCP session and re-issues tools/list at
+        the start of every turn (see Trial.turn() — it always opens
+        `async with self.mcp_client` and calls `list_tools()`). There is
+        no client-side cache to bust; the next turn already gets a fresh
+        snapshot. Per the design doc fallback policy this ships as a
+        no-op + log line; trial scripts can still call refresh_tools
+        defensively without per-adapter guards.
+        """
+        return {
+            "refresh_tools": "noop",
+            "reason": (
+                "direct-mcp re-fetches tools/list at the start of every "
+                "turn (no client-side cache to invalidate)"
+            ),
+        }
+
     async def aclose(self) -> None:
         """Release httpx client connections."""
         try:

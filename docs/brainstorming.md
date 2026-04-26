@@ -392,3 +392,49 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 
 ### Risks / unknowns
 - mcp_admin templates aren't being added to defaults.yaml YET — spec says template variant is OPTIONAL; mention as TODO since refresh_tools (E21) hasn't landed. Easier to add when needed.
+
+## E21 — reset_context + refresh_tools turn kinds (2026-04-26)
+
+### Constraints (from prompt)
+- Aiplay-only changes; do NOT touch verdict_i / E20 helpers in efficacy.py; do NOT touch mcp/mutable/ / mcp_admin / E22 work.
+- ONE commit (or 2 logical: reset_context+verdict-c-refactor, then refresh_tools).
+- Pytest 245+ green.
+
+### Design decisions
+
+**reset_context — wipe agent-side LLM history**
+- Per-API state matrix per design doc:
+  - chat / messages → `_messages = []`
+  - responses (state=F) → `_input_history = []` (none of the adapters today maintain this distinct list — they wipe `_messages` instead; the spec's `_drive_reset()` uses hasattr() so the no-op path covers absent attrs cleanly)
+  - responses (state=T) → `_response_history = []`, `_last_response_id = None`, `_forced_prev_id = None`
+  - responses+conv → `_conversation_id = None` (next turn POSTs a new /v1/conversations container — network event, audit-visible, may fail)
+  - direct-mcp → no-op (no LLM context)
+- Implementation strategy: a single `_drive_reset()` method per Trial that uses `hasattr` to safely zero whatever subset of the canonical attr set exists on that adapter. Keeps the per-adapter delta tiny (4 lines or so) since most adapters share the same attr names.
+
+**refresh_tools — force MCP tools/list re-fetch**
+- Framework-specific. Most adapters cache via `self._mcp_tools is not None` shortcut; setting `self._mcp_tools = None` and re-calling `_setup_mcp_tools()` on next turn rebuilds from scratch.
+- langchain: also clear `_llm_with_tools` (cached `bind_tools` result).
+- langgraph: also clear `_graph` (compiled ReAct agent built around the cached tools).
+- pydantic-ai: re-instantiate the `Agent` so the bound `MCPServerStreamableHTTP` toolset is rebuilt; no obvious cheaper invalidation hook in the toolset object itself.
+- direct-mcp: no LLM, but the trial.turn() flow opens a fresh tools/list every turn already (no cache to bust). Implemented as no-op + log per spec.
+- All adapters: when `mcp == "NONE"`, return `{"refresh_tools": "skipped", "reason": "mcp=NONE"}` per spec.
+
+**Verdict (c) bracket refactor**
+- Walk turns. reset_context turns are SEGMENT BOUNDARIES; refresh_tools turns are NOT (they're tool-cache events).
+- Per-segment continuity: a segment passes if it carries ≥1 CID across its turns (relaxed from "every consecutive pair shares a CID" — design doc says "any CID appearing in segment passes" for the bracketed shape; preserves existing single-segment unit tests by not regressing 1-segment behavior).
+- Cross-segment leak detection: any CID that appears in MULTIPLE segments is a verdict failure ("CID isolation broken across reset boundary"). This is a NEW signal worth catching.
+- Total verdict = pass iff all per-segment pass AND no cross-segment leak.
+- Backwards compat: trials with ZERO reset_context turns produce a single segment whose pass criteria reduce to "≥1 CID present" — same as the old "≥2 CID-bearing turns + consecutive pair share a CID" path produces for a healthy trial. The 3 existing verdict_c tests (pass/fail/header-demux) all still work because the pass case has same CID across all turns and the fail case uses different CIDs across turns (cross-segment-style leak inside a single segment is fine; we only flag leaks across DIFFERENT segments).
+- BUT: existing `test_verdict_c_fail_when_cid_changes_between_turns` expects FAIL for two turns with different CIDs in a single segment. With new "any CID in segment → pass" logic this test would regress. Need to handle this — keep the old "consecutive pair must share" check WITHIN a segment alongside the cross-segment leak check. That preserves the existing failure mode AND adds the new one.
+
+**Per-adapter route exposure**
+- Add HTTP routes `/trials/{id}/reset` and `/trials/{id}/refresh_tools` (parallel to existing `/compact`) on each of 7 adapters. AdapterClient gains `reset_context()` and `refresh_tools()` methods (parallel to `compact()`). Cleaner than overloading `drive_turn()` with optional turn_id/user_msg.
+
+**Template variant + Turn validator**
+- Add `with_reset` template to defaults.yaml (5 turns: 2 user_msg → reset_context → 2 user_msg, distinct topics).
+- Extend templates_validate to recognize `reset_context` and `refresh_tools` as valid kinds (no required fields beyond `kind`).
+
+### Risks / unknowns
+- pydantic-ai refresh_tools rebuilds the entire Agent — could lose other state (system_prompt, etc.). Mitigated: __init__ rebuild logic centralized to a helper if it grows.
+- langchain `_llm_with_tools` cache — `bind_tools` is idempotent so re-binding on a new tool list is fine; just need to invalidate cleanly.
+- Edge: refresh_tools called on turn 0 (before any prior turn ran tools_list) → cache is None already → next user_msg triggers fresh fetch as normal. Safe no-op effectively.

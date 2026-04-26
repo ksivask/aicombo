@@ -48,6 +48,45 @@ def test_with_force_state_ref_row_selects_force_ref_template():
     assert kinds.count("user_msg") >= 2
 
 
+def test_with_reset_row_selects_with_reset_template():
+    """E21 — with_reset=true selects the bracket-test plan with a
+    reset_context turn between two distinct conversations."""
+    plan = default_turn_plan({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "NONE", "routing": "via_agw",
+        "with_reset": True,
+    })
+    kinds = [t.get("kind") for t in plan["turns"]]
+    # 5 turns: user_msg / user_msg / reset_context / user_msg / user_msg
+    assert kinds == [
+        "user_msg", "user_msg", "reset_context",
+        "user_msg", "user_msg",
+    ], kinds
+    # Distinct topics across the boundary so a CID leak would actually
+    # surface as semantic discontinuity in the conversation log too.
+    pre = " ".join(
+        t.get("content", "") for t in plan["turns"][:2]
+    ).lower()
+    post = " ".join(
+        t.get("content", "") for t in plan["turns"][3:]
+    ).lower()
+    assert pre != post
+
+
+def test_with_reset_overrides_mcp_default_template():
+    """with_reset wins over the per-MCP template — the bracket-test
+    semantics are MCP-independent so picking reset takes priority."""
+    plan = default_turn_plan({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "weather", "routing": "via_agw",
+        "with_reset": True,
+    })
+    kinds = [t.get("kind") for t in plan["turns"]]
+    assert "reset_context" in kinds, kinds
+
+
 def test_none_llm_with_mcp_produces_direct_mcp_plan():
     """LLM=NONE + MCP=weather → user_msg turns driven by the direct-mcp adapter.
 
