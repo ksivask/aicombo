@@ -54,8 +54,17 @@ def verdict_a_presence(trial: Trial) -> Verdict:
     # Time-window correlation (Plan A default; cidgar log has no headers)
     cid_entries = _audit_with_cid(trial)
     if not cid_entries:
+        # B3 fix: surface the audit phases in the failure message. When
+        # only `tools_list` entries are present (per spec §5.1 those don't
+        # carry a CID), the prior text "N audit entries but none carry a
+        # CID" reads like cidgar misbehaved — the real story is usually
+        # that the adapter errored before the llm_request phase fired.
+        phases = sorted({e.phase for e in trial.audit_entries if e.phase})
         return Verdict("fail",
-            f"{len(trial.audit_entries)} audit entries but none carry a CID")
+            f"{len(trial.audit_entries)} audit entries observed "
+            f"(phases: {phases or '∅'}) but none carry a CID — likely no "
+            f"llm_request phase fired (adapter may have errored before "
+            f"the LLM call)")
     unique_cids = sorted({e.cid for e in cid_entries})
     if len(cid_entries) < len(user_turns):
         return Verdict("fail",
@@ -189,6 +198,12 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
     header_demux = _has_header_demux(trial)
     all_audit_cids = {e.cid for e in trial.audit_entries if e.cid}
     issues = []
+    # B2 fix: track turns that had no body to scan. When *every* turn is
+    # skipped (typical when all adapter calls errored), the loop produces
+    # zero issues and the function used to fall through to `pass` — a
+    # silent lie about correlation that surfaced as a contradictory
+    # verdict pair (a)=fail + (b)=pass on errored trials.
+    skipped_turn_count = 0
 
     for t in user_turns:
         if header_demux:
@@ -205,6 +220,7 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
         if not bodies:
             # Non-OpenAI / SSE / dict-less body — verdict_a already covered
             # the audit-log presence check. Skip channel-structure scan.
+            skipped_turn_count += 1
             continue
 
         # Track what we observed across ALL bodies in this turn so we
@@ -256,11 +272,19 @@ def verdict_b_channel_structure(trial: Trial) -> Verdict:
             )
         # If no choices anywhere, treat as no-op (audit covers presence).
 
+    # B2 fix: if no turn had any body to scan, surface "na" instead of
+    # silently passing. Otherwise issues take precedence; on partial skip
+    # the pass message mentions how many turns went un-scanned.
+    if skipped_turn_count == len(user_turns):
+        return Verdict("na",
+            "no response bodies to scan — all turns errored or had non-dict bodies")
     if issues:
         return Verdict("fail", " | ".join(issues))
     mode = "header-demux" if header_demux else "time-window"
+    scanned = len(user_turns) - skipped_turn_count
+    suffix = f"; {skipped_turn_count} turns skipped (no body)" if skipped_turn_count else ""
     return Verdict("pass",
-        f"channels carry expected CID across {len(user_turns)} turns ({mode})")
+        f"channels carry expected CID across {scanned} turns ({mode}){suffix}")
 
 
 GAR_REQUIRED_KEYS = {"goal", "need", "impact", "dspm", "alt"}

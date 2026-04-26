@@ -180,3 +180,51 @@ async def test_state_true_on_api_responses_threads_previous_response_id(monkeypa
             )
         finally:
             await trial.aclose()
+
+
+# ── B4 regression: MCPServerStreamableHTTP must not get headers + http_client ──
+
+def test_build_mcp_servers_does_not_pass_headers_alongside_http_client():
+    """B4 regression: pydantic-ai 1.86's `MCPServerStreamableHTTP.client_streams()`
+    raises `ValueError("`http_client` is mutually exclusive with `headers`.")`
+    when BOTH `headers=` and `http_client=` are provided. The aiplay
+    adapter previously passed both, so any trial with mcp != NONE blew up
+    at MCP setup — agent.run propagated the ValueError, the adapter caught
+    it, and the run looked like "200 OK with sentinel bodies, framework_events=0,
+    audit_entries=0" (repro: trial 0c62d175-5a93-4907-b062-b395c4b6dc61,
+    pydantic-ai + chat + ollama + fetch + via_agw).
+
+    Fix: only pass `http_client=` to MCPServerStreamableHTTP. Headers ride
+    on the shared httpx.AsyncClient (Trial.__init__ wires `headers=self._headers`
+    into the AsyncClient ctor), so per-turn header mutation still works.
+    """
+    _ensure_adapter_on_path()
+    from framework_bridge import _build_mcp_servers
+
+    headers_ref = {"X-Harness-Trial-ID": "t1", "X-Harness-Turn-ID": "t-0"}
+    fake_http = MagicMock(name="fake_http_client")
+
+    captured_kwargs: dict = {}
+
+    class _FakeMcpServer:
+        def __init__(self, **kwargs):
+            captured_kwargs.update(kwargs)
+
+    with patch("pydantic_ai.mcp.MCPServerStreamableHTTP", _FakeMcpServer):
+        out = _build_mcp_servers(
+            mcp_url="http://mcp.example/mcp",
+            headers_ref=headers_ref,
+            http_client=fake_http,
+        )
+
+    assert len(out) == 1, f"expected 1 MCP server, got {len(out)}"
+    assert "headers" not in captured_kwargs, (
+        f"B4: MCPServerStreamableHTTP must NOT receive headers= when "
+        f"http_client is also provided (pydantic-ai 1.86 raises ValueError); "
+        f"got kwargs: {sorted(captured_kwargs.keys())}"
+    )
+    assert captured_kwargs.get("http_client") is fake_http, (
+        f"http_client must be the shared hooked client; got "
+        f"{captured_kwargs.get('http_client')!r}"
+    )
+    assert captured_kwargs.get("url") == "http://mcp.example/mcp"

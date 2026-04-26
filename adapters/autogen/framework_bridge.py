@@ -1043,7 +1043,17 @@ def _make_autogen_mcp_tool(mcp_tool: Any, mcp_url: str, headers: dict,
 
     # Build a closure that does the MCP call via fastmcp using our hooked
     # httpx factory (captures tools/call wire bytes).
-    async def _call(**kwargs) -> str:
+    #
+    # B1 fix: autogen_core.tools.FunctionTool's introspector calls
+    # `typing.get_type_hints(fn)[param.name]` for every parameter in
+    # `inspect.signature(fn).parameters`. A bare `**kwargs` (no annotation)
+    # is absent from `get_type_hints()`, so the dereference raises
+    # `KeyError: 'kwargs'`. Annotating both `**kwargs` and the return type
+    # with `Any` keeps the signature universal while satisfying the typed
+    # introspector. (Repro: trials 0b590d37 and 640a06d3 — autogen+MCP
+    # bombed identically across both APIs and LLMs, confirming the bug
+    # lives at the autogen+MCP wrapper layer, not the API layer.)
+    async def _call(**kwargs: Any) -> Any:
         from fastmcp import Client
         from fastmcp.client.transports import StreamableHttpTransport
         transport = StreamableHttpTransport(

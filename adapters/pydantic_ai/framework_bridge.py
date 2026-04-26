@@ -181,9 +181,18 @@ def _build_mcp_servers(mcp_url: str, headers_ref: dict,
                        http_client: httpx.AsyncClient) -> list[Any]:
     """Return a list with one MCPServerStreamableHTTP, or [] if mcp=NONE.
 
-    The `headers_ref` dict is SHARED with the trial's http_client headers —
-    mutating it per turn is sufficient to update X-Harness-Turn-ID since
-    pydantic-ai's MCP server passes the dict straight to the httpx request.
+    B4 fix: pydantic-ai 1.86's `MCPServerStreamableHTTP.client_streams()`
+    raises `ValueError("`http_client` is mutually exclusive with `headers`.")`
+    if BOTH are provided. The adapter previously passed both, so any trial
+    with mcp != NONE blew up on the first MCP setup — agent.run caught the
+    ValueError, the adapter caught the resulting exception, and the run
+    looked like "200 OK with sentinel bodies and zero audit entries"
+    (repro: trial 0c62d175). Headers are already attached to `http_client`
+    (Trial.__init__ line ~278 passes `headers=self._headers` to the
+    httpx.AsyncClient), so dropping `headers=` here keeps the harness
+    headers (X-Harness-Trial-ID + X-Harness-Turn-ID) on every MCP request
+    via the shared http_client and satisfies pydantic-ai's exclusivity
+    check.
     """
     if not mcp_url:
         return []
@@ -191,7 +200,6 @@ def _build_mcp_servers(mcp_url: str, headers_ref: dict,
     return [
         MCPServerStreamableHTTP(
             url=mcp_url,
-            headers=headers_ref,
             http_client=http_client,
         )
     ]
@@ -393,6 +401,14 @@ class Trial:
         # Update shared headers dict — httpx reads this for every request.
         self._headers["X-Harness-Trial-ID"] = self.trial_id
         self._headers["X-Harness-Turn-ID"] = turn_id
+        # B4 follow-up: httpx.AsyncClient COPIES the `headers=` dict into
+        # its own `Headers` store at construction; mutations to the
+        # original dict do NOT propagate to outgoing requests. Mirror the
+        # mutation onto `self._http_client.headers` so X-Harness-Turn-ID
+        # actually appears on every request issued by either the LLM
+        # provider or the MCP toolset (both use this shared client).
+        self._http_client.headers["X-Harness-Trial-ID"] = self.trial_id
+        self._http_client.headers["X-Harness-Turn-ID"] = turn_id
 
         # Reset per-turn capture
         self._last_request = None

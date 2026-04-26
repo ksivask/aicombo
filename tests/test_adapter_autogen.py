@@ -342,3 +342,42 @@ async def test_responses_conv_uses_conversation_field_not_previous_response_id(m
             )
         finally:
             await trial.aclose()
+
+
+# ── B1 regression: autogen MCP tool wrapper FunctionTool construction ──
+
+def test_make_autogen_mcp_tool_constructs_without_kwargs_keyerror():
+    """B1 regression: _make_autogen_mcp_tool's dynamic _call closure must
+    have annotated **kwargs so autogen-core's FunctionTool introspector
+    (which dereferences typing.get_type_hints(_call)[param.name] for every
+    parameter) doesn't raise `KeyError: 'kwargs'`.
+
+    This was 100% reproducible on any autogen+MCP trial — the bridge built
+    the tool, FunctionTool walked the signature, KeyError, agent.run never
+    started. Trials 0b590d37 (autogen+messages+claude+library) and
+    640a06d3 (autogen+chat+ollama+library) both bombed identically,
+    confirming the bug lives at the autogen+MCP wrapper layer (API-agnostic).
+    """
+    _ensure_adapter_on_path()
+    from framework_bridge import _make_autogen_mcp_tool
+
+    # Minimal fake tool + trial — we only need the wrapper to construct,
+    # not actually call anything. The FunctionTool() construction is where
+    # autogen's get_typed_signature runs.
+    class _FakeMcpTool:
+        name = "weather"
+        description = "fake tool for B1 regression"
+        inputSchema = {"type": "object", "properties": {}}
+
+    class _FakeTrial:
+        _httpx_factory = None
+
+    # Should NOT raise KeyError('kwargs'). Any other downstream error is
+    # acceptable here — the bug we're pinning is specifically the typed
+    # signature crash at construction time.
+    tool = _make_autogen_mcp_tool(
+        _FakeMcpTool(), "http://x/mcp", {}, _FakeTrial(),
+    )
+    # Sanity: it's a FunctionTool-shaped object.
+    assert tool is not None
+    assert getattr(tool, "name", None) == "weather"

@@ -643,3 +643,97 @@ def test_body_has_any_tool_call_detects_both_shapes():
     assert not _body_has_any_tool_call({"choices": [{"message": {"content": "hi"}}]})
     assert not _body_has_any_tool_call({"content": [{"type": "text", "text": "hi"}]})
     assert not _body_has_any_tool_call({})
+
+
+# ── B2 regression: verdict_b should not silently pass on errored trials ──
+
+def test_verdict_b_na_when_all_turns_errored():
+    """B2 regression: when every turn errored at the adapter (response={},
+    no framework_events with bodies), verdict_b used to silently fall
+    through to `pass` because the body-scan loop's "if not bodies: continue"
+    branch dropped every turn and `issues` stayed empty. Now we return
+    `na` so the trial doesn't lie about correlation it never observed.
+
+    This compounded with verdict (a) failing to produce mutually
+    contradictory verdicts on errored trials.
+    """
+    turns = [
+        Turn(turn_id=f"t{i}", turn_idx=i, kind="user_msg",
+             response={}, error={"msg": "adapter blew up"}, framework_events=[])
+        for i in range(3)
+    ]
+    audit = []  # no audit either — fully errored trial
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["b"].verdict == "na", (
+        f"expected na on all-errored turns, got {v['b'].verdict!r}: "
+        f"{v['b'].reason}"
+    )
+    assert "no response bodies" in v["b"].reason.lower()
+
+
+def test_verdict_b_pass_message_mentions_skipped():
+    """B2 regression: on partial skip (some turns scanned, some had no
+    body), the pass message should mention how many turns were skipped
+    so the reason text doesn't overstate scan coverage.
+    """
+    turns = [
+        # Turn 0: errored, no body to scan.
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             response={}, error={"msg": "boom"}, framework_events=[]),
+        # Turn 1 + 2: clean text response with C2 marker matching audit cid.
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             response={"body": {"choices": [
+                 {"message": {"content": "ok<!-- ib:cid=ib_abc123def456 -->"}}
+             ]}}),
+        Turn(turn_id="t2", turn_idx=2, kind="user_msg",
+             response={"body": {"choices": [
+                 {"message": {"content": "ok2<!-- ib:cid=ib_abc123def456 -->"}}
+             ]}}),
+    ]
+    # Use turn_id=None on audit entries to force time-window mode so the
+    # "turn 0 has no header-demux audit" early-error doesn't fire (the
+    # purpose of THIS test is the skipped-turn message, not header-demux).
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="terminal",
+                   cid="ib_abc123def456", backend="ollama", raw={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="terminal",
+                   cid="ib_abc123def456", backend="ollama", raw={}),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["b"].verdict == "pass", (
+        f"expected pass, got {v['b'].verdict!r}: {v['b'].reason}"
+    )
+    assert "1 turns skipped" in v["b"].reason, (
+        f"expected pass reason to flag the 1 skipped turn; got: {v['b'].reason}"
+    )
+
+
+# ── B3 regression: verdict_a fail message should surface audit phases ──
+
+def test_verdict_a_fail_message_lists_audit_phases():
+    """B3 regression: when audit has entries but none carry a CID — typical
+    when only `tools_list` phase entries fired (per spec §5.1 those don't
+    carry a CID by design) — the failure reason should include the phases
+    observed so the user understands the adapter likely never reached the
+    llm_request phase. The old message ("N audit entries but none carry a
+    CID") read like cidgar misbehaved.
+    """
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    # Three tools_list audit entries, no CIDs. (Per spec §5.1 tools_list
+    # never has a CID — there's no LLM in the loop yet.)
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
+                   cid=None, backend="ollama", raw={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
+                   cid=None, backend="ollama", raw={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
+                   cid=None, backend="ollama", raw={}),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["a"].verdict == "fail"
+    assert "tools_list" in v["a"].reason, (
+        f"expected reason to surface tools_list phase; got: {v['a'].reason}"
+    )
