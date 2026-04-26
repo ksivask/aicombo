@@ -531,3 +531,40 @@ button.btn-pairs:hover { background: #e3f2fd; border-radius: 3px; }
   border-radius: 3px; border: 1px solid #f5c6cb;
   font-family: ui-monospace, monospace; font-size: 13px;
 }
+
+/* ── CID flow tab (Mermaid graph + legend) ── */
+.cid-flow { padding: 4px 0; }
+.cid-flow-stats {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 6px;
+  padding: 8px 12px; background: #fafafa; border: 1px solid #e0e0e0;
+  border-radius: 4px; margin-bottom: 8px; font-size: 13px;
+}
+.cid-flow-stats > span { white-space: nowrap; }
+.cid-legend-chip {
+  display: inline-block; padding: 2px 8px; border-radius: 10px;
+  font-size: 11px; font-weight: 500; margin-left: 4px;
+}
+.cid-legend-chip.preserved { background: #d4edda; color: #155724; border: 1px solid #28a745; }
+.cid-legend-chip.single    { background: #fff3cd; color: #856404; border: 1px solid #ffc107; }
+.cid-legend-chip.auditonly { background: #f8d7da; color: #721c24; border: 1px solid #dc3545; }
+.cid-flow-legend {
+  font-size: 12px; color: #666; padding: 4px 0 10px 0;
+  font-style: italic;
+}
+.cid-flow .mermaid {
+  background: white; border: 1px solid #ddd; border-radius: 4px;
+  padding: 12px; overflow-x: auto; text-align: center;
+  /* Mermaid injects an SVG; preserve a sensible min height while it loads. */
+  min-height: 80px;
+}
+.cid-flow-source {
+  margin-top: 12px; font-size: 12px; color: #666;
+}
+.cid-flow-source pre {
+  background: #f7f7f7; padding: 8px; border-radius: 3px;
+  font-size: 11px; max-height: 240px; overflow: auto;
+}
+.cid-flow .empty-state-msg {
+  padding: 20px; text-align: center; color: #666;
+  background: #fafafa; border-radius: 4px; border: 1px dashed #ccc;
+}

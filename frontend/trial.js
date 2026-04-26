@@ -518,6 +518,193 @@ function renderVerdictsTab(verdicts) {
   }).join("");
 }
 
+// ── CID flow tab ──
+//
+// Renders a Mermaid `graph LR` diagram showing the relationship between
+// turns, CIDs, and audit entries. CID nodes are the central pivot; turn
+// nodes connect to CIDs via channel evidence in the response body, and
+// audit-entry nodes connect to CIDs via the audit log's `cid` field.
+//
+// Visual cues:
+// - CID node fill: green if seen in ≥2 turns (chain preserved), yellow if
+//   seen in only one turn (single use), red if seen only in audit entries
+//   (channel injection broke — governance logged a CID but no turn body
+//   carried it on the wire).
+// - Turn node border: red if turn.error is truthy.
+// - Edges: solid for turn→CID and audit→CID; dotted for turn→audit
+//   (time-window or header-demux correlation).
+
+const CID_RE = /ib_[a-f0-9]{12}/g;
+
+function _scanBodyForCids(t) {
+  // Mirrors the rough shape of harness/efficacy.py's CID extractors: scan
+  // the JSON-stringified response + framework_events. Catches Channel 1
+  // (tool_calls args), Channel 2 (text marker), and Channel 3 (MCP resource
+  // block embedded inside framework_events) in one regex pass. Looser than
+  // the channel-specific extractors, but appropriate for visualization
+  // (we just need "did this turn body contain this CID anywhere?").
+  const parts = [];
+  if (t.response !== undefined) parts.push(JSON.stringify(t.response));
+  if (t.framework_events !== undefined) parts.push(JSON.stringify(t.framework_events));
+  const blob = parts.join("");
+  const found = new Set();
+  for (const m of blob.matchAll(CID_RE)) found.add(m[0]);
+  return found;
+}
+
+function renderCidFlowTab(trial) {
+  const turns = trial.turns || [];
+  const audits = trial.audit_entries || [];
+
+  // Per-turn CID sets and global CID universe.
+  const turnCids = turns.map(t => _scanBodyForCids(t));  // Set<cid> per turn
+  const auditCids = new Set();
+  for (const a of audits) {
+    if (a.cid) auditCids.add(a.cid);
+  }
+  const allCids = new Set();
+  for (const s of turnCids) for (const c of s) allCids.add(c);
+  for (const c of auditCids) allCids.add(c);
+
+  // Empty state: no turns, no audits, no CIDs.
+  if (turns.length === 0 && audits.length === 0 && allCids.size === 0) {
+    return `<div class="cid-flow"><p class="empty-state-msg">No CID flow to visualize — run the trial first or check verdict (a) for why no CIDs were observed.</p></div>`;
+  }
+  if (allCids.size === 0) {
+    return `
+      <div class="cid-flow">
+        <p class="empty-state-msg">
+          No CIDs found in any turn body or audit entry. Check verdict (a)
+          for whether AGW governance fired. Trial has ${turns.length}
+          turn(s) and ${audits.length} audit entry(ies).
+        </p>
+      </div>
+    `;
+  }
+
+  // Compute per-CID survivability classification for color coding.
+  // - "preserved": appears in ≥2 turns (Channels did their job + agent kept it)
+  // - "single": appears in exactly 1 turn (single-use, fine for trivial trials)
+  // - "auditonly": appears only in audit entries, never on the wire (channels broke)
+  const cidClass = {};
+  for (const cid of allCids) {
+    let inTurns = 0;
+    for (const s of turnCids) if (s.has(cid)) inTurns += 1;
+    if (inTurns >= 2) cidClass[cid] = "preserved";
+    else if (inTurns === 1) cidClass[cid] = "single";
+    else cidClass[cid] = "auditonly";
+  }
+
+  // Mermaid node id helper: CIDs contain only [a-f0-9_] so safe as-is, but
+  // the "ib_" prefix collides with no other id space in our graph (T*, A*).
+  const cidNodeId = cid => `C_${cid.slice(3)}`;
+
+  let mer = "graph LR\n";
+
+  // Turn nodes — kind is the user-visible label. Errored turns get the
+  // erroredTurn class for a red border (see classDef below).
+  turns.forEach((t, i) => {
+    const kind = (t.kind || "?").replace(/[\[\]"]/g, "");
+    const label = `Turn ${i}<br/>${kind}`;
+    mer += `  T${i}["${label}"]\n`;
+    if (t.error) mer += `  class T${i} erroredTurn\n`;
+  });
+
+  // CID nodes — assign survivability class for fill color.
+  for (const cid of allCids) {
+    const nid = cidNodeId(cid);
+    // Show only the last 8 hex chars in the label to keep nodes compact;
+    // the full CID is recoverable from hover (Mermaid renders title attrs).
+    const shortLabel = `${cid.slice(0, 6)}…${cid.slice(-4)}`;
+    mer += `  ${nid}(["${shortLabel}"])\n`;
+    mer += `  class ${nid} cid${cidClass[cid]}\n`;
+  }
+
+  // Audit entry nodes — phase is the most useful label; fall back to "audit".
+  audits.forEach((a, i) => {
+    const phase = (a.phase || "audit").replace(/[\[\]"]/g, "");
+    mer += `  A${i}["${phase}"]\n`;
+    mer += `  class A${i} auditNode\n`;
+  });
+
+  // Edges: turn → CID (solid). One edge per (turn, cid) pair where the
+  // turn body contained that CID.
+  turns.forEach((t, i) => {
+    for (const cid of turnCids[i]) {
+      mer += `  T${i} --> ${cidNodeId(cid)}\n`;
+    }
+  });
+
+  // Edges: audit → CID (solid).
+  audits.forEach((a, i) => {
+    if (a.cid && allCids.has(a.cid)) {
+      mer += `  A${i} --> ${cidNodeId(a.cid)}\n`;
+    }
+  });
+
+  // Edges: turn → audit (dotted). Use header-demux (audit.turn_id) when any
+  // audit carries it; otherwise fall back to time-window correlation. Mirrors
+  // the same logic as pickAudits() above so the graph and the per-turn
+  // governance audit panel agree.
+  const headerDemux = audits.some(a => a.turn_id);
+  turns.forEach((t, i) => {
+    audits.forEach((a, j) => {
+      let match = false;
+      if (headerDemux) {
+        match = (a.turn_id && a.turn_id === t.turn_id);
+      } else {
+        const ts = a.captured_at || "";
+        const start = t.started_at || "";
+        const end = t.finished_at || "9999";
+        match = (ts >= start && ts <= end);
+      }
+      if (match) mer += `  T${i} -.-> A${j}\n`;
+    });
+  });
+
+  // Style classes. Mermaid classDef syntax: classDef <name> <style;style;...>
+  // - cidpreserved: green fill (CID survived ≥2 turns — chain preserved)
+  // - cidsingle:    yellow fill (CID seen in exactly one turn)
+  // - cidauditonly: red fill (CID in audit but no turn body — channels broke)
+  // - erroredTurn:  red border on turn nodes that errored
+  // - auditNode:    subtle gray fill so audit nodes don't compete visually
+  mer += "\n";
+  mer += "  classDef cidpreserved fill:#d4edda,stroke:#28a745,stroke-width:2px,color:#155724;\n";
+  mer += "  classDef cidsingle fill:#fff3cd,stroke:#ffc107,stroke-width:2px,color:#856404;\n";
+  mer += "  classDef cidauditonly fill:#f8d7da,stroke:#dc3545,stroke-width:2px,color:#721c24;\n";
+  mer += "  classDef erroredTurn stroke:#dc3545,stroke-width:3px;\n";
+  mer += "  classDef auditNode fill:#f0f0f0,stroke:#999,color:#333;\n";
+
+  // Counts banner above the graph for quick orientation.
+  const preservedCount = Object.values(cidClass).filter(c => c === "preserved").length;
+  const singleCount = Object.values(cidClass).filter(c => c === "single").length;
+  const auditOnlyCount = Object.values(cidClass).filter(c => c === "auditonly").length;
+
+  return `
+    <div class="cid-flow">
+      <div class="cid-flow-stats">
+        <span><strong>${allCids.size}</strong> unique CID${allCids.size === 1 ? "" : "s"}</span>
+        <span> · </span>
+        <span><strong>${turns.length}</strong> turn${turns.length === 1 ? "" : "s"}</span>
+        <span> · </span>
+        <span><strong>${audits.length}</strong> audit entr${audits.length === 1 ? "y" : "ies"}</span>
+        ${preservedCount ? `<span class="cid-legend-chip preserved">${preservedCount} preserved (≥2 turns)</span>` : ""}
+        ${singleCount ? `<span class="cid-legend-chip single">${singleCount} single-use</span>` : ""}
+        ${auditOnlyCount ? `<span class="cid-legend-chip auditonly">${auditOnlyCount} audit-only (channels broke)</span>` : ""}
+      </div>
+      <div class="cid-flow-legend">
+        Solid edges: turn→CID (channel evidence in body) and audit→CID (governance log).
+        Dotted edges: turn→audit (header-demux or time-window correlation).
+      </div>
+      <pre class="mermaid">${escapeHtml(mer)}</pre>
+      <details class="cid-flow-source">
+        <summary>Mermaid source (debug)</summary>
+        <pre>${escapeHtml(mer)}</pre>
+      </details>
+    </div>
+  `;
+}
+
 function attachPoll(tid) {
   // Poll the regular trial GET every 2s so turn cards + verdicts appear
   // as they get persisted. Clears itself once the trial reaches a
