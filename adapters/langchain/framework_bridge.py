@@ -623,18 +623,31 @@ class Trial:
             "X-Harness-Trial-ID": self.trial_id,
             "X-Harness-Turn-ID": turn_id,
         }
-        # Replace default_headers so each turn's X-Harness-Turn-ID updates.
-        # ChatOpenAI is built with this http_async_client; default_headers
-        # are sent by the OpenAI SDK on every call. ChatAnthropic's
-        # _async_client was overridden in __init__ so we bypass the
-        # framework's own default_headers path — update the SDK client
-        # directly via its `_custom_headers` attr (anthropic SDK internal,
-        # stable across 0.x — see anthropic-sdk-python BaseClient).
+        # B5 fix: assigning self.llm.default_headers post-init does NOT
+        # propagate to outbound requests. The openai SDK was built once at
+        # ChatOpenAI construction with the ORIGINAL default_headers dict
+        # ({}) and snapshotted that into its `_custom_headers`. The
+        # ChatOpenAI pydantic field reassignment is silently dropped on the
+        # wire path — same shape as the B4 bug pattern. The reliable place
+        # to inject per-turn headers is `self._http_client.headers` (the
+        # live httpx Headers store), which httpx merges into every outgoing
+        # request via `_merge_headers` in `build_request`. The openai SDK
+        # routes its requests through this exact client, so the per-turn
+        # mutation reaches the wire on every LLM call.
+        for k, v in headers.items():
+            self._http_client.headers[k] = v
+        # Keep the kept-for-cosmetics field assignment so any code that
+        # reads back self.llm.default_headers sees the current values.
         try:
             self.llm.default_headers = headers
         except Exception:
             pass
         if api == "messages":
+            # ChatAnthropic's _async_client was overridden in __init__ to
+            # a hand-built anthropic.AsyncClient with our hooked httpx —
+            # the anthropic SDK reads `_custom_headers` live on each
+            # request (BaseClient.default_headers property), so this
+            # mutation also reaches the wire reliably.
             async_client = getattr(self.llm, "_async_client", None)
             if async_client is not None and hasattr(async_client, "_custom_headers"):
                 async_client._custom_headers = dict(headers)

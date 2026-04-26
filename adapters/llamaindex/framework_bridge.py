@@ -458,6 +458,15 @@ class Trial:
         # Update shared headers dict.
         self._headers["X-Harness-Trial-ID"] = self.trial_id
         self._headers["X-Harness-Turn-ID"] = turn_id
+        # B5 fix: httpx.AsyncClient COPIES the `headers=` dict into its
+        # own `Headers` store at construction; mutations to the original
+        # dict do NOT propagate to outgoing requests. Mirror the per-turn
+        # mutation onto `self._http_client.headers` (the live store) so
+        # X-Harness-Turn-ID actually appears on every request issued by
+        # the llamaindex OpenAI LLM, the openai responses bypass, AND
+        # fastmcp via _httpx_factory.
+        self._http_client.headers["X-Harness-Trial-ID"] = self.trial_id
+        self._http_client.headers["X-Harness-Turn-ID"] = turn_id
 
         # Reset per-turn capture
         self._last_request = None

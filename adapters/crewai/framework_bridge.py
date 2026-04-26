@@ -548,15 +548,24 @@ class Trial:
         self._last_response = None
         self._events = []
 
-        # Apply per-turn headers to both httpx clients (so LLM calls carry them).
-        # We can't mutate httpx.Client default_headers mid-flight cleanly, so we
-        # rebuild the underlying SDK clients' base_url/api_key — they already have
-        # our hooked httpx. Instead: pass headers via default_headers on the
-        # SDK layer (OpenAI/Anthropic SDK both accept `default_headers`). Simpler
-        # for MVP: just rely on the SDK's own retry/headers; X-Harness-* are best-
-        # effort and currently unused by cidgar for LLM routing in Plan A/B.
-        # (Langgraph adapter does the same — sets self.llm.default_headers; the
-        # underlying openai SDK picks them up.)
+        # B5 fix: setting `self.llm.default_headers = headers` on the
+        # crewai LLM wrapper does NOT propagate to outbound requests
+        # because the underlying native SDK clients (openai.OpenAI /
+        # anthropic.Anthropic) were built once in __init__ with NO
+        # default_headers kwarg, snapshotting `_custom_headers={}` —
+        # subsequent assignment to the wrapper's pydantic field is
+        # silently dropped on the wire path (same B4 pattern). The
+        # reliable place to inject per-turn headers is the live
+        # `self._http_client.headers` AND `self._sync_http_client.headers`
+        # Headers stores: httpx merges these into every outbound request
+        # via `_merge_headers` in `build_request`, regardless of whether
+        # the call is sync (kickoff_async runs in to_thread → sync SDK
+        # client) or async (fastmcp via _httpx_factory).
+        for k, v in headers.items():
+            self._http_client.headers[k] = v
+            self._sync_http_client.headers[k] = v
+        # Kept-for-cosmetics: any code that reads back self.llm.default_headers
+        # still sees the current values.
         try:
             self.llm.default_headers = headers
         except Exception:

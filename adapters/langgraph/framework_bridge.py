@@ -548,8 +548,31 @@ class Trial:
             "X-Harness-Trial-ID": self.trial_id,
             "X-Harness-Turn-ID":  turn_id,
         }
-        # ChatAnthropic + ChatOpenAI both accept default_headers.
+        # B5 fix: assigning self.llm.default_headers post-init does NOT
+        # propagate to outbound requests. The openai SDK was built once at
+        # ChatOpenAI construction with the ORIGINAL default_headers dict
+        # ({}) and snapshotted that into its `_custom_headers`. The
+        # ChatOpenAI pydantic field reassignment is silently dropped on
+        # the wire path — same shape as the B4 bug pattern. The reliable
+        # place to inject per-turn headers is `self._http_client.headers`
+        # (the live httpx Headers store), which httpx merges into every
+        # outgoing request via `_merge_headers` in `build_request`. The
+        # openai SDK routes its requests through this exact client, so
+        # the per-turn mutation reaches the wire on every LLM call.
+        for k, v in headers.items():
+            self._http_client.headers[k] = v
+        # ChatAnthropic + ChatOpenAI both accept default_headers as a
+        # pydantic field; the kept-for-cosmetics assignment lets any code
+        # that reads back `self.llm.default_headers` see current values.
         self.llm.default_headers = headers
+        # ChatAnthropic's _async_client was overridden in __init__ to a
+        # hand-built anthropic.AsyncClient with our hooked httpx — the
+        # anthropic SDK reads `_custom_headers` live on each request, so
+        # mutating it reaches the wire reliably for api=messages.
+        if api == "messages":
+            async_client = getattr(self.llm, "_async_client", None)
+            if async_client is not None and hasattr(async_client, "_custom_headers"):
+                async_client._custom_headers = dict(headers)
 
         # Reset per-turn capture
         self._last_request = None
