@@ -924,6 +924,141 @@ Total: **S** (~half-day).
 
 ---
 
+## E21 — `reset_context` + `refresh_tools` turn kinds (multi-conversation in one trial)
+
+**Status: future. Aiplay-only. ~100 LOC + tests across runner + 7 adapters + verdict (c).**
+
+### The gap
+
+A single trial can today exercise only ONE logical conversation. Real agents commonly start fresh conversations mid-session (user finishes a task, opens a new topic) — and we can't test:
+
+1. **Per-conversation CID isolation** — does AGW correctly mint a fresh CID at the boundary, or does state from conv A leak into conv B?
+2. **Continuity verdict (c) under explicit boundaries** — verdict (c) currently expects CID continuity across all turns. After a reset, expecting continuity across the boundary is wrong; the verdict needs to bracket per-segment.
+3. **Tools/list cache hygiene** — many frameworks cache `tools/list` results. If the agent should re-fetch after some condition, do we have a way to force it for tests?
+
+We could approximate (1) by running paired trials (`paired_trial_id`), but that loses turn-level interleaving. The right primitive is turn-script-level boundaries.
+
+### Key insight: AGW is stateless — no AGW change needed
+
+AGW's CID continuity is entirely derived from incoming request content (Channel-2 markers in message history, Channel-1 `_ib_cid` in tool args, `previous_response_id`/`conversation` chain markers, `X-IB-CID` header). State is out-of-process, carried in the agent's accumulated context.
+
+So **adapter-side state hygiene is sufficient**:
+- Adapter clears its history → next request has no prior CID evidence → AGW scans, finds nothing → mints fresh CID via `Cid::generate()` → from there forward, the new CID flows out via channels and the agent re-accumulates.
+
+Boundary emerges from data flow, not from explicit signaling. No new headers, no AGW config, no Rust changes.
+
+### Two new turn kinds
+
+#### `reset_context` — wipe agent-side LLM history
+
+Per-API behavior (single `Trial._drive_reset()` method on each adapter, branches by `self.config.api`):
+
+| API | What gets cleared |
+|---|---|
+| `chat` / `messages` | `_messages = []` |
+| `responses` state=F | `_input_history = []` |
+| `responses` state=T | `_response_history = []`, `_last_response_id = None`, `_forced_prev_id = None` |
+| `responses+conv` | `_conversation_id = None` (next turn's `_ensure_conversation_id()` POSTs a fresh `/v1/conversations`) |
+| `direct-mcp` | No-op (no LLM context). |
+
+**Side effect for `+conv`**: minting a new container is a network operation. The reset turn becomes a network event with measurable timing + audit visibility (POST visible to AGW), not a pure in-memory wipe. That's correct — the test is exercising real conversation-boundary semantics, not faking it.
+
+#### `refresh_tools` — force MCP `tools/list` re-fetch
+
+Many frameworks cache `tools/list` results across the trial. After `reset_context`, the agent's NEXT user_msg may use cached tools — fine for "fresh conversation" semantics (cached tools have no CID-tagged data) but WRONG for testing E20's `_ib_ss` snapshot correlation under conversation churn (cached snapshot has stale hash; we want to observe a fresh snapshot get a new hash, propagate, and correlate).
+
+`refresh_tools` is a **separate** turn kind, not bundled with `reset_context`. They compose orthogonally:
+
+- `reset_context` alone — fresh CID, cached tools (most common test)
+- `refresh_tools` alone — same CID, fresh tools (test E20 cache-busting under continuity)
+- `reset_context` then `refresh_tools` — fresh CID + fresh tools (full conversation reboot)
+
+Per-adapter `Trial._drive_refresh_tools()` invokes the framework's tool-discovery primitive again (langchain: re-call `get_tools()` on the MCP toolkit; autogen: rebuild the `WorkbenchAgentMcp`; etc.). Implementation is framework-specific — each adapter knows where its cached toolset lives.
+
+### Turn plan grammar examples
+
+```yaml
+# Two distinct conversations in one trial — tests CID isolation
+turns:
+  - {kind: user_msg, content: "What's the weather in Paris?"}
+  - {kind: user_msg, content: "And in London?"}
+  - {kind: reset_context}
+  - {kind: user_msg, content: "Hello, what's the news on AI?"}
+  - {kind: user_msg, content: "Anything about robotics?"}
+
+# E20 cache-busting test — fresh tools mid-conversation
+turns:
+  - {kind: user_msg, content: "What tools do you have?"}
+  - {kind: user_msg, content: "Use the weather tool."}
+  - {kind: refresh_tools}
+  - {kind: user_msg, content: "Use the weather tool again."}
+  # AGW should see two distinct _ib_ss hashes (snapshot changed)
+
+# Full reboot — both
+turns:
+  - {kind: user_msg, content: "Long conversation..."}
+  - {kind: reset_context}
+  - {kind: refresh_tools}
+  - {kind: user_msg, content: "Brand new everything."}
+```
+
+### Verdict (c) needs to know about resets
+
+Currently verdict (c) `cid_continuity` expects every CID seen on the wire to appear in ≥2 turns. After `reset_context`, expecting CID continuity across the boundary is wrong:
+
+- Pre-reset CIDs should appear in turns 0..N-1 (where N is the reset turn index), then disappear
+- Post-reset CIDs appear in turns N+1..end
+- Cross-segment CID overlap = **leak** = verdict failure (this is a NEW signal worth catching)
+- CID confined to one segment + appears multiple times within = continuity pass for that segment
+
+Refactor: bracket turns into segments separated by `reset_context` turns. Compute continuity per-segment. Total verdict = AND of per-segment continuity AND no cross-segment leak.
+
+`refresh_tools` does NOT split segments — it's a tool-cache event, not a CID event.
+
+### Tests
+
+- Unit per adapter: `test_reset_context_clears_expected_state` — assert each adapter's `_drive_reset()` zeroes the right instance attrs per the API matrix above
+- Unit per adapter: `test_refresh_tools_invalidates_toolset_cache` — assert next tool-discovery call hits the framework's underlying mechanism (mock + verify call)
+- Integration: 1 multi-conversation trial — assert `len(set(cids_observed_pre_reset)) ∩ set(cids_observed_post_reset) == 0` (no leak)
+- Verdict-(c) regression: replicate an old trial's data, add a synthetic `reset_context` turn, assert verdict bracket logic produces correct per-segment outcomes
+
+### Effort
+
+- New turn kinds in `harness/runner.py` dispatch: **S** (~10 LOC)
+- `Trial._drive_reset()` per adapter (7 adapters): **S** (~10 LOC each, mostly the same; total ~70 LOC)
+- `Trial._drive_refresh_tools()` per adapter: **S-M** (framework-specific; some adapters easier than others; total ~100 LOC)
+- Verdict (c) bracket refactor: **S** (~30 LOC + 2 tests)
+- New `with_reset` / `with_refresh_tools` template variants in `defaults.yaml`: **XS** (~10 lines)
+- Integration tests: **S** (~150 LOC test code)
+
+Total: **S-M** (~half-day).
+
+### Edge cases
+
+1. **Reset on turn 0** — nothing to wipe; should be a no-op + log "reset called with empty history" (harmless).
+2. **`refresh_tools` for adapters with no MCP** (`mcp=NONE`) — no-op; log "refresh_tools called with no MCP bound".
+3. **Reset during in-flight tool-call stream** — runner ensures previous turn finishes before next turn dispatches (existing invariant). Reset turn just happens after.
+4. **`+conv` reset failure** — POST `/v1/conversations` could fail (network, key revoked). The reset turn errors → trial.status=fail (per the recent fail/error semantics) with verdict (c) marked NA for the post-reset segment. Document the behavior; don't try to retry transparently.
+5. **Direct-mcp `refresh_tools`** — the direct-mcp adapter's tool list is its `tools_list_response` cached at adapter init. `refresh_tools` should re-call MCP `tools/list` and rebuild the keyword→tool routing map. Modest change (~20 LOC).
+
+### Why now (or why later)
+
+**Argue for now**: lots of new test surface unlocked. Multi-conversation trials would catch latent CID-isolation bugs that single-conversation tests can't. `refresh_tools` is a prerequisite for meaningful E20 testing under conversation churn.
+
+**Argue for defer**: existing single-conversation matrix is the primary cidgar verification surface. Adding multi-conversation introduces a new verdict semantic (cross-segment leak) that needs careful design to avoid false positives.
+
+**My pick**: ship `reset_context` first (small, self-contained, no new verdict semantic — just bracket-aware verdict (c)). Defer `refresh_tools` until E20 lands and we actually need to exercise snapshot-correlation under tool churn. The two are orthogonal and don't need to ship together.
+
+### Cross-references
+
+- Independent of all other E-items
+- Synergistic with E20 — `refresh_tools` is the test mechanism for E20's cache-busting under churn
+- Synergistic with E18 (header-demux) — concurrent multi-conversation trials would multiply audit volume; E18's per-trial isolation is a prerequisite for safe concurrent execution
+- Decouples from E6 (Responses-API governance) — `reset_context` works regardless of LLM API style
+- Verdict (c) refactor is the most invasive piece — coordinate with anyone touching `efficacy.py`'s continuity walker
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
