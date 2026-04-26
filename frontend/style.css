@@ -112,6 +112,25 @@ main { padding: 10px; }
   max-height: 500px; overflow-y: auto;
 }
 
+/* Mermaid replaces pre content with rendered SVG; the inherited
+   pre styling (max-height/overflow/white-space) collapses the SVG
+   in Firefox. Reset for the mermaid-specific pre. */
+pre.mermaid {
+  white-space: normal;
+  max-height: none;
+  overflow-y: visible;
+  word-break: normal;
+  overflow-wrap: normal;
+  background: white;
+  text-align: center;          /* center the SVG horizontally */
+  min-height: 100px;           /* give it space to render before measuring */
+  padding: 12px;
+}
+pre.mermaid svg {
+  max-width: 100%;
+  height: auto;
+}
+
 .verdict-card {
   border-left: 3px solid #ccc; padding: 6px 12px; margin-bottom: 6px;
 }

@@ -20,6 +20,20 @@ const elAbortBtn = document.getElementById("trial-abort-btn");
 const elExportBtn = document.getElementById("trial-export-btn");
 const elRowSummary = document.getElementById("row-summary");
 
+// CID flow render-cache: hash of the last-rendered cidflow HTML. Lets the
+// poll/SSE loop skip the (expensive + race-prone) Mermaid re-render when
+// the trial JSON didn't change in any way that affects the CID flow tab.
+let __cidFlowLastSourceHash = null;
+
+// Tiny non-cryptographic string hash (djb2-ish, sufficient for change-
+// detection on rendered HTML — collisions only manifest as a missed
+// re-render which the next change correct).
+function _hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  return h.toString();
+}
+
 // Export current trial as JSON via browser blob download. Re-fetches the
 // trial fresh on click so the export reflects whatever's persisted server-
 // side at click time (running trials in row_id mode download a snapshot).
@@ -351,19 +365,49 @@ async function renderTrial(tid) {
   const verdicts = trial.verdicts || {};
   tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts);
 
-  tabContents.cidflow.innerHTML = renderCidFlowTab(trial);
-  // Kick Mermaid on the freshly-injected <pre class="mermaid"> nodes. Wrapped
-  // in a try because mermaid.run rejects when the diagram source is invalid;
-  // we don't want one bad trial to wedge the whole page.
-  try {
-    if (typeof mermaid !== "undefined") {
-      const mermaidNodes = tabContents.cidflow.querySelectorAll(".mermaid");
-      if (mermaidNodes.length) {
-        mermaid.run({nodes: mermaidNodes}).catch(e => console.warn("Mermaid render failed:", e));
+  // Render-cache: the SSE/poll cycle re-enters renderTrial() every ~1-2s.
+  // Without this guard, every cycle nukes innerHTML and re-runs Mermaid,
+  // which races with mermaid.run (async) — Firefox can end up with the
+  // newly-injected <pre> still empty because we re-injected before the
+  // previous run finished writing the SVG. Hash-of-HTML lets us skip the
+  // re-render entirely when the trial state hasn't changed in a way that
+  // affects the CID flow tab.
+  const cidflowHtml = renderCidFlowTab(trial);
+  const sourceHash = _hashStr(cidflowHtml);
+  if (sourceHash !== __cidFlowLastSourceHash) {
+    tabContents.cidflow.innerHTML = cidflowHtml;
+    __cidFlowLastSourceHash = sourceHash;
+    // setTimeout(0) defers mermaid.run until after the browser commits the
+    // innerHTML write. Firefox is stricter than Chrome about running
+    // mermaid.run synchronously after innerHTML — it can measure the pre
+    // before layout settles and produce a 0×0 SVG.
+    setTimeout(() => {
+      try {
+        if (typeof mermaid !== "undefined") {
+          const mermaidNodes = tabContents.cidflow.querySelectorAll(".mermaid");
+          if (mermaidNodes.length) {
+            mermaid.run({nodes: mermaidNodes})
+              .then(() => {
+                // Sanity check: catch the silent-failure mode where mermaid.run
+                // resolves OK but produced no SVG child (e.g., CSS collapsed it,
+                // or a Firefox foreignObject quirk). Without this we used to
+                // see "typeof mermaid === object, source generated, no errors,
+                // no SVG" — the bug this commit fixes.
+                for (const n of mermaidNodes) {
+                  if (!n.querySelector("svg")) {
+                    console.warn("Mermaid: pre.mermaid has no SVG child after run; source:", n.textContent.slice(0, 200));
+                  }
+                }
+              })
+              .catch(e => console.warn("Mermaid render failed:", e));
+          }
+        } else {
+          console.warn("Mermaid lib not loaded; CID flow graph will be source-only");
+        }
+      } catch (e) {
+        console.warn("Mermaid kickoff failed:", e);
       }
-    }
-  } catch (e) {
-    console.warn("Mermaid kickoff failed:", e);
+    }, 0);
   }
 
   document.getElementById("raw-json").textContent = JSON.stringify(trial, null, 2);

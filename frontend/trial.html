@@ -5,9 +5,11 @@
   <title>aiplay — trial</title>
   <link rel="stylesheet" href="/style.css">
   <!-- Mermaid 10.9.1: text-as-diagrams renderer used by the CID flow tab.
-       CDN-served, no build step. The CID flow tab serializes a `graph LR`
-       definition from the trial JSON and Mermaid renders it client-side. -->
-  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+       Vendored locally (frontend/vendor/) to eliminate the CDN dependency
+       and avoid Firefox strict-tracking-protection blocking the third-party
+       script load. The CID flow tab serializes a `graph LR` definition from
+       the trial JSON and Mermaid renders it client-side. -->
+  <script src="/vendor/mermaid.min.js"></script>
 </head>
 <body class="trial-page">
   <header class="trial-header">
