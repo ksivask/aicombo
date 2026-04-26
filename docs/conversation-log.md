@@ -178,3 +178,74 @@ NOTE registry is purely JS-side. So tests target `ADAPTER_CAPABILITIES` directly
 - aiplay HEAD: 1f1b242
 
 **No unexpected findings; no scope deferrals.**
+
+---
+
+## Session: 2026-04-26 — about.js LIBRARY_NATIVE_SUPPORT review
+
+### Prompt
+Independent review of two data tables added to frontend/about.js. Verify against source code + library docs and report discrepancies.
+
+### Reasoning
+- Validated each cell of LIBRARY_NATIVE_SUPPORT against installed package code (not just docs) for autogen, crewai, llamaindex, langchain, pydantic-ai.
+- Validated ADAPTER_BYPASS_APIS by reading each framework_bridge.py and confirming the bypass pattern (`from openai import AsyncOpenAI` for the openai-direct path).
+
+### Confident fixes applied
+1. autogen.responses: yes → no (autogen-ext 0.7.5 has no OpenAIResponsesChatCompletionClient — verified ImportError + adapter comment "autogen-ext does NOT currently ship an OpenAI Responses client")
+2. autogen.responses+conv: yes → no (no Responses → no Conversations container)
+3. crewai.chat: via → yes (crewai 1.14.2 uses native OpenAICompletion calling openai SDK directly, not litellm)
+4. crewai.messages: via → yes (native AnthropicCompletion calling anthropic SDK directly)
+5. crewai.responses: no → yes (OpenAICompletion has first-class responses.create with previous_response_id)
+- crewai.responses+conv left as "no" — no /v1/conversations container support in crewai's responses path
+
+### Adapter/bypass validation (no changes needed)
+- autogen + llamaindex {responses, +conv} bypass annotations: code confirms `from openai import AsyncOpenAI; client.responses.create(...)` pattern. Conversations container minted via direct `self._http_client.post("/conversations")`.
+- All other framework adapters use native client classes; bypass set is complete.
+
+### Open judgment calls (NOT fixed)
+- llamaindex.messages "no" — llama-index-llms-anthropic exists upstream as a separate sub-package with native Messages support; aiplay just chose not to wire it (E5e). If consistent with langchain (which spans langchain-openai/langchain-anthropic sub-packages), this should be "yes". Left for user to decide.
+- langchain/langgraph.responses+conv "yes" — langchain-openai 1.1.16 has NO `conversation` model field; aiplay adapter pushes via `.bind(conversation=...)` which is generic kwargs forwarding. Could argue "via" rather than "yes".
+- llamaindex.responses+conv "yes" — llama-index-llms-openai has zero `conversation` references in source. Probably should be "via" or "no".
+- crewai.mcp "yes" — crewai-tools[mcp] exists upstream but aiplay adapter wraps fastmcp instead (capture concerns).
+- direct-mcp.mcp comment says "raw mcp Python SDK" but adapter uses fastmcp.
+
+### Files touched
+- /mnt/share/ws/aiplay/frontend/about.js (one commit)
+
+---
+
+## Session: 2026-04-26 cont. — judgment fixes, Add Bulk, Settings, status fix, E20
+
+### Prompts (chronological)
+1. "earlier you tabulated [crewai bypass table] — how is crewai row different now? define bypass and callout in the UI table"
+2. "make a subagent review/revalidate both your tables"
+3. "enumerate all supported framework x api - pick the 1st API compatible LLM + random MCP, routing always via AGW"
+4. "add a UI 'Add Bulk' button to add that combo list to the table"
+5. "why aiplay adapter chose not to use llama-index-llms-anthropic?"
+6. "1. yes, and also callout that TBD enhancement in the matrix instead of saying yes/no"
+7. "explain this in the cid-flow tab [legend]"
+8. "possible to add option in settings for default #turns = 3 or 5 ?"
+9. "brainstorm: on AGW, during tools/list, we dont know the ib_cid... [E20 design]"
+10. "yes file E20"
+11. "a) for E20 dont rely on mcp-session-id. b) [trial status disambiguation]"
+
+### Commits (chronological)
+- `420518d` — About modal: bypass cell state + definition
+- `8ffbe4c` — (subagent) Validate LIBRARY_NATIVE_SUPPORT against installed packages (5 fixes)
+- (manual POST) 21 rows enumerated + posted via API
+- `ca89ae1` — About modal: 4 judgment-call fixes + TBD callouts
+- `9a662e4` — + Add Bulk button
+- `67661eb` — CID-flow legend expanded with full taxonomy
+- `56fdf53` — Settings: configurable default turn count (1-20)
+- `e271c53` — Filed E20 (tools/list snapshot correlation via _ib_ss)
+- `9b3e4c8` — Status fix (fail vs error) + E20 doc cleanup (dropped session-id alternative)
+
+### Key decisions
+- TBD cell state instead of ✗ for scoped-out + enhancement-filed combos — operators see "this gap is intentional and tracked".
+- Add Bulk uses /info.frameworks with in-JS ADAPTER_CAPABILITIES_JS fallback (works pre-harness-rebuild).
+- Default turn count: persisted server-side; padded with generic continuation prompts; NOT applied to compact / force_state_ref / direct_mcp templates (those need exact shapes).
+- E20 carrier: param-name `_ib_ss` with value-as-hash + enum constraint + telemetry framing. Rejected MCP-session-id alternative as transport-layer-coupling.
+- Status: "fail" for verdict-fail OR verdict-error (both = "didn't meet bar"); "error" reserved for run-level exception. Per-verdict cells preserve the distinction.
+
+### Tests
+- Pytest delta: 230 → 237 (carry-over from I-NEW work; no new tests added in this session segment, but no regressions either).

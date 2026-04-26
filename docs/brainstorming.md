@@ -300,3 +300,53 @@ Once execution starts, turn cards appear in drawer in order. Each card: sent con
 5. direct-mcp supports {} — used when llm=NONE (JS no-MCP rule depends on this)
 
 Each test asserts BOTH the validator dict AND the /info exposure mirror. If a contributor changes one without updating the other, two failure surfaces.
+
+---
+
+## about.js LIBRARY_NATIVE_SUPPORT validation (2026-04-26)
+
+### Decisions made
+- autogen.responses=no — verified autogen-ext 0.7.5 has no Responses client.
+- crewai chat/messages — crewai 1.14+ does NOT use litellm for openai/anthropic; uses native SDKs directly. Reclassified as "yes".
+- crewai.responses=yes — crewai 1.14.2 OpenAICompletion has first-class Responses API.
+
+### Tradeoffs weighed
+- "via" vs "yes" for langchain Conversations API: it's a kwargs-passthrough, not a model field, but aiplay treats it as native. Left as judgment call.
+- llamaindex.messages: separate sub-package package counts as native? Inconsistent with how langchain treats sub-packages. Left as judgment call.
+
+### Verification approach
+- pip show + direct ImportError test (more reliable than docs)
+- Source-grep installed site-packages to find actual fields/classes
+- Cross-referenced adapter code comments which often documented the same gaps
+
+---
+
+## Post-validation rapid iteration (2026-04-26 cont.)
+
+### About modal — judgment calls + TBD callouts
+- Applied 4 of the validation subagent's flagged judgment calls: llamaindex.messages no→yes (library has separate package), langchain/langgraph +conv yes→via (kwargs-forwarding, not first-class field), llamaindex +conv yes→no (zero `conversation` references in source).
+- Added new ⌛ TBD cell state for the adapter table: `ADAPTER_TBD_ENHANCEMENTS` map surfaces deferred E5c/d/e instead of plain ✗. Cells render as "⌛ E5e" with hover.
+- Decision: explicitly distinguish "library doesn't support" from "aiplay scoped it out and filed an enhancement". Operators see the gap is intentional + tracked.
+
+### + Add Bulk button
+- Enumerates `(framework × supported_api)` from /info.frameworks (with in-JS fallback), POSTs one row per combo with 1st-API-compatible LLM + random MCP. 21 rows for the current capability matrix (6 frameworks × {2,3,4} APIs + 1 direct-mcp).
+
+### Default turn count (Settings modal)
+- Persisted at $DATA_DIR/settings.json, range [1-20], default 3.
+- `_resize_turns` pads with cyclical generic prompts ("Tell me more.", "Anything else worth noting?") OR truncates keeping opening turns.
+- Decision: NOT resized for compact / force_state_ref templates — verdict (d) and (e) need exact turn shapes.
+- Direct_mcp template also NOT resized (no LLM = "tell me more" makes no sense).
+
+### CID-flow legend expansion
+- Old 2-liner replaced with summary + collapsible <details> explaining all 3 channels (C1/C2/C3), the dotted-edge correlation strategies (header-demux + time-window fallback), and CID node colors (green/yellow/red mapping to verdict (c) outcomes).
+
+### Trial status disambiguation
+- Before: status="error" for BOTH verdict-computation errors AND run-level exceptions (confusing).
+- After: status="fail" for "ran cleanly but ≥1 verdict didn't pass" (verdict==fail OR verdict==error both count); status="error" reserved for run-level exceptions only.
+- Per-verdict cells still show the fail/error distinction; the trial-level pill aggregates cleanly.
+
+### E20 filing
+- Tools/list snapshot correlation via `_ib_ss` required-param injection.
+- Carrier choice rationale: param-name pattern (parity with _ib_cid) + value-as-hash (no length cost) + enum-constrained (schema validator enforcement) + "telemetry span-correlation id" framing (RLHF-blessed OpenTelemetry idiom).
+- Reliability ceiling acknowledged (~85-95% on smaller models per _ib_gar precedent); audit instrumentation via `correlation_lost` flag + new verdict (i) measures the cliff.
+- Decision: dropped session-id-mapping alternative — transport-layer artifact, semantics differ across MCP clients, builds correlation on the wrong primitive.
