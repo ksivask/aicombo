@@ -50,17 +50,22 @@ const LIBRARY_NATIVE_SUPPORT = {
     chat:              "yes",
     messages:          "yes",
     responses:         "yes",
-    "responses+conv":  "yes",
+    // langchain-openai 1.1.16 has no first-class `conversation` model field
+    // (verified against ChatOpenAI.model_fields). aiplay's adapter passes
+    // the conversation id via .bind(conversation={"id": ...}) — generic
+    // kwargs forwarding to the openai SDK, not a typed library API.
+    "responses+conv":  "via",
     mcp:               "yes",
     streaming:         "yes",
     tool_calling:      "yes",
   },
   langgraph: {
-    // Sits on langchain — inherits all langchain capabilities
+    // Sits on langchain — inherits all langchain capabilities (incl. the
+    // same kwargs-forwarding pattern for +conv, hence "via" not "yes")
     chat:              "yes",
     messages:          "yes",
     responses:         "yes",
-    "responses+conv":  "yes",
+    "responses+conv":  "via",
     mcp:               "yes",
     streaming:         "yes",
     tool_calling:      "yes",
@@ -104,9 +109,18 @@ const LIBRARY_NATIVE_SUPPORT = {
   },
   llamaindex: {
     chat:              "yes",
-    messages:          "no",   // no first-class Anthropic Messages-shape
+    // Library has native Anthropic support via the separate
+    // `llama-index-llms-anthropic` package (versions through 0.11.3).
+    // aiplay's adapter just doesn't wire it (Plan B T6 scope decision —
+    // see ADAPTER_TBD_ENHANCEMENTS / E5e). Library cell reflects library
+    // reality, not adapter scope.
+    messages:          "yes",
     responses:         "yes",  // OpenAIResponses
-    "responses+conv":  "yes",  // Conversations API
+    // Zero `conversation` references in llama-index-llms-openai source.
+    // aiplay's adapter handles +conv by direct httpx POST to /v1/responses
+    // with the conversation field — the openai client class doesn't model
+    // it. (Library: no; aiplay: bypass.)
+    "responses+conv":  "no",
     mcp:               "yes",  // llama-index-tools-mcp
     streaming:         "yes",
     tool_calling:      "yes",
@@ -125,8 +139,9 @@ const LIBRARY_NATIVE_SUPPORT = {
 
 const CELL_GLYPH = {
   yes:    {glyph: "✓", className: "cell-yes",    title: "native support"},
-  via:    {glyph: "⚠", className: "cell-via",    title: "via wrapper / litellm / community plugin"},
+  via:    {glyph: "⚠", className: "cell-via",    title: "via wrapper / litellm / kwargs-forwarding (not a first-class library field)"},
   bypass: {glyph: "⊘", className: "cell-bypass", title: "bypass — aiplay adapter calls the API directly via SDK, sidestepping the framework's own abstractions (still exercises the AGW route + governance)"},
+  tbd:    {glyph: "⌛", className: "cell-tbd",    title: "TBD — deferred enhancement filed in docs/enhancements.md"},
   no:     {glyph: "✗", className: "cell-no",     title: "no support / not implemented"},
   na:     {glyph: "—", className: "cell-na",     title: "not applicable"},
 };
@@ -143,17 +158,37 @@ const CELL_GLYPH = {
 // governance hooks. Bypass lets aiplay still exercise the AGW route
 // for that API+framework combo, even when the framework itself wouldn't.
 //
-// Note: bypass-capable but NOT-in-supported_apis combos (crewai +conv,
-// pydantic-ai +conv) are documented in validator.py comments but the
-// adapter chose not to wire them up. They surface as ✗ here, not ⊘.
+// Note: bypass-capable but NOT-in-supported_apis combos (crewai
+// responses/+conv, pydantic-ai +conv, llamaindex messages) are documented
+// in validator.py comments OR docs/enhancements.md (the E5c/d/e cluster)
+// — they surface as ⌛ TBD via ADAPTER_TBD_ENHANCEMENTS below, not ✗.
 const ADAPTER_BYPASS_APIS = {
   autogen:    new Set(["responses", "responses+conv"]),
   llamaindex: new Set(["responses", "responses+conv"]),
 };
 
-function renderCell(value) {
+// ADAPTER_TBD_ENHANCEMENTS — (framework, api) combos that aiplay's adapter
+// currently doesn't implement BUT which have a deferred enhancement filed
+// in docs/enhancements.md. The adapter table renders these as ⌛ (TBD)
+// instead of ✗ (no), so it's clear the gap is scoped-out, not impossible.
+//
+// Each value is the enhancement id (E5c/d/e) — surfaced in the cell's
+// hover tooltip. Update this map (and the cell hover) when an enhancement
+// lands and the adapter starts supporting that combo.
+const ADAPTER_TBD_ENHANCEMENTS = {
+  crewai:        {responses: "E5c", "responses+conv": "E5c"},
+  "pydantic-ai": {"responses+conv": "E5d"},
+  llamaindex:    {messages: "E5e"},
+};
+
+function renderCell(value, extra) {
   const c = CELL_GLYPH[value] || {glyph: "?", className: "cell-na", title: "unknown"};
-  return `<td class="${c.className}" title="${c.title}">${c.glyph}</td>`;
+  // Optional `extra` string is appended to glyph (used for TBD cells to
+  // surface the enhancement id, e.g., "⌛ E5e") and merged into the
+  // tooltip title.
+  const glyph = extra ? `${c.glyph} ${extra}` : c.glyph;
+  const title = extra ? `${c.title} (${extra})` : c.title;
+  return `<td class="${c.className}" title="${title}">${glyph}</td>`;
 }
 
 function renderLibraryTable() {
@@ -174,12 +209,17 @@ function renderAdapterTable(infoFrameworks) {
   const rows = FRAMEWORKS.map(fw => {
     const supported = new Set((infoFrameworks?.[fw]?.supported_apis) || []);
     const bypassSet = ADAPTER_BYPASS_APIS[fw] || new Set();
+    const tbdMap = ADAPTER_TBD_ENHANCEMENTS[fw] || {};
     return `<tr><td class="fw-name">${fw}</td>${apiCols.map(c => {
       // direct-mcp has no LLM APIs; show "—" not "✗"
       if (fw === "direct-mcp") return renderCell("na");
-      if (!supported.has(c.key)) return renderCell("no");
-      // Supported AND in bypass set → ⊘; otherwise → native ✓
-      return renderCell(bypassSet.has(c.key) ? "bypass" : "yes");
+      if (supported.has(c.key)) {
+        // Supported AND in bypass set → ⊘; otherwise → native ✓
+        return renderCell(bypassSet.has(c.key) ? "bypass" : "yes");
+      }
+      // Not supported but a deferred enhancement exists → ⌛ <id>
+      if (tbdMap[c.key]) return renderCell("tbd", tbdMap[c.key]);
+      return renderCell("no");
     }).join("")}</tr>`;
   }).join("");
   return `<table class="support-matrix"><thead>${head}</thead><tbody>${rows}</tbody></table>`;
@@ -189,8 +229,9 @@ function renderLegend() {
   return `
     <div class="support-legend">
       <span><span class="cell-yes">✓</span> native</span>
-      <span><span class="cell-via">⚠</span> via wrapper / litellm / community plugin</span>
+      <span><span class="cell-via">⚠</span> via wrapper / litellm / kwargs-forwarding</span>
       <span><span class="cell-bypass">⊘</span> bypass (adapter calls SDK directly, sidesteps framework)</span>
+      <span><span class="cell-tbd">⌛</span> TBD — deferred enhancement</span>
       <span><span class="cell-no">✗</span> no support / not implemented</span>
       <span><span class="cell-na">—</span> N/A</span>
     </div>
@@ -200,11 +241,15 @@ function renderLegend() {
       directly, sidestepping the framework's own higher-level abstractions.
       The AGW route + governance still fire; what's bypassed is only the
       framework's wrapping. Used today by <code>autogen</code> and
-      <code>llamaindex</code> for OpenAI Responses (per
-      <code>validator.py</code> comments). <code>crewai</code> and
-      <code>pydantic-ai</code> have bypass <em>documented as possible</em>
-      for <code>+conv</code> but not actually wired in — those cells
-      show ✗.
+      <code>llamaindex</code> for OpenAI Responses.
+    </p>
+    <p class="modal-note">
+      <strong>TBD (⌛)</strong> means a Plan B adapter scope-decision left
+      this combo out, but a follow-up enhancement is filed in
+      <code>docs/enhancements.md</code> (the E5 cluster: E5c crewai
+      +responses/+conv, E5d pydantic-ai +conv, E5e llamaindex +messages).
+      Each is ~1–2 hours of work; see the doc for the implementation
+      shape and dependencies.
     </p>`;
 }
 

@@ -662,6 +662,7 @@ table.support-matrix td.fw-name {
 table.support-matrix td.cell-yes    { color: #28a745; font-weight: 600; }
 table.support-matrix td.cell-via    { color: #d97706; font-weight: 600; }
 table.support-matrix td.cell-bypass { color: #6f42c1; font-weight: 600; }
+table.support-matrix td.cell-tbd    { color: #b8860b; font-weight: 600; background: #fff8e1; font-size: 11px; }
 table.support-matrix td.cell-no     { color: #dc3545; font-weight: 600; }
 table.support-matrix td.cell-na     { color: #999; }
 
@@ -674,5 +675,6 @@ table.support-matrix td.cell-na     { color: #999; }
 .support-legend .cell-yes    { color: #28a745; font-weight: 600; }
 .support-legend .cell-via    { color: #d97706; font-weight: 600; }
 .support-legend .cell-bypass { color: #6f42c1; font-weight: 600; }
+.support-legend .cell-tbd    { color: #b8860b; font-weight: 600; }
 .support-legend .cell-no     { color: #dc3545; font-weight: 600; }
 .support-legend .cell-na     { color: #999; }
