@@ -80,6 +80,7 @@ const tabContents = {
   turns: document.getElementById("tab-turns"),
   plan: document.getElementById("tab-plan"),
   verdicts: document.getElementById("tab-verdicts"),
+  note: document.getElementById("tab-note"),
   cidflow: document.getElementById("tab-cidflow"),
   raw: document.getElementById("tab-raw"),
 };
@@ -368,16 +369,6 @@ async function renderTrial(tid) {
     elExportBtn.style.display = "";
   }
 
-  // E6 stamp: only meaningful for Responses-API trials. AGW's cidgar
-  // pipeline has no LlmRequest::Responses variant, so f2/f3/f6/f7 hooks
-  // silently no-op; Channel 3 (MCP path) still fires. The stamp tells
-  // the user "your verdicts will look weird and that's why."
-  const elE6Stamp = document.getElementById("e6-stamp");
-  if (elE6Stamp) {
-    const api = (trial.config || {}).api;
-    elE6Stamp.style.display = (api === "responses" || api === "responses+conv") ? "" : "none";
-  }
-
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
@@ -386,6 +377,8 @@ async function renderTrial(tid) {
 
   const verdicts = trial.verdicts || {};
   tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts);
+
+  tabContents.note.innerHTML = renderNoteTab(trial);
 
   // Render-cache: the SSE/poll cycle re-enters renderTrial() every ~1-2s.
   // Without this guard, every cycle nukes innerHTML and re-runs Mermaid,
@@ -472,6 +465,9 @@ async function renderRowOnly() {
   } catch {}
 
   tabContents.verdicts.innerHTML = "<p><em>No trial run yet — verdicts will appear after the first run.</em></p>";
+  // Note tab: registry depends only on the row config (axes), so it can be
+  // rendered before any trial runs. Useful preview of "what to expect".
+  tabContents.note.innerHTML = renderNoteTab({config: currentRow});
   document.getElementById("raw-json").textContent = JSON.stringify(currentRow, null, 2);
   return null;
 }
@@ -582,6 +578,276 @@ function renderVerdictsTab(verdicts) {
       </div>
     `;
   }).join("");
+}
+
+// ── Note tab ──
+//
+// Per-axis registry of known limitations / unimplemented features /
+// dependencies, evaluated against this trial's config (framework, api,
+// llm, mcp, routing, state, stream). Replaces the single E6 rubber
+// stamp on the header — that only flagged one of many config-dependent
+// gotchas. Notes are grouped by category, severity-coded
+// (warn / info / ok), and may carry a docref to the relevant
+// enhancements.md / change-ledger / source path.
+
+function renderNoteTab(trial) {
+  const c = trial.config || {};
+  const notes = collectNotes(c);
+  if (!notes.length) {
+    return `<p>✓ No known issues for this configuration. Cidgar should govern this trial fully.</p>`;
+  }
+  // Group by category — sort order in collectNotes() determines section order.
+  const byCategory = {};
+  for (const n of notes) {
+    (byCategory[n.category] || (byCategory[n.category] = [])).push(n);
+  }
+  let html = `<p style="color:#666; font-size:13px;">Known limitations / unimplemented features / dependencies for this trial's (${escapeHtml(c.framework)} + ${escapeHtml(c.api)} + ${escapeHtml(c.llm)} + ${escapeHtml(c.mcp || 'NONE')}) configuration:</p>`;
+  for (const cat of Object.keys(byCategory)) {
+    html += `<h3 class="note-section">${escapeHtml(cat)}</h3>`;
+    for (const n of byCategory[cat]) {
+      html += `
+        <div class="note-card note-${n.severity}">
+          <strong>${n.icon} ${escapeHtml(n.title)}</strong>
+          <div class="note-body">${escapeHtml(n.body)}</div>
+          ${n.docref ? `<div class="note-docref">→ <code>${escapeHtml(n.docref)}</code></div>` : ''}
+        </div>`;
+    }
+  }
+  return html;
+}
+
+function collectNotes(c) {
+  // Returns a flat list of note objects:
+  //   {category, severity, icon, title, body, docref?}
+  // Sort order: AGW gaps first (most important for verdict interpretation),
+  // then framework, LLM, state, routing, MCP. Within a category, order
+  // matches the sequence below.
+  const notes = [];
+  const api = c.api;
+  const llm = c.llm;
+  const framework = c.framework;
+  const mcp = c.mcp;
+  const routing = c.routing;
+  const state = c.state;
+  const stream = c.stream;
+
+  // ── AGW / cidgar dependencies (most important for verdict interpretation) ──
+  if (api === "responses" || api === "responses+conv") {
+    notes.push({
+      category: "AGW cidgar gaps",
+      severity: "warn",
+      icon: "⚠",
+      title: "Responses-API governance not implemented (E6)",
+      body: "AGW's cidgar pipeline has no LlmRequest::Responses variant in governance/mod.rs:23. f2/f3/f6/f7 hooks silently no-op for /v1/responses traffic. Channels 1 (tool args CID) and 2 (text marker) WILL NOT FIRE on the LLM path. Channel 3 (MCP tool-result resource block) still works because the MCP session handler is format-agnostic. Verdicts (a) presence + (b) channel structure will show partial pass/fail with mostly empty audit on the LLM side.",
+      docref: "docs/enhancements.md#e6 + agw-governance-spec.md §1 out-of-scope",
+    });
+  }
+  if (api === "responses" && state === false) {
+    notes.push({
+      category: "AGW cidgar gaps",
+      severity: "info",
+      icon: "ℹ",
+      title: "Stateless multi-turn requires AGW E14 (InputCompat)",
+      body: "Stateless multi-turn responses re-send prior assistant content with output-only fields (status, structured output_text). AGW's strict InputParam parser used to 503 on these (commit 145df46 + 56f1182e). Requires AGW image built from ibfork/feat/cidgar commit 56f1182e or later. If you see 'data did not match any variant of untagged enum InputParam' in logs, the AGW image is older than E14.",
+      docref: "agw-governance-spec.md §14.7 + change-ledger CHG-241",
+    });
+  }
+  if (api === "responses+conv") {
+    notes.push({
+      category: "AGW cidgar gaps",
+      severity: "info",
+      icon: "ℹ",
+      title: "Conversations API setup requires /v1/conversations passthrough route (E13c)",
+      body: "responses+conv uses POST /v1/conversations on first turn to mint conv_xxx. AGW chatgpt route needs `/v1/conversations: passthrough` in ai.routes map (added in agw/config.yaml as part of E13c). Without it, setup call 503s with 'missing field messages' (default Completions parser). No governance instrumentation on setup (passthrough byte-forwards).",
+      docref: "docs/enhancements.md#e13c + agw/config.yaml llm-chatgpt route",
+    });
+  }
+  if (stream === true) {
+    notes.push({
+      category: "AGW cidgar gaps",
+      severity: "warn",
+      icon: "⚠",
+      title: "Streaming bypasses Channels 1 + 2 (E8)",
+      body: "AGW's process_streaming (llm/mod.rs:871) skips cidgar's on_llm_response per V5/Plan Addendum Delta D ('non-streaming only'). Streaming trials lose Ch1+Ch2 silently. Only Channel 3 (MCP) and audit-tail capture work. Verdicts (a)/(b) on streaming will reflect this gap.",
+      docref: "docs/enhancements.md#e8",
+    });
+  }
+
+  // ── Per-framework limitations ──
+  if (framework === "crewai" && (api === "responses" || api === "responses+conv")) {
+    notes.push({
+      category: "Framework limitations",
+      severity: "warn",
+      icon: "⚠",
+      title: "crewai adapter does not implement responses/responses+conv (E5c)",
+      body: "crewai 1.14 has no first-class Responses API support. Validator may have allowed this combo but the adapter will reject. ADAPTER_CAPABILITIES['crewai'] = {chat, messages} only.",
+      docref: "harness/validator.py + docs/enhancements.md#e5c",
+    });
+  }
+  if (framework === "pydantic-ai" && api === "responses+conv") {
+    notes.push({
+      category: "Framework limitations",
+      severity: "warn",
+      icon: "⚠",
+      title: "pydantic-ai adapter does not implement responses+conv (E5d)",
+      body: "pydantic-ai 1.86 doesn't first-class-support previous_response_id chaining. Validator-blocked. ADAPTER_CAPABILITIES['pydantic-ai'] = {chat, messages, responses}.",
+      docref: "docs/enhancements.md#e5d",
+    });
+  }
+  if (framework === "llamaindex" && api === "messages") {
+    notes.push({
+      category: "Framework limitations",
+      severity: "warn",
+      icon: "⚠",
+      title: "llamaindex adapter does not implement messages (E5e)",
+      body: "llamaindex's OpenAI wrapper is OpenAI-only. Messages support would require llama-index-llms-anthropic package. ADAPTER_CAPABILITIES['llamaindex'] = {chat, responses, responses+conv}.",
+      docref: "docs/enhancements.md#e5e",
+    });
+  }
+  if (framework === "langgraph") {
+    notes.push({
+      category: "Framework limitations",
+      severity: "info",
+      icon: "ℹ",
+      title: "langgraph deprecation warning",
+      body: "langgraph.prebuilt.create_react_agent is deprecated since LangGraph V1.0; will be removed in V2.0. Migration to langchain.agents.create_agent tracked as E16. Today emits a DeprecationWarning in pytest output; harmless.",
+      docref: "docs/enhancements.md#e16",
+    });
+  }
+  if ((framework === "langchain" || framework === "langgraph") && api === "messages") {
+    notes.push({
+      category: "Framework limitations",
+      severity: "info",
+      icon: "ℹ",
+      title: "ChatAnthropic httpx hook via cached_property override",
+      body: "langchain-anthropic 1.4.1 doesn't accept http_client kwarg. Adapter overrides @cached_property _client / _async_client on the instance before first read (E5a hack). Fragile to library upgrades — if a future langchain-anthropic version changes those attribute names, wire-byte capture silently breaks.",
+      docref: "adapters/langchain/framework_bridge.py:_install_anthropic_hooked_clients",
+    });
+  }
+  if (framework === "autogen" && (api === "responses" || api === "responses+conv")) {
+    notes.push({
+      category: "Framework limitations",
+      severity: "info",
+      icon: "ℹ",
+      title: "autogen bypasses framework for Responses API",
+      body: "autogen-ext has no Responses client. Adapter calls openai.AsyncOpenAI(...).responses.create() directly, bypassing AssistantAgent entirely for responses-mode trials. Verdict (e) state-mode tests work but go through the bypass path, not the autogen agent loop.",
+      docref: "adapters/autogen/framework_bridge.py:_turn_responses_direct",
+    });
+  }
+  if (framework === "llamaindex" && (api === "responses" || api === "responses+conv")) {
+    notes.push({
+      category: "Framework limitations",
+      severity: "info",
+      icon: "ℹ",
+      title: "llamaindex bypasses OpenAIResponses for state mode",
+      body: "Adapter bypasses llama_index.llms.openai.OpenAIResponses for /responses, going direct to openai SDK for full control over previous_response_id chaining. Same trade-off as autogen.",
+      docref: "adapters/llamaindex/framework_bridge.py",
+    });
+  }
+
+  // ── Per-LLM caveats ──
+  if (llm === "chatgpt") {
+    notes.push({
+      category: "LLM provider",
+      severity: "info",
+      icon: "ℹ",
+      title: "OpenAI: requires OPENAI_API_KEY + credits",
+      body: "If account is out of quota, requests return 429 'insufficient_quota' which adapter surfaces as a 500. Verify with: curl -H 'Authorization: Bearer $OPENAI_API_KEY' https://api.openai.com/v1/chat/completions -d '...'.",
+    });
+  }
+  if (llm === "claude") {
+    notes.push({
+      category: "LLM provider",
+      severity: "info",
+      icon: "ℹ",
+      title: "Anthropic: requires ANTHROPIC_API_KEY + credits",
+      body: "Out of credits → 400 'Your credit balance is too low to access the Anthropic API'. Newer accounts may have access only to claude-haiku-4-5 family; older claude-3-5-haiku-20241022 returns 404 'model not found'. Set DEFAULT_CLAUDE_MODEL=claude-haiku-4-5 in .env.",
+    });
+  }
+  if (llm === "gemini") {
+    notes.push({
+      category: "LLM provider",
+      severity: "warn",
+      icon: "⚠",
+      title: "Gemini: requires GOOGLE_API_KEY (often empty in dev)",
+      body: "GOOGLE_API_KEY=\"\" in .env results in adapter ValueError before any HTTP. Set the key OR pick another LLM provider. Gemini routes through /v1beta/openai/ compat endpoint.",
+    });
+  }
+  if (llm === "ollama") {
+    notes.push({
+      category: "LLM provider",
+      severity: "info",
+      icon: "ℹ",
+      title: "Ollama: model must be pulled on host",
+      body: "Adapter calls into host Ollama at host.docker.internal:11434. If the model name (DEFAULT_OLLAMA_MODEL or row override) isn't pulled, returns 404 'model not found'. Run `ollama list` on host to see available; `ollama pull <name>` to add. The dropdown's curated list does NOT reflect what's actually pulled (E10 dynamic discovery filed).",
+      docref: "docs/enhancements.md#e10",
+    });
+  }
+  if (llm === "mock") {
+    notes.push({
+      category: "LLM provider",
+      severity: "ok",
+      icon: "✓",
+      title: "Mock LLM: deterministic, no auth needed",
+      body: "mock-llm container in compose. Returns canned responses. Useful for cidgar testing without real-LLM cost or non-determinism.",
+    });
+  }
+
+  // ── State + stream caveats ──
+  if (api === "responses" && state === true) {
+    notes.push({
+      category: "State semantics",
+      severity: "info",
+      icon: "ℹ",
+      title: "responses + state=T = chain mode (previous_response_id)",
+      body: "Adapter threads previous_response_id from prior turn's response. Chain mode is wire-distinct from responses+conv (which uses conversation:{id} container). compact() in chain mode is currently a no-op pending E15 (server-side /v1/responses/{id}/compact endpoint).",
+      docref: "docs/enhancements.md#e15",
+    });
+  }
+  if (api === "responses+conv") {
+    notes.push({
+      category: "State semantics",
+      severity: "info",
+      icon: "ℹ",
+      title: "responses+conv = Conversations API container",
+      body: "Adapter mints a conv_xxx via POST /v1/conversations on first turn (E13b), then references it via conversation:{id} on each /v1/responses call. compact() is a no-op (no Conversations-API container-level compact exists).",
+      docref: "docs/enhancements.md#e13b",
+    });
+  }
+
+  // ── Routing ──
+  if (routing === "direct") {
+    notes.push({
+      category: "Routing",
+      severity: "warn",
+      icon: "⚠",
+      title: "Direct routing bypasses AGW entirely",
+      body: "All HTTP goes direct to provider (api.openai.com, api.anthropic.com, etc.). NO cidgar governance applies. NO audit entries collected. Used as A/B baseline for governed trials — see Pairs view (🔁 button on matrix row). Verdicts on direct trials will all be 'na' or 'fail' due to absent audit.",
+    });
+  }
+
+  // ── MCP-specific ──
+  if (mcp === "fetch") {
+    notes.push({
+      category: "MCP server",
+      severity: "info",
+      icon: "ℹ",
+      title: "fetch route uses mcp_marker_kind=both (E7)",
+      body: "AGW's mcp-fetch route opts into emitting BOTH a Channel-3 resource block AND a text-content block carrying the same marker. Defense-in-depth for agents that flatten tool_result.content. Other MCP routes (weather/news/library) use the default 'resource' only.",
+      docref: "agw/config.yaml mcp-fetch route + docs/enhancements.md#e7",
+    });
+  }
+  if ((mcp === "NONE" || !mcp) && llm && llm !== "NONE") {
+    notes.push({
+      category: "MCP server",
+      severity: "info",
+      icon: "ℹ",
+      title: "No MCP — Channel 3 won't fire",
+      body: "Without MCP tools, no /tools/call requests, so cidgar's f4/f5 (Channel 3 resource block) never fires. Only Channels 1 + 2 (LLM-side) and audit-log entries are available for verdict computation.",
+    });
+  }
+
+  return notes;
 }
 
 // ── CID flow tab ──

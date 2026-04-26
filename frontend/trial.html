@@ -23,16 +23,6 @@
       <!-- Export JSON button — hidden until trial id is resolved (row_id mode) -->
       <button id="trial-export-btn" class="btn-export" style="display:none;"
         title="download this trial as JSON">⬇ Export JSON</button>
-      <!-- E6 stamp: revealed by trial.js when trial.config.api ∈
-           {responses, responses+conv}. AGW's cidgar pipeline today has only
-           Messages + Completions LlmRequest variants — Responses-API governance
-           hooks (f2/f3/f6/f7) silently no-op for those trials. Channel 3 (MCP
-           tool-result) still fires; everything else is dark. See
-           docs/enhancements.md §E6 + agw-governance-spec.md §1 out-of-scope. -->
-      <span id="e6-stamp" class="e6-stamp" style="display:none;"
-        title="AGW's cidgar pipeline does not implement Responses-API governance hooks. Channels 1+2 are silently skipped; only Channel 3 (MCP) and audit-tail capture work for this trial. See docs/enhancements.md §E6.">
-        ⚠ CIDGAR for Responses unimplemented (E6)
-      </span>
     </div>
     <div id="row-summary" class="row-summary"></div>
   </header>
@@ -41,12 +31,14 @@
       <button class="trial-tab-btn active" data-tab="turns">Turns</button>
       <button class="trial-tab-btn" data-tab="plan">Turn Plan</button>
       <button class="trial-tab-btn" data-tab="verdicts">Verdicts</button>
+      <button class="trial-tab-btn" data-tab="note">Note</button>
       <button class="trial-tab-btn" data-tab="cidflow">CID flow</button>
       <button class="trial-tab-btn" data-tab="raw">Raw JSON</button>
     </div>
     <div id="tab-turns" class="tab-content active"></div>
     <div id="tab-plan" class="tab-content"></div>
     <div id="tab-verdicts" class="tab-content"></div>
+    <div id="tab-note" class="tab-content"></div>
     <div id="tab-cidflow" class="tab-content"></div>
     <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
   </main>
