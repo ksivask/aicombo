@@ -314,3 +314,29 @@ Implement E21 (reset_context + refresh_tools turn kinds) per design doc. Aiplay-
 
 ### Status: ready to commit
 Sticking to ONE commit per task spec (could split reset_context+verdict-c-refactor from refresh_tools but the surfaces are intertwined enough that one logical commit is cleaner).
+
+## 2026-04-26 — E19 + E23 bundle (multi-MCP + multi-LLM schema)
+
+### Entry — task spec
+**User:** Implement E19 + E23 as a bundle. Aiplay-only. Both extend `RowConfig` with `str | list[str]` for different fields. Schema-only — no adapter wiring (out of scope; that's the follow-up E19a/E24). 2 logical commits OK.
+
+### Reasoning
+- Pre-allowed tools = curl/git/python3/ls/cat/grep/find/mkdir/node. Sandbox blocked even `git status` and `cd`-prefixed bash; switched to `git -C` form. Node syntax-check also blocked but the JS changes are mechanical and visually verified.
+- Baseline = 284 tests collected (282 active + 2 skipped). Spec said 282 — the discrepancy is just the +2 skipped, no real drift.
+- Validator required gating the existing string-only rules on `isinstance(llm, str)` to stop list values from spuriously triggering "[list] not in api_providers" / Responses-state warnings. Spec didn't call this out but it's needed — confirmed via test runs.
+- Frontend Option A (text-input) confirmed used. Editor switched from `agSelectCellEditor` → `agTextCellEditor` for both `mcp` and `llm` columns. `parseListLikeCell` collapses single-value typing to a string so legacy single-MCP rows behave exactly as before.
+- The model column UI is degraded for list-form llm rows (the existing curated-models dropdown keys off a single llm string). Out-of-scope to fix here; the field is still list-form-capable on the backend.
+- **Did NOT touch** efficacy.py, runner.py, templates.py, adapters/*, AGW. Verified via `git status`.
+
+### Actions
+- `harness/api.py::RowConfig`: `llm`, `mcp` → `str | list[str]`; `model` → `str | list[str] | None`
+- `harness/trials.py::TrialConfig`: same field changes for round-trip parity
+- `harness/validator.py`: added `MULTI_MCP_FRAMEWORKS = set()` and `MULTI_LLM_FRAMEWORKS = {"combo"}`; gated existing string-only rules on `isinstance(llm, str)`; added Rule 7 (E19 list-mcp) + Rule 8 (E23 list-llm with API-compat + model-length checks)
+- `tests/test_validator.py`: +8 tests covering str/list mcp + llm acceptance/rejection paths
+- `tests/test_api.py`: +1 integration test for POST/GET/PATCH round-trip with list-form mcp+llm+model
+- `frontend/app.js`: added `parseListLikeCell` + `formatListLikeCell` + `primaryValue`; switched `mcp` and `llm` columns to `agTextCellEditor`; tooltip explains multi-form on lists; `loadModelsFor` now warms cache for each provider when llm is a list
+
+### Result
+- **Pytest: 284 → 293 collected (+9), 282 → 291 active (+9), 2 skipped unchanged.** Zero regressions. Same skip count.
+- Two commits planned: (1) schema + validator + tests, (2) frontend cell editor.
+

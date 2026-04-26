@@ -20,9 +20,18 @@ const ADAPTER_CAPABILITIES_JS = {
   "llamaindex":  ["chat", "responses", "responses+conv"],              // Plan B T6
 };
 
+// E19/E23 — coarse "primary value" picks the first element of list-form
+// `mcp`/`llm` so the local pre-validation can still produce a useful
+// dropdown coloring + Run-button gate. The full per-element check happens
+// server-side in validator.py; the JS mirror is only a UX hint.
+function primaryValue(value, fallback) {
+  if (Array.isArray(value)) return value[0] || fallback;
+  return value || fallback;
+}
+
 function isRowRunnable(row) {
-  const llm = row.llm || "NONE";
-  const mcp = row.mcp || "NONE";
+  const llm = primaryValue(row.llm, "NONE");
+  const mcp = primaryValue(row.mcp, "NONE");
   const api = row.api || "chat";
   const framework = row.framework || "langchain";
   if (llm === "NONE" && mcp === "NONE") return false;
@@ -37,8 +46,8 @@ function isRowRunnable(row) {
 }
 
 function invalidReason(row) {
-  const llm = row.llm || "NONE";
-  const mcp = row.mcp || "NONE";
+  const llm = primaryValue(row.llm, "NONE");
+  const mcp = primaryValue(row.mcp, "NONE");
   const api = row.api || "chat";
   const framework = row.framework || "langchain";
   if (llm === "NONE" && mcp === "NONE") {
@@ -153,6 +162,32 @@ function llmOptionsForRow(row) {
   return ["NONE", ...allowed];
 }
 
+// E19/E23 — list-form support for `mcp` and `llm` cells. Users edit
+// comma-separated text in the cell (Option A from the design doc); the
+// parser below collapses single-value input back to a plain string so
+// existing single-MCP / single-LLM rows behave exactly as before. Returns
+// either a string or a non-empty list[string] — never an empty list, never
+// a single-element list.
+function parseListLikeCell(input) {
+  if (Array.isArray(input)) return input;
+  if (input == null) return "";
+  const raw = String(input).trim();
+  if (!raw) return "";
+  if (!raw.includes(",")) return raw;
+  const parts = raw.split(",").map(s => s.trim()).filter(Boolean);
+  if (parts.length === 0) return "";
+  if (parts.length === 1) return parts[0];
+  return parts;
+}
+
+// Comma-joined display for either form. Lists render as `weather, fetch`;
+// single strings pass through. Used by both the value formatter and the
+// cell-style helpers that need a string view of the value.
+function formatListLikeCell(value) {
+  if (Array.isArray(value)) return value.join(", ");
+  return value == null ? "" : String(value);
+}
+
 function buildColumnDefs() {
   return [
     {headerName: "#", valueGetter: "node.rowIndex + 1", width: 60, pinned: "left"},
@@ -199,19 +234,26 @@ function buildColumnDefs() {
     },
     {
       headerName: "LLM", field: "llm", editable: true,
-      cellEditor: "agSelectCellEditor",
-      // Filter by current API — claude doesn't appear when api=chat,
-      // ollama doesn't appear when api=responses, etc.
-      cellEditorParams: params => ({values: llmOptionsForRow(params.data)}),
+      // E23 — accept comma-separated text so multi-LLM rows can be entered
+      // (e.g. "ollama, chatgpt"). Single-value typing keeps the legacy
+      // string shape via parseListLikeCell. The dropdown UX is sacrificed
+      // for first-cut simplicity (Option A); revisit with a multi-select
+      // editor when E24's combo adapter ships and richer UX is warranted.
+      cellEditor: "agTextCellEditor",
+      valueParser: params => parseListLikeCell(params.newValue),
+      valueFormatter: params => formatListLikeCell(params.value),
       cellStyle: params => {
         const row = params.data || {};
         const allowed = API_TO_PROVIDERS[row.api] || [];
-        const provider = providers.find(p => p.id === params.value);
-        // Red/strikethrough: LLM not compatible with current API (user needs to change)
-        if (params.value !== "NONE" && !allowed.includes(params.value)) {
+        // For coloring + key-availability, use the first element of a list
+        // (representative pick) — the validator does the per-element check
+        // server-side; the cell hint is intentionally a coarse single-color
+        // signal so multi-LLM rows don't need a striped renderer.
+        const primary = Array.isArray(params.value) ? params.value[0] : params.value;
+        const provider = providers.find(p => p.id === primary);
+        if (primary && primary !== "NONE" && !allowed.includes(primary)) {
           return {color: "#c62828", textDecoration: "line-through", background: "#ffebee"};
         }
-        // Grey/strikethrough: LLM compatible with API but no API key set
         if (provider && !provider.available) {
           return {color: "#999", textDecoration: "line-through"};
         }
@@ -220,14 +262,19 @@ function buildColumnDefs() {
       tooltipValueGetter: params => {
         const row = params.data || {};
         const allowed = API_TO_PROVIDERS[row.api] || [];
-        if (params.value !== "NONE" && !allowed.includes(params.value)) {
-          return `api=${row.api} does not support llm=${params.value}. ` +
+        const primary = Array.isArray(params.value) ? params.value[0] : params.value;
+        if (Array.isArray(params.value) && params.value.length > 1) {
+          return `multi-LLM (${params.value.length}): ${params.value.join(", ")}` +
+                 ` — runnable only with the combo adapter (E24).`;
+        }
+        if (primary && primary !== "NONE" && !allowed.includes(primary)) {
+          return `api=${row.api} does not support llm=${primary}. ` +
                  `Supported: ${allowed.join(", ")}`;
         }
-        const provider = providers.find(p => p.id === params.value);
+        const provider = providers.find(p => p.id === primary);
         return provider && !provider.available ? provider.unavailable_reason : null;
       },
-      width: 110,
+      width: 140,
     },
     {
       // E9 — Model dropdown. Values come from the curated list cached in
@@ -259,9 +306,22 @@ function buildColumnDefs() {
     },
     {
       headerName: "MCP", field: "mcp", editable: true,
-      cellEditor: "agSelectCellEditor",
-      cellEditorParams: {values: ["NONE", "weather", "news", "library", "fetch"]},
-      width: 110,
+      // E19 — accept comma-separated text for multi-MCP rows
+      // (e.g. "weather, fetch"). Single values stay as strings via
+      // parseListLikeCell, preserving the existing single-MCP behaviour.
+      // Validator gates list-form against MULTI_MCP_FRAMEWORKS server-side
+      // (currently empty — adapters opt in incrementally).
+      cellEditor: "agTextCellEditor",
+      valueParser: params => parseListLikeCell(params.newValue),
+      valueFormatter: params => formatListLikeCell(params.value),
+      tooltipValueGetter: params => {
+        if (Array.isArray(params.value) && params.value.length > 1) {
+          return `multi-MCP (${params.value.length}): ${params.value.join(", ")}` +
+                 ` — runnable only when the framework's adapter opts into multi-MCP.`;
+        }
+        return null;
+      },
+      width: 140,
     },
     {
       headerName: "Routing", field: "routing", editable: true,
@@ -392,8 +452,12 @@ async function onCellValueChanged(event) {
   }
   // E9 — lazy-load the new provider's model list when the LLM changes
   // so the model dropdown shows the right entries on the next open.
+  // E23 — for list-form llm, prefetch each provider's model list (the
+  // single-LLM dropdown is degraded for list-form rows but we still warm
+  // the cache so any future per-llm UI works).
   if (colId === "llm" && event.newValue && event.newValue !== "NONE") {
-    loadModelsFor(event.newValue).then(() => {
+    const llms = Array.isArray(event.newValue) ? event.newValue : [event.newValue];
+    Promise.all(llms.filter(l => l && l !== "NONE").map(loadModelsFor)).then(() => {
       if (gridApi) gridApi.refreshCells({
         rowNodes: [event.node], columns: ["model"], force: true,
       });

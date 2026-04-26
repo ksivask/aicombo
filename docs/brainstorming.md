@@ -438,3 +438,18 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - pydantic-ai refresh_tools rebuilds the entire Agent — could lose other state (system_prompt, etc.). Mitigated: __init__ rebuild logic centralized to a helper if it grows.
 - langchain `_llm_with_tools` cache — `bind_tools` is idempotent so re-binding on a new tool list is fine; just need to invalidate cleanly.
 - Edge: refresh_tools called on turn 0 (before any prior turn ran tools_list) → cache is None already → next user_msg triggers fresh fetch as normal. Safe no-op effectively.
+
+## E19 + E23 bundle — schema-only multi-MCP / multi-LLM
+
+### Decisions
+- **Schema parity**: `RowConfig.mcp`, `RowConfig.llm` → `str | list[str]`; `RowConfig.model` → `str | list[str] | None`. `TrialConfig` mirrors so persistence round-trips both shapes without coercion at the API boundary. Single-string remains the default; list-form is gated by validator until adapters opt in.
+- **Adapter opt-in via sets**: `MULTI_MCP_FRAMEWORKS = set()` (empty — no adapter knows multi-MCP yet) and `MULTI_LLM_FRAMEWORKS = {"combo"}` (combo adapter from E24 will check this). Adding a framework to the set is the entire opt-in cost; no schema migration needed when an adapter learns multi-MCP merging.
+- **Validator gating**: `isinstance(llm, str)` guards added to Rules 3b and 5 in validator. Without this, a list value reaches `llm not in api_providers` (always True for a list), producing a confusing "[list] not in providers" warning. The list-form rules below now own per-element checking.
+- **Frontend Option A picked over B**: `agTextCellEditor` for mcp + llm columns, with comma-separated parse on commit. Loses the dropdown UX but is ~30 LOC vs. ~150 LOC for a custom multi-select editor. The intent is for the validator/schema to land NOW so E24 (combo adapter) can develop against a real schema without waiting on UI polish. Revisit Option B when E24 proves the multi-LLM use case is worth richer UX.
+- **`note` vs `notes`**: spec doc uses `notes` but actual code is `note`. Kept existing field name — surgical-changes principle.
+- **Tests added**: 8 validator tests + 1 api round-trip = 9. Validator tests cover: str-mcp legacy, list-mcp non-multi-fw rejection, NONE-in-list warn; str-llm legacy, list-llm combo accept (no E23 warning), list-llm non-combo reject, list-llm api-incompat reject, model-list-length-mismatch reject. API test: POST list → GET list → PATCH back to str → GET str.
+
+### Trade-offs / known gaps
+- Model column dropdown is degraded for list-form llm rows (uses `params.data.llm` as a single-string cache key). Out of scope — model UX gets fixed when E24 lands and provides actual multi-LLM trial output to inspect.
+- `parseListLikeCell` collapses single-element lists `["weather"]` back to a plain string `"weather"`. This is intentional: it preserves backwards-compat at the wire level (existing single-MCP rows can edit through the new text editor without changing on disk) but it does mean the frontend is opinionated about "list with 1 item is really a string". Backend accepts both shapes either way.
+- `MULTI_MCP_FRAMEWORKS` empty means EVERY list-form mcp row is currently non-runnable. Intentional — schema lands now, adapters opt in later. Tests confirm the failure mode is loud and explicit ("framework=X doesn't support multi-MCP form...").
