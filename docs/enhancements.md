@@ -2,6 +2,8 @@
 
 Open brainstorm topics for post-Plan-B. Each item is a discussion seed, not a committed work item.
 
+**Numbering note**: E10, E11, E12 are intentionally absent — never filed (skipped to align Responses-API state-mode work under E13's banner). No retired enhancements.
+
 ---
 
 ## E1 — OpenTelemetry support per framework: minimum to propagate `conversation_id`
@@ -263,7 +265,7 @@ By the time the stream's `finish_reason=tool_calls` fires, the client has alread
 
 ## E9 — curated model list per provider + UI dropdown
 
-**Status: in flight (subagent dispatched).**
+**Status: implemented (commit `2ff7868` + `2378ee7` add llama3.1:latest to ollama curated set).**
 
 **What.** Today the matrix's `model` column is a text field (defaults via `DEFAULT_<PROVIDER>_MODEL` env, manual override). E9 surfaces a real dropdown of curated models per provider, with semantic metadata (display name, tier, capability flags).
 
@@ -315,7 +317,7 @@ Plus `GET /providers/{id}/models` endpoint, frontend dropdown that populates on 
 
 ## E13 — three distinct Responses-API state modes (aiplay adapter)
 
-**Status: a/b in flight or planned, c is config-only.**
+**Status: implemented. E13a (state=T chain via `previous_response_id`) at commit `26446c3`; E13b+c (responses+conv via Conversations API container) at commit `aa24c41`. Validator's `ADAPTER_CAPABILITIES` reflects per-adapter coverage; About modal exposes the matrix live.**
 
 OpenAI's Responses API has three first-class state mechanisms on the same `/v1/responses` endpoint. Today aiplay collapses them into two by accident: the validator allows `responses + state=T` but the adapter ignores `state` and treats it as `state=F`; meanwhile `responses+conv` is implemented via `previous_response_id` chaining despite the "+conv" naming (originally meant: Conversations API).
 
@@ -422,7 +424,7 @@ Verdict (e) — state-mode gap — would have THREE distinct failure surfaces to
 
 ## E14 — relax AGW Responses input strictness (Option B custom Deserializer)
 
-**Status: in flight (subagent dispatched).**
+**Status: implemented. AGW commit `56f1182e` on `ibfork/feat/cidgar` (`InputCompat::Typed | Raw` enum with custom `Deserialize` impl). Throttled warn (I-NEW-4) + Bedrock Raw rejection test (M-NEW-2) + number-format round-trip test (M-NEW-5) added in `ae54489b`. Documented in spec §14.7 + change-ledger CHG-241.**
 
 **The bug.** AGW's `crates/agentgateway/src/llm/types/responses.rs::Request.input: Input` field uses async-openai 0.34's strict `InputParam` untagged enum. Legitimate library-emitted bodies (langchain re-sending prior assistant content with `status` field on stateless multi-turn) fail all three `InputItem` variants and produce the unhelpful "data did not match any variant of untagged enum InputParam at line 1 column N" error → AGW returns 503.
 
