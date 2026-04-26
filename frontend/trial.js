@@ -389,7 +389,7 @@ function renderPlanTab(plan, executedCount) {
     <ol class="plan-list">${planItems || '<li><em>(empty plan)</em></li>'}</ol>
     <h3>Raw turn_plan JSON</h3>
     <pre>${escapeHtml(JSON.stringify(plan, null, 2))}</pre>
-    <p class="plan-note">Read-only in Plan A. Plan B will add inline JSON editor + reset-to-default + add-turn controls per design §5.3.</p>
+    <p class="plan-note">Read-only here — edit the plan via the matrix row's drawer (CodeMirror editor) before run.</p>
   `;
 }
 
@@ -397,6 +397,41 @@ function renderVerdictsTab(verdicts) {
   const labels = {
     a: "Presence", b: "Channel structure", c: "Continuity",
     d: "Resilience", e: "State-mode gap", f: "GAR richness"
+  };
+  // Hover help (title attr) explaining what each verdict actually checks.
+  // Pairs with the explanations in docs/agw-governance-spec.md §4.2 + §13.
+  const tips = {
+    a: "Presence — Did AGW actually generate or observe a CID? " +
+       "Pass = each user_msg turn has at least one audit entry whose 'cid' " +
+       "field is populated. This is the AGW-side log evidence that " +
+       "governance fired at all.",
+    b: "Channel structure — Did the CID show up in the right WIRE " +
+       "LOCATIONS per spec? Pass = each turn's response body carries the " +
+       "matching CID via Channel 1 (tool_calls / tool_use args) OR " +
+       "Channel 2 (text marker '<!-- ib:cid=… -->'). This is the wire-side " +
+       "verification that what AGW logged actually got injected per the " +
+       "channel spec — not just that some CID exists somewhere.",
+    c: "Continuity — Did the SAME CID survive across consecutive turns? " +
+       "Pass = ≥3 turns share at least one CID (the conversation didn't " +
+       "fragment into multiple CIDs). Detects cases where Channels 1+2+3 " +
+       "all fired but the agent dropped them between turns.",
+    d: "Resilience — Did the CID survive a 'compact' turn? " +
+       "Pass = the CIDs observed BEFORE a compact turn intersect with " +
+       "those observed AFTER. Tests whether at least one channel " +
+       "(Channel 3 MCP resource block being the most resilient) carries " +
+       "CID through history-trimming or summarization. NA when no " +
+       "compact turn is in the trial plan.",
+    e: "State-mode gap — Does the CID survive a 'force_state_ref' jump? " +
+       "Only meaningful for api=responses + state=T (chain mode) or " +
+       "responses+conv (container mode). Pass = the forced jump back to " +
+       "an OLDER previous_response_id / conversation reference still " +
+       "carries the same CID. Tests whether server-side state-mode " +
+       "(where cidgar can't re-inspect prior turns) preserves CID.",
+    f: "GAR richness — Did the LLM populate _ib_gar with all 5 keys " +
+       "(goal, need, impact, dspm, alt)? Pass = at least one tool_call " +
+       "carries a well-formed GAR object. Fail = present but malformed " +
+       "(missing keys, not JSON). NA = LLM omitted GAR (spec §9.2 " +
+       "compliant) OR no tool_calls in the trial."
   };
   // T14 — render the `_aborted` marker at the top if present so the user
   // immediately sees that the verdicts below are partial.
@@ -422,9 +457,10 @@ function renderVerdictsTab(verdicts) {
   }
   return abortedBanner + ["a","b","c","d","e","f"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
+    const tip = tips[lvl] || "";
     return `
-      <div class="verdict-card ${v.verdict}">
-        <strong>(${lvl}) ${labels[lvl]}</strong> — <em>${v.verdict}</em><br>
+      <div class="verdict-card ${v.verdict}" title="${escapeHtml(tip)}">
+        <strong>(${lvl}) ${labels[lvl]}</strong> <span class="verdict-help" title="${escapeHtml(tip)}">ⓘ</span> — <em>${v.verdict}</em><br>
         <small>${escapeHtml(v.reason)}</small>
       </div>
     `;
