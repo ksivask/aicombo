@@ -17,6 +17,37 @@ import { API_BASE } from "/config.js";
 
 let cmInstance = null;
 
+// Canonical turn templates surfaced as one-click buttons above the CM editor.
+// Keys here are the dropdown values / button data attributes.
+const TURN_TEMPLATES = {
+  user_msg:                {kind: "user_msg", text: "Your prompt here"},
+  compact_drop_half:       {kind: "compact", strategy: "drop_half"},
+  compact_drop_tool_calls: {kind: "compact", strategy: "drop_tool_calls"},
+  compact_summarize:       {kind: "compact", strategy: "summarize"},
+  force_state_ref:         {kind: "force_state_ref", lookback: 2, text: "Refer back to earlier."},
+};
+
+// Append a copy of TURN_TEMPLATES[key] to plan.turns[] in the editor. If the
+// editor is empty / invalid JSON, initializes a fresh {turns: [picked]}.
+// Exposed on window for click handlers wired in the rendered toolbar HTML.
+function addTurn(templateKey) {
+  if (!cmInstance) return;
+  const tmpl = TURN_TEMPLATES[templateKey];
+  if (!tmpl) return;
+  let plan;
+  try {
+    plan = JSON.parse(cmInstance.getValue());
+    if (!plan || typeof plan !== "object") plan = {turns: []};
+    if (!Array.isArray(plan.turns)) plan.turns = [];
+  } catch {
+    plan = {turns: []};
+  }
+  // Deep-clone the template so successive clicks don't share references.
+  plan.turns.push(JSON.parse(JSON.stringify(tmpl)));
+  cmInstance.setValue(JSON.stringify(plan, null, 2));
+  setStatus("info", `Added ${templateKey} turn (${plan.turns.length} total) — review and Save.`);
+}
+
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 }
@@ -127,6 +158,19 @@ export async function openTurnPlanDrawer(row) {
         </div>
       </div>
       <div id="tp-status" class="tp-status"></div>
+      <div class="tp-add-turn-bar">
+        <span class="tp-add-turn-label">+ Add turn:</span>
+        <button type="button" data-tpl="user_msg" class="tp-add-turn-btn"
+          title='append {"kind":"user_msg","text":"…"}'>user_msg</button>
+        <button type="button" data-tpl="compact_drop_half" class="tp-add-turn-btn"
+          title='append {"kind":"compact","strategy":"drop_half"}'>compact (drop_half)</button>
+        <button type="button" data-tpl="compact_drop_tool_calls" class="tp-add-turn-btn"
+          title='append {"kind":"compact","strategy":"drop_tool_calls"}'>compact (drop_tool_calls)</button>
+        <button type="button" data-tpl="compact_summarize" class="tp-add-turn-btn"
+          title='append {"kind":"compact","strategy":"summarize"}'>compact (summarize)</button>
+        <button type="button" data-tpl="force_state_ref" class="tp-add-turn-btn"
+          title='append {"kind":"force_state_ref","lookback":2,"text":"…"}'>force_state_ref (lookback=2)</button>
+      </div>
       <textarea id="tp-editor"></textarea>
       <p class="plan-note">
         Edits are free-form JSON. Click <code>Validate</code> before saving.
@@ -174,6 +218,11 @@ export async function openTurnPlanDrawer(row) {
     lineWrapping: true,
     gutters: ["CodeMirror-lint-markers"],
     lint: true,
+  });
+
+  // ── Wire add-turn quick-template buttons (above the editor) ──
+  document.querySelectorAll(".tp-add-turn-btn").forEach(btn => {
+    btn.onclick = () => addTurn(btn.dataset.tpl);
   });
 
   // ── Wire buttons ──

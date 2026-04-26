@@ -17,7 +17,30 @@ const rowId = params.get("row_id");
 const elTitle = document.getElementById("trial-title");
 const elStatus = document.getElementById("trial-status-pill");
 const elAbortBtn = document.getElementById("trial-abort-btn");
+const elExportBtn = document.getElementById("trial-export-btn");
 const elRowSummary = document.getElementById("row-summary");
+
+// Export current trial as JSON via browser blob download. Re-fetches the
+// trial fresh on click so the export reflects whatever's persisted server-
+// side at click time (running trials in row_id mode download a snapshot).
+async function exportTrialJSON(trialId) {
+  if (!trialId) return;
+  const r = await fetch(`${API_BASE}/trials/${encodeURIComponent(trialId)}`);
+  if (!r.ok) { alert(`Export failed: HTTP ${r.status}`); return; }
+  const blob = await r.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `trial-${trialId}.json`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+if (elExportBtn) {
+  elExportBtn.addEventListener("click", () => exportTrialJSON(currentTrialId));
+}
 
 // T14 — wire abort button. Only visible while status=running; hides on
 // terminal status (pass/fail/error/aborted).
@@ -43,8 +66,16 @@ const tabContents = {
   turns: document.getElementById("tab-turns"),
   plan: document.getElementById("tab-plan"),
   verdicts: document.getElementById("tab-verdicts"),
+  cidflow: document.getElementById("tab-cidflow"),
   raw: document.getElementById("tab-raw"),
 };
+
+// Initialize Mermaid once. We render manually (per-tab refresh) via mermaid.run
+// rather than letting it auto-scan, because the CID flow content is rebuilt
+// every render cycle (status poll → renderTrial → tabContents.cidflow.innerHTML).
+if (typeof mermaid !== "undefined") {
+  mermaid.initialize({startOnLoad: false, theme: "default", securityLevel: "loose"});
+}
 const tabBtns = document.querySelectorAll(".trial-tab-btn");
 
 tabBtns.forEach(btn => btn.addEventListener("click", () => {
@@ -306,6 +337,11 @@ async function renderTrial(tid) {
     }
   }
 
+  // Export button: show whenever we have a resolved trial id.
+  if (elExportBtn) {
+    elExportBtn.style.display = "";
+  }
+
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
@@ -314,6 +350,21 @@ async function renderTrial(tid) {
 
   const verdicts = trial.verdicts || {};
   tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts);
+
+  tabContents.cidflow.innerHTML = renderCidFlowTab(trial);
+  // Kick Mermaid on the freshly-injected <pre class="mermaid"> nodes. Wrapped
+  // in a try because mermaid.run rejects when the diagram source is invalid;
+  // we don't want one bad trial to wedge the whole page.
+  try {
+    if (typeof mermaid !== "undefined") {
+      const mermaidNodes = tabContents.cidflow.querySelectorAll(".mermaid");
+      if (mermaidNodes.length) {
+        mermaid.run({nodes: mermaidNodes}).catch(e => console.warn("Mermaid render failed:", e));
+      }
+    }
+  } catch (e) {
+    console.warn("Mermaid kickoff failed:", e);
+  }
 
   document.getElementById("raw-json").textContent = JSON.stringify(trial, null, 2);
   return trial.status;

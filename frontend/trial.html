@@ -4,6 +4,10 @@
   <meta charset="utf-8">
   <title>aiplay — trial</title>
   <link rel="stylesheet" href="/style.css">
+  <!-- Mermaid 10.9.1: text-as-diagrams renderer used by the CID flow tab.
+       CDN-served, no build step. The CID flow tab serializes a `graph LR`
+       definition from the trial JSON and Mermaid renders it client-side. -->
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
 </head>
 <body class="trial-page">
   <header class="trial-header">
@@ -14,6 +18,9 @@
       <!-- T14 — abort button: hidden by default; trial.js reveals when status=running -->
       <button id="trial-abort-btn" class="btn-abort" style="display:none;"
         title="stop trial (current turn finishes, next turns skipped)">⏹ Stop</button>
+      <!-- Export JSON button — hidden until trial id is resolved (row_id mode) -->
+      <button id="trial-export-btn" class="btn-export" style="display:none;"
+        title="download this trial as JSON">⬇ Export JSON</button>
     </div>
     <div id="row-summary" class="row-summary"></div>
   </header>
@@ -22,11 +29,13 @@
       <button class="trial-tab-btn active" data-tab="turns">Turns</button>
       <button class="trial-tab-btn" data-tab="plan">Turn Plan</button>
       <button class="trial-tab-btn" data-tab="verdicts">Verdicts</button>
+      <button class="trial-tab-btn" data-tab="cidflow">CID flow</button>
       <button class="trial-tab-btn" data-tab="raw">Raw JSON</button>
     </div>
     <div id="tab-turns" class="tab-content active"></div>
     <div id="tab-plan" class="tab-content"></div>
     <div id="tab-verdicts" class="tab-content"></div>
+    <div id="tab-cidflow" class="tab-content"></div>
     <div id="tab-raw" class="tab-content"><pre id="raw-json"></pre></div>
   </main>
   <script type="module" src="/trial.js"></script>
