@@ -696,6 +696,122 @@ After E18 + B5 land:
 
 ---
 
+## E19 — multi-MCP per trial row
+
+**Status: future. Schema-impacting; touches every adapter + validator + UI.**
+
+### The gap
+
+Today the matrix's `mcp` column is a single string per row: `weather` | `news` | `library` | `fetch` | `NONE`. Each Trial gets exactly one MCP server bound at construction. Real agents typically connect to multiple MCP servers in one session — a research agent might use `fetch` (web) + `library` (papers) + `news` (recent events) simultaneously.
+
+Limiting trials to one MCP server narrows the matrix's coverage in three ways:
+
+1. **Cross-MCP tool-name collision behavior** untested — what if `weather.weather_get` and a hypothetical `news.weather_get` co-exist? cidgar's f1 hook may prefix or namespace; agents may pick either; verdicts may miscount.
+2. **Channel-3 audit attribution under multi-server load** untested — when an agent fires `weather` then `fetch` in the same turn, AGW emits two backend-tagged audit entries; verdict_a's CID-presence check today is shape-agnostic about backend, but multi-server may surface latent assumptions.
+3. **Realistic agent topologies** can't be exercised in the harness — biggest pedagogical gap.
+
+### Schema change
+
+`harness/api.py::RowConfig`:
+```python
+class RowConfig(BaseModel):
+    framework: str
+    api: str
+    # ... other fields ...
+    mcp: str | list[str]  # was: str. Accept either form.
+                          # str = single-MCP (legacy); list = multi-MCP.
+                          # "NONE" still means no MCP.
+```
+
+`harness/trials.py::TrialConfig` mirror.
+
+`harness/validator.py`: extend the validator's MCP cell rule to accept either a string OR a list. UI multi-select cell editor sends the list form; legacy single-select rows continue working as strings.
+
+Backwards-compatible: existing matrix rows with `mcp: "weather"` continue to deserialize cleanly into `mcp: str` and adapter code that handles both forms via `mcps = [m] if isinstance(m, str) else m` (with `[]` for `"NONE"`).
+
+### Adapter change (~7 adapters)
+
+Each adapter's `framework_bridge.py::Trial.__init__` (or `_setup_mcp_tools`) currently does:
+```python
+self.mcp_url = pick_mcp_base_url(config["routing"], config["mcp"])
+# ... later: connect to self.mcp_url, load tools, bind to LLM
+```
+
+Becomes:
+```python
+mcps = config["mcp"] if isinstance(config["mcp"], list) else (
+    [] if config["mcp"] == "NONE" else [config["mcp"]]
+)
+self.mcp_urls = [pick_mcp_base_url(config["routing"], m) for m in mcps]
+# ... _setup_mcp_tools loops self.mcp_urls, merges tool lists per-framework
+```
+
+Per-framework tool merge:
+- **langchain / langgraph** (langchain-mcp-adapters): call `MultiServerMCPClient(connections=...)` instead of a single `StreamableHttpConnection`. Native multi-server support exists since langchain-mcp-adapters 0.1.x.
+- **pydantic-ai**: `Agent(toolsets=[MCPServerStreamableHTTP(url=u, http_client=...) for u in mcp_urls])` — toolsets list already supports multiple.
+- **crewai / autogen / llamaindex**: each builds a per-MCP `FunctionTool` / `BaseTool` wrapping `fastmcp.Client`. Loop over `mcp_urls`, build all tools, concat the lists.
+- **direct-mcp**: routing logic already keyword-matches user_msg → MCP; extend the matcher to multiple MCPs (weather words → weather, fetch words → fetch, etc.).
+
+### Tool name collision handling
+
+cidgar's f1 hook injects `_ib_cid` + `_ib_gar` schema fields per-tool, so multi-server tools don't clash at the schema level. Name collisions ARE possible (two servers exposing a `read_resource` tool, for example) — frameworks differ:
+
+- **langchain-mcp-adapters MultiServerMCPClient** prefixes tool names with the server alias by default (`weather__weather_get`).
+- **pydantic-ai** raises on duplicate tool names; user must alias.
+- **crewai/autogen/llamaindex** raise on duplicate; manual aliasing needed.
+
+For the harness, simplest is to prefix tool names with `<mcp_name>__` for ALL frameworks at adapter level — gives consistent naming + zero collisions across the 4 fastmcp servers (weather/news/library/fetch all have unique names today, but defense-in-depth).
+
+### Frontend
+
+`frontend/app.js`: Replace the MCP column's `agSelectCellEditor` (single-pick) with a multi-select editor. Two options:
+- **AG-Grid's native `agRichSelectCellEditor` with `multiSelect: true`** (community edition supports this) — UX shows checkboxes
+- **Custom comma-separated text editor** — `weather,fetch` → list. Less polished but trivial
+
+Pick AG-Grid's native multi-select for first cut. Display in cell: `[weather, fetch]` (joined with comma). NONE special-cases to a single-pick "NONE" entry.
+
+### Verdict implications
+
+- (a) Presence: works per-turn, audit-entry-keyed. Multi-MCP fans out audit entries; verdict_a counts CID-bearing per-turn → unchanged. Pass condition unaffected.
+- (b) Channel structure: walks bodies for CIDs. Channel 3 (MCP resource block) appears once per `tools/call` response — multi-server means more bodies to scan but same logic. Unchanged.
+- (c) Continuity: counts unique CIDs across turns. Unchanged.
+- (d) Resilience: same.
+- (e) State-mode gap: same.
+- (f) GAR richness: counts tool_calls with valid GAR. Multi-MCP increases tool_call count → more chances to validate. Unchanged.
+
+So no efficacy code changes needed — the verdict logic is shape-agnostic about which MCP backend served each tool_call. Just more data flowing through.
+
+### Tests
+
+- 1 unit test per adapter: construct Trial with `mcp=["weather", "fetch"]`, assert tool list has tools from both MCP servers, no collisions.
+- 1 integration test: validator accepts list form + roundtrips through PATCH /matrix/row/{id}.
+- 1 end-to-end test (skip-marked unless ollama available): run a trial with `mcp=["weather", "fetch"]`, assert turn 0 invokes a weather tool and turn 1 invokes a fetch tool (via prompt routing).
+
+### Effort
+
+- Backend (RowConfig + validator): **S** (~30 LOC + 3 tests)
+- Adapter changes (7 adapters): **M** (~50 LOC each, framework-specific tool merging, total ~350 LOC + 7 tests)
+- Frontend multi-select: **S-M** (depends on AG-Grid version's `multiSelect` support; community edition may need a custom editor)
+- E2E smoke (post-build): **S** (~1hr)
+
+Total: **M-L** (~half-day to day).
+
+### Why now (or why later)
+
+**Argue for now**: opens a major coverage axis the harness currently can't exercise. Real agents are almost always multi-MCP.
+
+**Argue for defer**: schema change cascades into every adapter + UI; risk of regression on single-MCP path. No urgency — current single-MCP coverage is enough for cidgar Plan B/E5 verification work.
+
+**My pick**: defer until after E18 (header-demux) ships and is exercised. Multi-MCP would multiply audit volume + complicate any concurrent-trial scenarios; cleaner header-demux first, then add the multi-MCP axis on top of working concurrency.
+
+### Cross-references
+
+- Builds on direct-mcp's existing keyword-routing logic (already multi-aware in spirit, just hardcoded to one server)
+- E18 is independent but synergistic — multi-MCP trials run concurrently put more load on audit demux
+- E6 (Responses-API governance) is unaffected — multi-MCP is an MCP-side concern; cidgar's MCP path (f1/f4/f5) already works regardless of LLM API style
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
