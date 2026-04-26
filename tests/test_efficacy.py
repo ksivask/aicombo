@@ -628,6 +628,77 @@ def test_extract_gar_strings_from_body_messages_shape_helper():
     assert _extract_gar_strings_from_body_messages_shape(body) == ["abc", "def"]
 
 
+# ── E20 — verdict (i) tools_list_correlation ──────────────────────────
+
+
+def _tool_call_audit(correlation_lost: bool, *, hash_val: str = "deadbeef",
+                     tool_name: str = "weather") -> AuditEntry:
+    """Build a synthetic tool_call audit carrying the E20 correlation_lost
+    flag. Mirrors what cidgar emits via the extended `Phase::ToolCall`
+    variant: `phase="tool_call"`, body holds `correlation_lost` +
+    `snapshot_hash` + `original_tool_name`.
+
+    The verdict's `_audit_correlation_lost` helper walks `entry.raw["body"]`
+    OR `entry.raw` directly — fixtures use the latter for readability.
+    """
+    return AuditEntry(
+        trial_id="t",
+        turn_id=None,
+        phase="tool_call",
+        cid="ib_abcdef012345",
+        backend="weather-mcp",
+        raw={
+            "correlation_lost": correlation_lost,
+            "snapshot_hash": hash_val if not correlation_lost else None,
+            "original_tool_name": tool_name,
+        },
+        captured_at="2026-04-26T00:00:00+00:00",
+    )
+
+
+def test_verdict_i_pass_when_all_tool_calls_correlated():
+    """E20 — 100% correlation rate → pass. Three tool_call audits, each
+    with `correlation_lost=False`."""
+    audits = [
+        _tool_call_audit(correlation_lost=False),
+        _tool_call_audit(correlation_lost=False),
+        _tool_call_audit(correlation_lost=False),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["i"].verdict == "pass", f"got {v['i']}"
+    assert "100%" in v["i"].reason
+
+
+def test_verdict_i_fail_when_correlation_rate_below_threshold():
+    """E20 — 70% correlation (7/10) is below the 80% threshold → fail."""
+    audits = [_tool_call_audit(correlation_lost=False) for _ in range(7)]
+    audits += [_tool_call_audit(correlation_lost=True) for _ in range(3)]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["i"].verdict == "fail", f"got {v['i']}"
+    assert "70%" in v["i"].reason
+    assert "80%" in v["i"].reason
+
+
+def test_verdict_i_na_when_no_tool_call_audits():
+    """E20 — chat-only trial with no tool_call audits → na (nothing to
+    correlate, not a fail). `tools_list` audits alone do NOT trigger the
+    verdict — correlation is measured at call time, not snapshot time."""
+    audits = [
+        AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
+                   cid=None, backend="weather-mcp", raw={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ib_abc", backend="ollama", raw={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="terminal",
+                   cid="ib_abc", backend="ollama", raw={}),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["i"].verdict == "na", f"got {v['i']}"
+    assert "no tool_call audits" in v["i"].reason
+
+
 def test_body_has_any_tool_call_detects_both_shapes():
     """The shape-agnostic detector must trigger on either format."""
     from efficacy import _body_has_any_tool_call

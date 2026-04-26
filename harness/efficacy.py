@@ -762,21 +762,134 @@ def verdict_h_overhead(trial: Trial, pair_resolver=None) -> Verdict:
     )
 
 
+def _audit_correlation_lost(entry) -> bool | None:
+    """E20 — extract `correlation_lost` from a `tool_call` audit entry.
+
+    Tolerant to two shapes the verdict can encounter:
+
+      1. AuditEntry dataclass populated by audit_tail / api.py (production):
+         the `correlation_lost` boolean lives inside `entry.raw["body"]` (the
+         parsed cidgar log entry). For shape-B (regex-parsed) lines, `raw`
+         only carries `{"line": <raw_text>}` — there is no body dict to
+         walk. The verdict treats unrecoverable entries as `correlation_lost
+         = True` (worst-case observable: we can't prove the call WAS
+         correlated, so for a reliability metric we count it against).
+
+      2. Synthetic dicts / dataclasses that test fixtures hand to the
+         verdict directly. Tests typically set `entry.raw = {...}` with
+         `correlation_lost` and `original_tool_name` as top-level keys for
+         readability. Walk both.
+
+    Returns None when the entry doesn't carry the field at all; the caller
+    decides the unrecoverable-entry policy.
+    """
+    raw = getattr(entry, "raw", None) if not isinstance(entry, dict) else entry.get("raw", entry)
+    if isinstance(raw, dict):
+        if "correlation_lost" in raw:
+            v = raw["correlation_lost"]
+            return bool(v) if v is not None else None
+        body = raw.get("body")
+        if isinstance(body, dict) and "correlation_lost" in body:
+            v = body["correlation_lost"]
+            return bool(v) if v is not None else None
+        # JSON-shape (audit_tail shape A): full event dict where body lives
+        # under fields.body. Tolerate either shape so the verdict works on
+        # both shape-A and shape-B production logs once audit_tail starts
+        # forwarding body alongside raw (today AuditEntry only carries
+        # raw — see audit_tail.py for the shape-A vs shape-B note).
+        fields = raw.get("fields")
+        if isinstance(fields, dict):
+            fbody = fields.get("body")
+            if isinstance(fbody, dict) and "correlation_lost" in fbody:
+                v = fbody["correlation_lost"]
+                return bool(v) if v is not None else None
+    return None
+
+
+def _audit_kind(entry) -> str | None:
+    """E20 — extract the audit's logical kind ("tool_call" / "tools_list" / ...).
+
+    Cidgar emits via `Phase` whose serde-renamed name lands in the
+    `phase` field of AuditEntry. Synthetic test entries may set either
+    `phase` or a `kind` key in `raw` for readability. The verdict accepts
+    both.
+    """
+    if isinstance(entry, dict):
+        kind = entry.get("kind") or entry.get("phase")
+        if kind:
+            return kind
+        raw = entry.get("raw")
+        if isinstance(raw, dict):
+            return raw.get("kind") or raw.get("phase")
+        return None
+    phase = getattr(entry, "phase", None)
+    if phase:
+        return phase
+    raw = getattr(entry, "raw", None)
+    if isinstance(raw, dict):
+        return raw.get("kind") or raw.get("phase")
+    return None
+
+
+def verdict_i_tools_list_correlation(trial: Trial) -> Verdict:
+    """(i) tools_list_correlation — E20 reliability rollup.
+
+    Aggregate AGW's per-call `correlation_lost` flags into a trial-level
+    verdict. Source: `tool_call` audit entries (Phase::ToolCall in cidgar)
+    extended by E20 with the `correlation_lost` boolean (true iff the LLM
+    failed to round-trip the `_ib_ss` snapshot id back into the call args).
+
+    Threshold: pass when ≥80% of `tool_call` audits had
+    `correlation_lost=false`. Below that the (framework, model) combo is
+    flagged as unreliable for snapshot correlation — operators can
+    tolerate the gap, escalate to a stronger model, or pivot to a
+    different carrier (the future E20a function-name suffix pattern).
+
+    Returns na when the trial recorded no `tool_call` audits at all
+    (chat-only conversations, or adapter errored before any tool call);
+    that is a meaningful absence — not a fail — because there was nothing
+    to correlate.
+
+    See enhancements.md §E20 for the design rationale.
+    """
+    audits = trial.audit_entries if hasattr(trial, "audit_entries") else trial.get("audit_entries", [])
+    tools_calls = [a for a in audits if _audit_kind(a) == "tool_call"]
+    if not tools_calls:
+        return Verdict("na", "no tool_call audits observed")
+    # `correlation_lost` defaults to True for entries without the flag set
+    # (E20 design: unrecoverable entries count against the reliability
+    # rate; we cannot prove a call WAS correlated when the audit body is
+    # opaque to us).
+    correlated = sum(1 for a in tools_calls if _audit_correlation_lost(a) is False)
+    rate = correlated / len(tools_calls)
+    if rate >= 0.80:
+        return Verdict(
+            "pass",
+            f"correlation rate {rate:.0%} ({correlated}/{len(tools_calls)})",
+        )
+    return Verdict(
+        "fail",
+        f"correlation rate {rate:.0%} ({correlated}/{len(tools_calls)}) "
+        f"below 80% threshold",
+    )
+
+
 def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f, h} verdicts.
+    """Return {a, b, c, d, e, f, h, i} verdicts.
 
     Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 added e;
-    E4 (this commit) adds h (latency overhead vs baseline pair).
+    E4 added h (latency overhead vs baseline pair); E20 (this commit)
+    adds i (tools_list snapshot correlation rate).
 
     `pair_resolver` is injected straight through to verdict_h_overhead so
     callers (esp. tests) can avoid the disk-based matrix lookup.
     """
     if trial.config.routing == "direct":
         na = Verdict("na", "baseline — cidgar not in path")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na, "i": na}
     if trial.status == "aborted":
         na = Verdict("na", "trial aborted before completion")
-        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na}
+        return {"a": na, "b": na, "c": na, "d": na, "e": na, "f": na, "h": na, "i": na}
     return {
         "a": verdict_a_presence(trial),
         "b": verdict_b_channel_structure(trial),
@@ -785,4 +898,5 @@ def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
         "e": verdict_e_state_mode_gap(trial),
         "f": verdict_f_gar_richness(trial),
         "h": verdict_h_overhead(trial, pair_resolver=pair_resolver),
+        "i": verdict_i_tools_list_correlation(trial),
     }
