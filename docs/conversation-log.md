@@ -100,3 +100,27 @@ Session running in parent directory `/mnt/share/ws/agw-gh` where cidgar finaliza
 - Services topology tab (#78) — 291 lines staged in frontend/, untested. Awaits user review.
 - I-NEW-1 (NOTE registry from /info), I-NEW-2 (autogen force_state_ref verification), I-NEW-3 (test_note_registry.py) — Subagent C never dispatched (rate limit).
 - M-NEW-1, M-NEW-3, M-NEW-4 — explicitly accepted as no-action per review classification.
+
+## 2026-04-23 — Services topology tab debug saga (5 commits)
+
+### Entry — Salvage + 5-bug-fix chain to get the new Mermaid tab actually rendering
+
+**User prompt:** "if you can resume the services topo tab, else start fresh subagent for that from scratch ?" → "mermaid diagrams only show the actual text" → multiple iterations → "now, nothing shows" (Mermaid 16×16 viewBox per inspect) → "the copy buttons are not copying ?" → "it worked now"
+
+**Reasoning:**
+The salvaged Services tab from the rate-limited subagent was syntactically clean and the topology extraction was correct, BUT 5 separate latent bugs needed fixing before it would render usefully. Each surfaced only after fixing the previous one (textbook layered-bug debugging — fix N reveals N+1).
+
+**Actions:**
+- `a099f6e` — committed salvaged Services tab (291 lines untested)
+- `5aca6b5` — removed `pre-with-copy` wrapper around rendered `<pre.mermaid>` (cidflow pattern)
+- `8658fc8` — `escapeMermaid` HTML-encodes parens (was breaking `(fetch_fetch)` labels)
+- `d91e425` — switched from `mermaid.run()` (v10 API) to `mermaid.initThrowsErrors()` (v9.4.3 API). Real root cause behind the persistent text-only display. CID flow tab had the same bug — fixed both.
+- `338e8f5` — defer `mermaid.init` until tab is `display:visible`. Firefox `getBBox` returns 0 on hidden parents; SVG collapses to 16×16. Track per-tab pending-render flags; tab-switch click triggers deferred init.
+- `d78262a` — `copyTextToClipboard()` helper falls back to `document.execCommand("copy")` for HTTP+IP origins (where `navigator.clipboard` is blocked).
+
+**Verified:** Hard refresh + click into Services tab → Mermaid renders correctly. Copy buttons functional. CID flow tab also benefits from the API + visibility fixes (had the same latent bugs).
+
+**Final state:**
+- aiplay HEAD: `d78262a`
+- 6 commits added in this exchange (Services tab feat + 5 fix commits)
+- Tree clean except untracked `.agentdiff/` tooling artifacts

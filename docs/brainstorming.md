@@ -252,3 +252,28 @@ Once execution starts, turn cards appear in drawer in order. Each card: sent con
 - `0049279` (aiplay/main) — aiplay B-NEW-1 + B-NEW-2
 - `ae54489b` (agw cidgar/feat/cidgar) — AGW B-NEW-3 + I-NEW-4 + M-NEW-2 + M-NEW-5
 - `125abcf6` (agw docs/ibfork/docs) — spec §14.6 gating note + CHG-242/243 ledger
+
+## Services topology tab — debug saga (2026-04-23)
+
+### Bug chain (5 commits to get rendering right)
+
+1. **`a099f6e`** — initial salvage from rate-limited subagent (291 lines untested).
+2. **`5aca6b5`** — `<pre.mermaid>` was wrapped in `<div class="pre-with-copy">`. The absolute-positioned 📋 button inside the same parent broke Mermaid's layout measurement. Match cidflow exactly: rendered diagram has NO wrapper; copy button only on the source-debug pane.
+3. **`8658fc8`** — `escapeMermaid()` only stripped `"[]` — labels containing `(framework: langchain)` and `(fetch_fetch)` broke the parser (`)` closes `[` prematurely). Fix: HTML-entity-encode `&"[]()`.
+4. **`d91e425`** — vendored Mermaid 9.4.3 binary has `init` / `initThrowsErrors` / `initThrowsErrorsAsync`, NOT `.run()` (that's v10+). Both cidflow AND services were calling `mermaid.run({nodes})` and throwing TypeError. Fix: `mermaid.initThrowsErrors(undefined, nodes)`.
+5. **`338e8f5`** — Firefox `getBBox()` returns 0 on `display:none` parents. Default tab is "Turns" so cidflow + services start hidden — every label measured 0×0 → SVG collapses to 16×16. Plus Mermaid sets `data-processed="true"` after the bad render and skips re-init forever.
+
+### Final fix architecture
+- New `runMermaidIfVisible(tabKey)` helper: bails if `!classList.contains("active")`, removes `data-processed` to force re-render, then `mermaid.initThrowsErrors`.
+- Two flags `__cidFlowNeedsMermaid`, `__servicesNeedsMermaid` track pending render state.
+- Tab-switch click handler picks up pending render on first navigation.
+- `renderTrial` setTimeout(0) still kicks immediately for whichever Mermaid tab is currently active.
+
+### Copy buttons broke too — `d78262a`
+- `navigator.clipboard.writeText()` requires a secure context (HTTPS / `localhost` / `127.0.0.1`). aiplay UI is served over `http://<host-IP>:8000` — Firefox/Chrome reject the call with NotAllowedError, the catch block flashes ✗ for 800ms.
+- Fix: new `copyTextToClipboard()` helper falls back to hidden-textarea + `document.execCommand("copy")`. Works on HTTP+IP because execCommand is gated only on user-activation, not secure-context.
+
+### Lessons
+- The CID flow tab "appeared to work" earlier because the user had only viewed it after clicking into it (giving Mermaid a visible parent). Adding a second Mermaid tab forced the test of the cold-render path and surfaced 4 bugs that were latent in cidflow too.
+- Mermaid 9.4.3 vendored UMD's API (`init`, not `run`) is not v10-compatible — the comments in the code referenced `.run` because they were written against v10's docs.
+- Default-active-tab + Mermaid-on-page = always test the OFF tab, not just the active one.
