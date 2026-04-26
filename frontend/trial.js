@@ -24,6 +24,8 @@ const elRowSummary = document.getElementById("row-summary");
 // poll/SSE loop skip the (expensive + race-prone) Mermaid re-render when
 // the trial JSON didn't change in any way that affects the CID flow tab.
 let __cidFlowLastSourceHash = null;
+// Services topology render-cache: same pattern as cidflow above.
+let __servicesLastSourceHash = null;
 
 // Tiny non-cryptographic string hash (djb2-ish, sufficient for change-
 // detection on rendered HTML — collisions only manifest as a missed
@@ -82,6 +84,7 @@ const tabContents = {
   verdicts: document.getElementById("tab-verdicts"),
   note: document.getElementById("tab-note"),
   cidflow: document.getElementById("tab-cidflow"),
+  services: document.getElementById("tab-services"),
   raw: document.getElementById("tab-raw"),
 };
 
@@ -453,6 +456,29 @@ async function renderTrial(tid) {
         }
       } catch (e) {
         console.warn("Mermaid kickoff failed:", e);
+      }
+    }, 0);
+  }
+
+  // Services topology tab — same render-cache + setTimeout(0) Mermaid
+  // kickoff pattern as cidflow above. See cidflow comments for the
+  // Firefox-stricter-about-mermaid-after-innerHTML rationale.
+  const servicesHtml = renderServicesTab(trial);
+  const servicesHash = _hashStr(servicesHtml);
+  if (servicesHash !== __servicesLastSourceHash) {
+    tabContents.services.innerHTML = servicesHtml;
+    __servicesLastSourceHash = servicesHash;
+    setTimeout(() => {
+      try {
+        if (typeof mermaid !== "undefined") {
+          const nodes = tabContents.services.querySelectorAll(".mermaid");
+          if (nodes.length) {
+            mermaid.run({nodes})
+              .catch(e => console.warn("Services Mermaid render failed:", e));
+          }
+        }
+      } catch (e) {
+        console.warn("Services Mermaid kickoff failed:", e);
       }
     }, 0);
   }
@@ -1070,6 +1096,271 @@ function renderCidFlowTab(trial) {
       </details>
     </div>
   `;
+}
+
+// ── Services topology tab ──
+//
+// Renders a Mermaid network/services map for ONE trial: agent ↔ AGW ↔
+// {LLM providers, MCP servers}. Identity extracted strictly from data
+// AGW would see directly or indirectly on the wire (MCP initialize
+// handshake clientInfo/serverInfo, LLM User-Agent header, request body
+// model fields, AGW route paths). Falls back to framework name + route
+// hostname when richer identity is unavailable.
+//
+// Wire-shape note: MCP responses (initialize, tools/list) come through
+// AGW as text/event-stream — `response.body` is an SSE STRING like
+// `"data: {jsonrpc..., result.serverInfo}\n\n"`. We SSE-parse the body
+// here to recover the JSON-RPC payload. LLM responses are plain JSON
+// dicts (Anthropic /v1/messages, OpenAI /v1/chat/completions).
+function renderServicesTab(trial) {
+  const topo = extractServicesTopology(trial);
+
+  if (!topo.llms.size && !topo.mcps.size) {
+    return `<p>No service topology to map — no LLM or MCP traffic captured in this trial's framework_events.</p>`;
+  }
+
+  // Build Mermaid graph LR definition. Use \n (not <br>) for line breaks
+  // because the trial-level mermaid.initialize sets htmlLabels:false
+  // (renders labels as <text>/<tspan> for Firefox SVG correctness).
+  let mer = "graph LR\n";
+
+  // Agent cluster
+  mer += `  subgraph Agent["Agent (framework: ${escapeMermaid(trial.config?.framework || '?')})"]\n`;
+  if (topo.agentMcpClient) {
+    mer += `    A_MCP["MCP client\n${escapeMermaid(topo.agentMcpClient.name)}\n${escapeMermaid(topo.agentMcpClient.version || '(no version)')}"]\n`;
+  }
+  if (topo.agentLlmClient) {
+    mer += `    A_LLM["LLM client\nUA: ${escapeMermaid(truncate(topo.agentLlmClient, 50))}"]\n`;
+  }
+  if (!topo.agentMcpClient && !topo.agentLlmClient) {
+    mer += `    A_DEFAULT["${escapeMermaid(trial.config?.framework || 'agent')}"]\n`;
+  }
+  mer += `  end\n`;
+
+  // AGW pivot
+  mer += `  AGW["AGW cidgar\n(observer)"]\n`;
+
+  // LLM cluster
+  if (topo.llms.size > 0) {
+    mer += `  subgraph LLMs["LLM providers"]\n`;
+    for (const [route, info] of topo.llms) {
+      const modelStr = info.models.size ? Array.from(info.models).join(", ") : "(unknown)";
+      const tokenStr = info.totalTokens ? `${info.totalTokens} tokens` : "";
+      mer += `    L_${sanitizeId(route)}["${escapeMermaid(route)}\n${escapeMermaid(modelStr)}\n${info.calls} calls${tokenStr ? '\n' + escapeMermaid(tokenStr) : ''}"]\n`;
+    }
+    mer += `  end\n`;
+  }
+
+  // MCP cluster
+  if (topo.mcps.size > 0) {
+    mer += `  subgraph MCPs["MCP servers"]\n`;
+    for (const [route, info] of topo.mcps) {
+      const serverLabel = info.serverInfo
+        ? `${info.serverInfo.name} ${info.serverInfo.version || ''}`
+        : `(no serverInfo)`;
+      const toolStr = info.toolNames?.size
+        ? Array.from(info.toolNames).slice(0, 3).join(", ") + (info.toolNames.size > 3 ? '...' : '')
+        : "no tools called";
+      mer += `    M_${sanitizeId(route)}["${escapeMermaid(route)}\n${escapeMermaid(serverLabel)}\n${info.callCount} calls (${escapeMermaid(toolStr)})"]\n`;
+    }
+    mer += `  end\n`;
+  }
+
+  // Edges agent → AGW
+  if (topo.agentMcpClient) mer += `  A_MCP --> AGW\n`;
+  if (topo.agentLlmClient) mer += `  A_LLM --> AGW\n`;
+  if (!topo.agentMcpClient && !topo.agentLlmClient) mer += `  A_DEFAULT --> AGW\n`;
+
+  // Edges AGW → LLMs
+  for (const route of topo.llms.keys()) {
+    mer += `  AGW --> L_${sanitizeId(route)}\n`;
+  }
+
+  // Edges AGW → MCPs
+  for (const route of topo.mcps.keys()) {
+    mer += `  AGW --> M_${sanitizeId(route)}\n`;
+  }
+
+  return `
+    <div class="services-topology">
+      <p>Service topology for this trial — derived from AGW-observable wire data
+         (MCP initialize handshakes, LLM User-Agent + body.model, route paths).
+         All extraction happens harness-side from <code>framework_events</code>;
+         no data here would be unavailable to AGW itself.</p>
+      <div class="pre-with-copy">
+        ${copyPreBtn()}
+        <pre class="mermaid">${escapeHtml(mer)}</pre>
+      </div>
+      <details class="services-source">
+        <summary>Mermaid source (debug)</summary>
+        <div class="pre-with-copy">
+          ${copyPreBtn()}
+          <pre>${escapeHtml(mer)}</pre>
+        </div>
+      </details>
+      <details class="services-raw">
+        <summary>Extracted topology (raw)</summary>
+        <div class="pre-with-copy">
+          ${copyPreBtn()}
+          <pre>${escapeHtml(JSON.stringify(serializeTopo(topo), null, 2))}</pre>
+        </div>
+      </details>
+    </div>`;
+}
+
+function extractServicesTopology(trial) {
+  // Output:
+  //   { agentMcpClient: {name, version} | null,
+  //     agentLlmClient: "User-Agent string" | null,
+  //     llms: Map<routeKey, {calls, models: Set<string>, totalTokens}>,
+  //     mcps: Map<routeKey, {callCount, serverInfo: {name, version} | null,
+  //                          toolNames: Set<string>}> }
+  const topo = {
+    agentMcpClient: null,
+    agentLlmClient: null,
+    llms: new Map(),
+    mcps: new Map(),
+  };
+
+  for (const turn of (trial.turns || [])) {
+    for (const ev of (turn.framework_events || [])) {
+      const phase = ev.t || ev.kind || "";
+      const req = ev.request || {};
+      const resp = ev.response || {};
+      const reqBody = req.body && typeof req.body === "object" ? req.body : {};
+      // MCP responses are SSE strings; LLM responses are JSON dicts.
+      // Normalize: try parsed-dict first, else SSE-parse the string.
+      const respBody = _coerceRespBody(resp.body);
+      const reqHeaders = req.headers || {};
+
+      if (phase === "mcp_initialize") {
+        const ci = reqBody.params?.clientInfo;
+        if (ci?.name && !topo.agentMcpClient) {
+          topo.agentMcpClient = {name: ci.name, version: ci.version || null};
+        }
+        const si = respBody?.result?.serverInfo;
+        const route = mcpRouteFromUrl(req.url);
+        if (route) {
+          const entry = topo.mcps.get(route) || {callCount: 0, serverInfo: null, toolNames: new Set()};
+          if (si?.name) entry.serverInfo = {name: si.name, version: si.version || null};
+          topo.mcps.set(route, entry);
+        }
+      } else if (phase === "mcp_tools_list") {
+        const route = mcpRouteFromUrl(req.url);
+        if (route) {
+          const entry = topo.mcps.get(route) || {callCount: 0, serverInfo: null, toolNames: new Set()};
+          // Don't bump callCount for tools_list (it's a discovery, not an invocation)
+          topo.mcps.set(route, entry);
+        }
+      } else if (phase === "mcp_tools_call") {
+        const route = mcpRouteFromUrl(req.url);
+        if (route) {
+          const entry = topo.mcps.get(route) || {callCount: 0, serverInfo: null, toolNames: new Set()};
+          entry.callCount += 1;
+          const toolName = ev.tool_name || reqBody.params?.name;
+          if (toolName) entry.toolNames.add(toolName);
+          topo.mcps.set(route, entry);
+        }
+      } else if (phase.startsWith?.("llm_hop") || phase === "llm_request") {
+        const route = llmRouteFromUrl(req.url);
+        if (route) {
+          const entry = topo.llms.get(route) || {calls: 0, models: new Set(), totalTokens: 0};
+          entry.calls += 1;
+          if (reqBody.model) entry.models.add(reqBody.model);
+          // Pull token count from response if present. OpenAI
+          // /v1/chat/completions has usage.total_tokens. Anthropic
+          // /v1/messages has usage.input_tokens + usage.output_tokens
+          // (no total_tokens). Handle both shapes.
+          const usage = respBody?.usage || respBody?.usage_metadata;
+          if (usage) {
+            let tt = usage.total_tokens;
+            if (tt == null && (usage.input_tokens != null || usage.output_tokens != null)) {
+              tt = (usage.input_tokens || 0) + (usage.output_tokens || 0);
+            }
+            if (tt) entry.totalTokens += tt;
+          }
+          topo.llms.set(route, entry);
+        }
+        // First-seen User-Agent wins (later hops are typically same client)
+        if (!topo.agentLlmClient) {
+          const ua = reqHeaders["user-agent"] || reqHeaders["User-Agent"];
+          if (ua) topo.agentLlmClient = ua;
+        }
+      }
+    }
+  }
+  return topo;
+}
+
+// Coerce a framework_events response.body into a JSON-RPC/JSON dict if
+// possible. MCP comes through as SSE (`"data: {...}\n\n"` strings);
+// LLM bodies are already dicts.
+function _coerceRespBody(b) {
+  if (b && typeof b === "object") return b;
+  if (typeof b !== "string" || !b) return null;
+  // Reuse the same SSE-data-line tolerance as tryParseSSE() above, but
+  // unwrap the single-payload case for serverInfo extraction.
+  if (b.includes("data:")) {
+    for (const line of b.split(/\r?\n/)) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith("data:")) continue;
+      const payload = trimmed.slice(5).trim();
+      if (!payload) continue;
+      try { return JSON.parse(payload); } catch { /* skip non-JSON */ }
+    }
+  }
+  // Fallback: maybe a bare JSON string
+  try { return JSON.parse(b); } catch { return null; }
+}
+
+function mcpRouteFromUrl(url) {
+  if (!url) return null;
+  // e.g. http://agentgateway:8080/mcp/fetch → "mcp-fetch"
+  const m = url.match(/\/mcp\/([^/?]+)/);
+  return m ? `mcp-${m[1]}` : null;
+}
+
+function llmRouteFromUrl(url) {
+  if (!url) return null;
+  // e.g. http://agentgateway:8080/llm/chatgpt/v1/chat/completions → "chatgpt"
+  const m = url.match(/\/llm\/([^/?]+)/);
+  return m ? m[1] : null;
+}
+
+function sanitizeId(s) {
+  return s.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+function escapeMermaid(s) {
+  // Mermaid label-text escaping: protect quotes + the bracket pair
+  return String(s ?? "").replace(/["[\]]/g, "");
+}
+
+function truncate(s, n) {
+  if (!s) return "";
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+function serializeTopo(topo) {
+  // Convert Sets/Maps to plain objects for JSON.stringify in the debug view
+  return {
+    agentMcpClient: topo.agentMcpClient,
+    agentLlmClient: topo.agentLlmClient,
+    llms: Object.fromEntries(
+      Array.from(topo.llms.entries()).map(([k, v]) => [k, {
+        calls: v.calls,
+        models: Array.from(v.models),
+        totalTokens: v.totalTokens,
+      }])
+    ),
+    mcps: Object.fromEntries(
+      Array.from(topo.mcps.entries()).map(([k, v]) => [k, {
+        callCount: v.callCount,
+        serverInfo: v.serverInfo,
+        toolNames: Array.from(v.toolNames || []),
+      }])
+    ),
+  };
 }
 
 function attachPoll(tid) {
