@@ -671,6 +671,21 @@ class Trial:
         ref_to_turn is an index into self._response_history (0-based,
         chronological). If in range, the next turn() will pass that
         response's id instead of _last_response_id.
+
+        I-NEW-2 note: this method is reached via the standalone
+        ``POST /trials/{trial_id}/force_state_ref`` HTTP route on the
+        adapter (see ``main.py``) and from direct unit-test calls in
+        ``tests/test_adapter_autogen.py``. It is *not* on the
+        harness/runner.py code path. The runner uses a separate flow:
+        ``drive_turn(turn_kind="force_state_ref", target_response_id=<str>)``
+        sends a POST to ``/trials/{id}/turn`` whose handler in
+        ``main.py`` directly assigns ``trial._forced_prev_id =
+        req.target_response_id`` before dispatching the turn — bypassing
+        this method entirely. Both paths converge on ``_forced_prev_id``,
+        which ``turn()`` reads at line ~614 to override the outbound
+        ``previous_response_id``. Keep this method even though the
+        runner doesn't call it: deleting it would break the standalone
+        HTTP route + several unit tests.
         """
         if 0 <= ref_to_turn < len(self._response_history):
             self._forced_prev_id = self._response_history[ref_to_turn]

@@ -223,6 +223,91 @@ def test_force_state_ref_rejects_out_of_range(monkeypatch):
         assert trial._forced_prev_id is None
 
 
+# ── I-NEW-2 regression: runner-path force_state_ref wire shape ──
+
+@pytest.mark.asyncio
+async def test_runner_path_force_state_ref_string_target_reaches_outbound_payload(monkeypatch):
+    """I-NEW-2 regression: the harness/runner.py path drives force_state_ref
+    via ``drive_turn(turn_kind="force_state_ref", target_response_id=<str>)``,
+    not via ``Trial.force_state_ref(int)``. The adapter's ``main.py``
+    dispatcher accepts the string target, assigns ``trial._forced_prev_id =
+    req.target_response_id`` directly, then runs the turn — bypassing
+    ``Trial.force_state_ref(int)`` (which serves the standalone
+    ``POST /trials/{id}/force_state_ref`` HTTP route + unit tests).
+
+    This pins the wire shape: a string target_response_id from the runner
+    must land as ``previous_response_id`` on the next outbound openai
+    Responses call. If a future refactor moves the assignment from
+    ``main.py`` into ``Trial.force_state_ref(int)`` (which only accepts
+    an int index into ``_response_history``), the runner path silently
+    fails because the target isn't in history (it's an arbitrary string
+    from another trial / external caller).
+    """
+    _ensure_adapter_on_path()
+    monkeypatch.setenv("AGW_LLM_BASE_URL_OPENAI", "http://agentgateway:8080/llm/chatgpt/v1")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-fake")
+    import openai
+    from framework_bridge import Trial
+    # main.py is the dispatcher under test — same module-path setup as the
+    # framework_bridge import above (both live in adapters/autogen/).
+    import importlib
+    import sys
+    sys.modules.pop("main", None)
+    main_mod = importlib.import_module("main")
+
+    call_log: list[dict] = []
+
+    async def fake_create(**kwargs):
+        call_log.append(dict(kwargs))
+        resp = MagicMock()
+        resp.id = "resp_NEW"
+        resp.output_text = "ok"
+        resp.output = []
+        return resp
+
+    fake_openai = MagicMock()
+    fake_openai.responses.create = fake_create
+
+    with patch.object(openai, "AsyncOpenAI", return_value=fake_openai):
+        trial = Trial(trial_id="t-runner-fsr", config={
+            "framework": "autogen", "api": "responses",
+            "stream": False, "state": True,
+            "llm": "chatgpt", "mcp": "NONE", "routing": "via_agw",
+        })
+        # Inject directly into the adapter's TRIALS registry — that's
+        # the same path POST /trials populates on a real adapter call.
+        main_mod.TRIALS[trial.trial_id] = trial
+        try:
+            assert trial._mode == "responses_direct"
+            # Drive a runner-shaped force_state_ref turn. target_response_id
+            # is a STRING that doesn't appear in _response_history (which is
+            # empty here) — proving the dispatcher uses the string directly,
+            # not via Trial.force_state_ref(int).
+            req = main_mod.TurnReq(
+                turn_id="t-fsr-1",
+                user_msg="branch back",
+                turn_kind="force_state_ref",
+                target_response_id="resp_FROM_PRIOR_TRIAL",
+            )
+            await main_mod.drive_turn(trial.trial_id, req)
+
+            assert call_log, "fake_create was never called via runner path"
+            got = call_log[-1].get("previous_response_id")
+            assert got == "resp_FROM_PRIOR_TRIAL", (
+                f"runner-path force_state_ref dropped the string "
+                f"target_response_id: outbound previous_response_id={got!r}; "
+                "expected 'resp_FROM_PRIOR_TRIAL' (the value the runner "
+                "passes via drive_turn body)"
+            )
+            # And the override is consumed exactly once.
+            assert trial._forced_prev_id is None, (
+                "trial._forced_prev_id should be cleared after the turn"
+            )
+        finally:
+            main_mod.TRIALS.pop(trial.trial_id, None)
+            await trial.aclose()
+
+
 # ── E13a regression: state=True on api=responses must thread previous_response_id ──
 
 @pytest.mark.asyncio
