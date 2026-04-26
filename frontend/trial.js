@@ -88,7 +88,7 @@ const tabContents = {
   raw: document.getElementById("tab-raw"),
 };
 
-// Initialize Mermaid once. We render manually (per-tab refresh) via mermaid.run
+// Initialize Mermaid once. We render manually (per-tab refresh) via mermaid.init
 // rather than letting it auto-scan, because the CID flow content is rebuilt
 // every render cycle (status poll → renderTrial → tabContents.cidflow.innerHTML).
 if (typeof mermaid !== "undefined") {
@@ -417,9 +417,9 @@ async function renderTrial(tid) {
 
   // Render-cache: the SSE/poll cycle re-enters renderTrial() every ~1-2s.
   // Without this guard, every cycle nukes innerHTML and re-runs Mermaid,
-  // which races with mermaid.run (async) — Firefox can end up with the
-  // newly-injected <pre> still empty because we re-injected before the
-  // previous run finished writing the SVG. Hash-of-HTML lets us skip the
+  // which races with mermaid.init (Firefox can end up with the
+  // newly-injected <pre> still empty if we re-inject before the
+  // previous init finished writing the SVG). Hash-of-HTML lets us skip the
   // re-render entirely when the trial state hasn't changed in a way that
   // affects the CID flow tab.
   const cidflowHtml = renderCidFlowTab(trial);
@@ -436,26 +436,25 @@ async function renderTrial(tid) {
         if (typeof mermaid !== "undefined") {
           const mermaidNodes = tabContents.cidflow.querySelectorAll(".mermaid");
           if (mermaidNodes.length) {
-            mermaid.run({nodes: mermaidNodes})
-              .then(() => {
-                // Sanity check: catch the silent-failure mode where mermaid.run
-                // resolves OK but produced no SVG child (e.g., CSS collapsed it,
-                // or a Firefox foreignObject quirk). Without this we used to
-                // see "typeof mermaid === object, source generated, no errors,
-                // no SVG" — the bug this commit fixes.
-                for (const n of mermaidNodes) {
-                  if (!n.querySelector("svg")) {
-                    console.warn("Mermaid: pre.mermaid has no SVG child after run; source:", n.textContent.slice(0, 200));
-                  }
-                }
-              })
-              .catch(e => console.warn("Mermaid render failed:", e));
+            // Mermaid 9.4.3 API: mermaid.init(config?, nodes, callback?).
+            // NOT .run() — that's v10+ and would throw TypeError here. Use
+            // initThrowsErrors so parse errors surface to our catch instead
+            // of being swallowed with a div-id error placeholder.
+            mermaid.initThrowsErrors(undefined, mermaidNodes);
+            // Sanity check: catch the silent-failure mode where init returns
+            // OK but produced no SVG child (e.g., CSS collapsed it, or a
+            // Firefox foreignObject quirk).
+            for (const n of mermaidNodes) {
+              if (!n.querySelector("svg")) {
+                console.warn("Mermaid: pre.mermaid has no SVG child after init; source:", n.textContent.slice(0, 200));
+              }
+            }
           }
         } else {
           console.warn("Mermaid lib not loaded; CID flow graph will be source-only");
         }
       } catch (e) {
-        console.warn("Mermaid kickoff failed:", e);
+        console.warn("Mermaid render failed:", e);
       }
     }, 0);
   }
@@ -473,12 +472,13 @@ async function renderTrial(tid) {
         if (typeof mermaid !== "undefined") {
           const nodes = tabContents.services.querySelectorAll(".mermaid");
           if (nodes.length) {
-            mermaid.run({nodes})
-              .catch(e => console.warn("Services Mermaid render failed:", e));
+            // Mermaid 9.4.3 API — see cidflow above for the .init vs .run
+            // rationale. initThrowsErrors so syntax errors hit the catch.
+            mermaid.initThrowsErrors(undefined, nodes);
           }
         }
       } catch (e) {
-        console.warn("Services Mermaid kickoff failed:", e);
+        console.warn("Services Mermaid render failed:", e);
       }
     }, 0);
   }
