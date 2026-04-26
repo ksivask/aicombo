@@ -88,7 +88,19 @@ const tabContents = {
 // rather than letting it auto-scan, because the CID flow content is rebuilt
 // every render cycle (status poll → renderTrial → tabContents.cidflow.innerHTML).
 if (typeof mermaid !== "undefined") {
-  mermaid.initialize({startOnLoad: false, theme: "default", securityLevel: "loose"});
+  mermaid.initialize({
+    startOnLoad: false,
+    theme: "default",
+    securityLevel: "loose",
+    // Firefox foreignObject measurement bug: HTML labels (the default)
+    // get rendered with width=0/height=0 because Firefox doesn't
+    // measure foreignObject content synchronously during SVG layout.
+    // Result: SVG viewBox collapses to 16×16, diagram invisible.
+    // Switching to native SVG <text> labels — measured synchronously —
+    // works in Firefox + Chrome + Safari. Loses HTML <br> support;
+    // labels using `\n` become multi-line via tspan instead.
+    flowchart: { htmlLabels: false },
+  });
 }
 const tabBtns = document.querySelectorAll(".trial-tab-btn");
 
@@ -354,6 +366,16 @@ async function renderTrial(tid) {
   // Export button: show whenever we have a resolved trial id.
   if (elExportBtn) {
     elExportBtn.style.display = "";
+  }
+
+  // E6 stamp: only meaningful for Responses-API trials. AGW's cidgar
+  // pipeline has no LlmRequest::Responses variant, so f2/f3/f6/f7 hooks
+  // silently no-op; Channel 3 (MCP path) still fires. The stamp tells
+  // the user "your verdicts will look weird and that's why."
+  const elE6Stamp = document.getElementById("e6-stamp");
+  if (elE6Stamp) {
+    const api = (trial.config || {}).api;
+    elE6Stamp.style.display = (api === "responses" || api === "responses+conv") ? "" : "none";
   }
 
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
@@ -649,7 +671,7 @@ function renderCidFlowTab(trial) {
   // erroredTurn class for a red border (see classDef below).
   turns.forEach((t, i) => {
     const kind = (t.kind || "?").replace(/[\[\]"]/g, "");
-    const label = `Turn ${i}<br/>${kind}`;
+    const label = `Turn ${i}\n${kind}`;
     mer += `  T${i}["${label}"]\n`;
     if (t.error) mer += `  class T${i} erroredTurn\n`;
   });
