@@ -1059,6 +1059,169 @@ Total: **S-M** (~half-day).
 
 ---
 
+## E22 — `mcp/mutable/` test MCP server + `mcp_admin` turn kind (E20 verification harness)
+
+**Status: future. Test infrastructure. Build alongside E20 implementation, not before. ~200 LOC + tests + docker-compose entry.**
+
+### The gap
+
+E20's whole point is "AGW issues different `_ib_ss` hash per `tools/list` snapshot, and `tools/call`s carry the matching hash for correlation". To test this, we need a way to mutate the `tools/list` response between turns of one trial. None of the existing MCPs (`weather`, `news`, `library`, `fetch`) expose that — they all serve a static tool set.
+
+E21's `refresh_tools` invalidates the agent-side cache so it re-fetches, but if the upstream MCP returns the same response, the hash is the same. We need both:
+- An upstream MCP whose tools list can change → produces different hashes
+- The trial-script lever to trigger that change at a specific point
+
+### The proposal
+
+**A new test-only MCP server (`mcp/mutable/`) with admin endpoints, paired with a new turn kind (`mcp_admin`) that drives the mutation from the trial script.**
+
+#### `mcp/mutable/` — server design
+
+Sibling to existing `mcp/weather/`, `mcp/news/`, etc. Standard MCP protocol on the regular MCP path; admin endpoints under `_admin/` (impossible to confuse with MCP method names since none start with `_`).
+
+**Initial tool set** — realistic, not minimal. 3-5 tools so trials can exercise tool-calling without contrived setup:
+
+```python
+INITIAL_TOOLS = [
+    {"name": "mutable_get",    "description": "Get a value by key", ...},
+    {"name": "mutable_set",    "description": "Set a value", ...},
+    {"name": "mutable_list",   "description": "List all keys", ...},
+    {"name": "mutable_delete", "description": "Delete a key", ...},
+]
+```
+
+**Admin endpoints** (same port as MCP, distinct path prefix):
+
+```
+POST /mcp/mutable/_admin/set_tools
+  body: {"tools": [{"name": "...", "description": "...", "inputSchema": {...}}, ...]}
+  → replaces the current tool list; bumps version_counter
+
+POST /mcp/mutable/_admin/reset
+  body: {} → reverts to INITIAL_TOOLS; resets version_counter to 0
+
+GET  /mcp/mutable/_admin/state
+  → {"tools": [...], "version_counter": <int>}
+```
+
+`version_counter` is bumped on every `set_tools` call — surfaces in audit logs as "test mutated tools at this point" for debugging.
+
+#### AGW route configuration
+
+Two route entries for the mutable MCP:
+
+```yaml
+- name: mcp-mutable
+  matches: [{path: {pathPrefix: /mcp/mutable}}]
+  policies:
+    governance: {kind: cid_gar, ...}    # full governance on MCP traffic
+  backends: [{mcp: {targets: [{name: mutable}]}}]
+
+- name: mcp-mutable-admin
+  matches: [{path: {pathPrefix: /mcp/mutable/_admin}}]
+  policies: {}                          # NO governance — admin is test-mode only
+  backends: [{mcp: {targets: [{name: mutable}]}}]   # same upstream
+```
+
+Admin calls bypass governance entirely so they don't pollute the cidgar audit stream with non-conversational events. (Alternative: keep governance on admin too, with a special `kind: test_admin` audit event tag. Worth deciding — depends on whether you want admin events visible in trial reports.)
+
+#### `mcp_admin` turn kind
+
+```yaml
+turns:
+  - {kind: user_msg, content: "What tools do you have?"}            # snapshot H1
+  - {kind: mcp_admin, mcp: mutable, op: set_tools,
+     payload: {tools: [{"name": "mutable_get_v2", ...}]}}            # mutate upstream
+  - {kind: refresh_tools}                                            # client re-fetches; H2 ≠ H1
+  - {kind: user_msg, content: "Use the new tool."}                   # tool_call carries _ib_ss=H2
+  - {kind: mcp_admin, mcp: mutable, op: reset}                       # back to initial
+```
+
+`mcp_admin` is a **harness-direct** turn kind — runner makes the HTTP POST itself, doesn't go through any adapter or framework. This means:
+- Adapters need no changes
+- The mutation is invisible to the agent (which is the point — the agent just sees a different `tools/list` response on its next fetch)
+- For non-mutable MCPs, the turn is a no-op + log line ("mcp_admin called for `weather` which has no _admin endpoint; skipped")
+
+### Composition with E21
+
+`mcp_admin` and `refresh_tools` are **orthogonal** and must compose:
+- `mcp_admin` alone — mutates upstream; agent's cached toolset is now stale (still serves H1 hash). No correlation drift YET.
+- `refresh_tools` alone — agent re-fetches but upstream hasn't changed. Same hash. No drift.
+- Both in sequence — upstream changes, agent re-fetches, gets new hash. NEW snapshot identity.
+
+The canonical E20 verification trial:
+```yaml
+turns:
+  - {kind: user_msg, content: "Use mutable_get for key=foo"}        # snapshot H1, _ib_ss=H1
+  - {kind: mcp_admin, mcp: mutable, op: set_tools,
+     payload: {tools: <smaller subset>}}
+  - {kind: refresh_tools}
+  - {kind: user_msg, content: "Now use the remaining tools"}        # _ib_ss=H2 ≠ H1
+```
+
+After: assert audit stream contains:
+- `tools_list` events with two distinct hashes (H1, H2)
+- `tools_call` events with `_ib_ss` matching the snapshot active at call time
+- Cross-segment hash leakage = 0
+
+### Verdict (j) — `tools_list_correlation`
+
+E20 produces `correlation_lost` flags per `tools/call` audit. Verdict (j) aggregates:
+
+```
+verdict_j(trial):
+    calls = [audit for audit in trial.audits if audit.kind == "tools_call"]
+    if not calls: return "na"
+    correlated = sum(1 for c in calls if not c.correlation_lost)
+    rate = correlated / len(calls)
+    return "pass" if rate >= 0.80 else "fail"
+```
+
+Per-framework breakdown surfaces unreliable LLM/framework combos (per the E20 reliability ceiling discussion).
+
+### Tests
+
+- Unit: `mcp/mutable/` server tests — initial state correct; set_tools replaces; reset reverts; version_counter bumps
+- Unit: runner `mcp_admin` dispatch — POSTs to right URL; no-ops with log on non-mutable MCPs
+- Integration: full trial from the canonical E20 verification template — assert audit hash diversity + correlation rate
+- Verdict (j) test: synthetic audit data with known correlation rate; assert verdict computes correctly
+
+### Effort
+
+- `mcp/mutable/` server (Python): **S** (~150 LOC — copy weather MCP scaffold + admin handlers)
+- New turn kind `mcp_admin` in `harness/runner.py`: **S** (~30 LOC — HTTP POST, no adapter changes)
+- `docker-compose.yaml` entry + `agw/config.yaml` route: **XS** (~20 lines)
+- Verdict (j): **S** (~30 LOC + 2 tests)
+- Integration tests: **S** (~150 LOC)
+
+Total: **S-M** (~half-day to a day).
+
+### Why "build alongside E20, not before"
+
+E22 is purely E20's verification harness. Without E20 in place there's no `_ib_ss` hash to correlate against; the mutable MCP would just be a curiosity. Build order:
+
+1. E20 prerequisite: empirical RLHF compliance test using ANY existing MCP (~1 day, no AGW changes)
+2. If reliability acceptable → implement E20 itself in cidgar.rs (~half-day)
+3. Then E22: mutable MCP + `mcp_admin` + verdict (j) (~half-day)
+
+Building E22 standalone is wasted effort — it has no measurable signal without E20 producing the hashes.
+
+### Open questions
+
+1. **Admin governance attribution** — should admin endpoints emit audit events (visible to operators as "test mutated tools here") or be totally silent? Lean toward **silent** — admin is test infra, shouldn't pollute cidgar audit semantics. Operators who need the visibility can read the version_counter via `GET /_admin/state`.
+2. **`mcp_admin` payload shape** — should the `payload` field accept arbitrary JSON or be schema-validated against the admin endpoint's expected shape? Lean toward **passthrough** — keeps the runner generic; admin endpoint validates server-side. Errors surface as turn-error.
+3. **Multi-MCP-mutable in one trial** — could we have `mcp-mutable-1` AND `mcp-mutable-2` for testing simultaneous churn across MCPs? Out of scope for initial impl; revisit if needed.
+4. **Adapter awareness of mutation** — should adapters be told "the tools list just changed" via a hook, or just naturally observe it on the next `tools/list` call? Adapter-naive is cleaner — the WHOLE POINT is testing what happens when tools change UNDER the agent.
+
+### Cross-references
+
+- **E20** — this E22 is its verification harness; build E22 only after E20 lands
+- **E21** — `mcp_admin` composes with `refresh_tools`; both required for the canonical E20 verification trial
+- E18 (header-demux) — independent; admin calls don't go through cidgar so header-demux semantics are unaffected
+- New verdict (j) joins the (a)-(i) cluster (verdict (i) reserved for E20's `tools_list_correlation_rate`; verdict (j) is the trial-level pass/fail rollup)
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
