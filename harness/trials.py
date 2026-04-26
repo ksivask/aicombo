@@ -68,7 +68,17 @@ class Trial:
     trial_id: str
     config: TrialConfig
     turn_plan: TurnPlan
-    status: str = "idle"  # "idle" | "running" | "pass" | "fail" | "error" | "aborted" | "paused"
+    status: str = "idle"
+    # Status semantics (see runner.py for the assignment logic):
+    #   idle    — created, not yet run
+    #   running — turns are executing
+    #   pass    — all verdicts passed
+    #   fail    — trial ran to completion but ≥1 verdict didn't pass
+    #             (verdict=="fail" OR verdict=="error" both count)
+    #   error   — RUN-LEVEL exception (adapter threw, network died);
+    #             NOT used for verdict-computation errors
+    #   aborted — user invoked /abort mid-run
+    #   paused  — (reserved; not currently set)
     paired_trial_id: str | None = None
     created_at: str = ""
     started_at: str | None = None

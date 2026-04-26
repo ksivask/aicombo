@@ -107,15 +107,20 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     mcp = row.get("mcp", "NONE")
 
     if llm == "NONE":
+        # direct_mcp: NOT resized. The 2-turn template encodes MCP-specific
+        # deterministic queries with placeholder substitution; padding with
+        # generic "Tell me more." prompts has no LLM to tell more to. The
+        # template's turn count is intentional.
         plan = templates["direct_mcp"]
         subs_map = data.get("mcp_query_substitutions", {}) or {}
         subs = subs_map.get(mcp, {}) or {}
-        substituted = [
-            ({**t, "content": _subst(t.get("content", ""), subs)}
-             if t.get("kind") == "user_msg" else t)
-            for t in plan["turns"]
-        ]
-        return {"turns": _resize_turns(substituted, target)}
+        return {
+            "turns": [
+                ({**t, "content": _subst(t.get("content", ""), subs)}
+                 if t.get("kind") == "user_msg" else t)
+                for t in plan["turns"]
+            ]
+        }
 
     # Plan B T11 — row requests a force_state_ref plan. This overrides BOTH
     # the per-MCP default and the no-MCP default because verdict (e)'s design

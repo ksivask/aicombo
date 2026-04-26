@@ -217,17 +217,25 @@ async def run_trial(
         trial.verdicts = {k: {"verdict": v.verdict, "reason": v.reason}
                           for k, v in verdicts_out.items()}
 
-        any_fail = any(v.verdict == "fail" for v in verdicts_out.values())
-        any_error = any(v.verdict == "error" for v in verdicts_out.values())
-        trial.status = (
-            "error" if any_error
-            else "fail" if any_fail
-            else "pass"
+        # Trial-level status semantics:
+        #   pass  — all verdicts passed
+        #   fail  — trial ran to completion but ≥1 verdict didn't pass
+        #           (whether verdict=="fail" OR verdict=="error" — both mean
+        #           "didn't meet the bar"; per-verdict cells still show the
+        #           distinction between definitively-failed vs
+        #           computation-errored)
+        #   error — reserved for run-level exceptions (see except block
+        #           below). NEVER set here.
+        any_not_pass = any(
+            v.verdict in ("fail", "error") for v in verdicts_out.values()
         )
+        trial.status = "fail" if any_not_pass else "pass"
         trial.finished_at = datetime.now(timezone.utc).isoformat()
         store.save(trial)
 
     except Exception as e:
+        # Run-level exception — adapter raised, network died, etc.
+        # Distinct from "ran cleanly but a verdict failed" (status=fail).
         trial = store.load(trial_id)
         trial.status = "error"
         trial.error_reason = str(e)

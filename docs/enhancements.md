@@ -881,16 +881,9 @@ The `_ib_ss` carrier depends on the LLM populating a required parameter. Empiric
 - Threshold: e.g., correlation rate < 80% → flag the (framework, model) combo as unreliable for snapshot correlation
 - Operators see the data and can choose: tolerate the gap, escalate to a stronger model, or fall back to function-name suffix carrier (a future E20a)
 
-### Alternative carrier — MCP session-id mapping (worth considering as primary)
+### Why NOT MCP session-id mapping
 
-MCP transports expose session ids (`Mcp-Session-Id` header). AGW could maintain `(server_route, session_id) → latest_tools_list_hash` in-memory. When `tools/call` arrives on the same session, AGW looks up the hash from the session — no LLM cooperation needed.
-
-| Approach | Reliability | Cost | Caveats |
-|---|---|---|---|
-| `_ib_ss` param (this E20) | 85-95% | None on AGW; trusts LLM | Drops on smaller models |
-| Session-id map | ~100% if session preserved | In-memory map per route, ~256 LRU entries | Breaks on reconnect; assumes "tools/call follows tools/list on same session" |
-
-**Recommendation**: implement session-id map as **primary** (free, reliable when it works), `_ib_ss` as **fallback** for cross-session continuity. This makes the `_ib_ss` reliability ceiling less load-bearing — it's only consulted when session correlation fails.
+We considered tracking `(server_route, session_id) → latest_tools_list_hash` server-side as a primary carrier. **Rejected.** Session id is a transport-layer artifact whose semantics differ across MCP clients (some reconnect frequently, some pool, some skip sessions for stateless calls); building correlation on top of it conflates a stable conversational identity with a transport id. The LLM-roundtrip carrier (`_ib_ss`) reflects the actual chain we want to prove — "this tools/call resulted from a model decision made against THIS tools/list" — and degrades observably (audit `correlation_lost` flag) instead of silently when the underlying assumption breaks.
 
 ### Open questions
 
@@ -909,11 +902,10 @@ MCP transports expose session ids (`Mcp-Session-Id` header). AGW could maintain 
 ### Effort
 
 - AGW pipeline (new hook + audit fields): **S** (~50 LOC + 4 tests)
-- Optional session-id map carrier: **S-M** (~30 LOC + LRU cache + tests)
 - aiplay verdict (i): **S** (~20 LOC validator)
 - E2E smoke + cross-framework reliability survey: **S** (~1hr)
 
-Total: **S-M** (~half-day with the session-id alternative; less without).
+Total: **S** (~half-day).
 
 ### Why now (or why later)
 
@@ -921,7 +913,7 @@ Total: **S-M** (~half-day with the session-id alternative; less without).
 
 **Argue for defer**: depends on cross-LLM RLHF response to "pass exactly: <hash>" framing — needs empirical test. Without baseline reliability data we'd be flying blind on whether the carrier actually works on common models.
 
-**My pick**: start with the empirical RLHF test (1 day, no AGW changes — just spike the schema mutation in one adapter, observe LLM compliance across 3-5 model/framework combos). If reliability is acceptable (>80% on gpt-4o-mini and claude-haiku-4-5), proceed with E20 + session-id map. If not, pivot to function-name suffix carrier (E20a).
+**My pick**: start with the empirical RLHF test (1 day, no AGW changes — just spike the schema mutation in one adapter, observe LLM compliance across 3-5 model/framework combos). If reliability is acceptable (>80% on gpt-4o-mini and claude-haiku-4-5), proceed with E20. If not, pivot to function-name suffix carrier (E20a).
 
 ### Cross-references
 
