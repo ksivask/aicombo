@@ -585,6 +585,8 @@ button.btn-pairs:hover { background: #e3f2fd; border-radius: 3px; }
 .cid-flow-legend .legend-color.preserved { color: #28a745; }
 .cid-flow-legend .legend-color.single    { color: #ffc107; }
 .cid-flow-legend .legend-color.auditonly { color: #dc3545; }
+.cid-flow-legend .legend-color.snapshotconsumed { color: #6f42c1; }
+.cid-flow-legend .legend-color.snapshotorphan   { color: #a78bda; }
 .cid-flow-help {
   margin-top: 6px; padding-top: 6px; border-top: 1px dashed #ddd;
 }
