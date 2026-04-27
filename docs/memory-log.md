@@ -2,6 +2,14 @@
 
 Deferred / parked items from aiplay brainstorming sessions. Each entry is self-contained.
 
+## 2026-04-26 — Admin endpoint design lesson
+**Context:** E22 originally added an `mcp-mutable-admin` AGW route so admin calls "felt unified" with the rest of the gateway. User reverted in this session (commit `8bfb649`) on the principle: AGW should NOT know about test-harness concerns. Admin endpoints exist purely to mutate test fixtures; they're a backstage door for the harness.
+**Implication:** When adding new test-harness-only paths in the future (e.g. for E27+ verification harnesses), default to direct-container dispatch via docker-compose service name. Reach for an AGW route ONLY when the path is part of the user-facing surface or governance-relevant.
+
+## 2026-04-26 — Verdict (k) mode-C: who emits the marker
+**Context:** Verdict (k)'s mode-C originally read "model paraphrase suspected" — implying the LLM mangled the marker. Wrong. The LLM doesn't emit the marker; AGW does. Mode-C now lists 3 causes: AGW MARKER_RE didn't extract, adapter dropped marker during shape translation, channels config inconsistent across routes.
+**Implication:** When an AGW-emitted artifact appears garbled in audit, FIRST check AGW's emission code path (regex tolerances, shape-translation hops in the adapter, per-route config consistency) — NOT the LLM. The LLM is downstream of AGW for these markers.
+
 ## 2026-04-21 — Deferred for v1.1
 
 ### n8n framework integration

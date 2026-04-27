@@ -2,6 +2,39 @@
 
 Cidgar Harness C playground — designs a multi-framework test harness for the AGW governance pipeline (cidgar feature) beyond what Harness B covers.
 
+## 2026-04-26 — three small aiplay-side changes (post-c7fc59a)
+
+### Change 1: explicit `snapshot_correlation: true` on every channels block
+- AGW sibling (CHG-246) flipping default to false. Aiplay routes were implicit-true; now must be explicit-true to preserve E20 _ib_ss markers.
+- 8 channels blocks total (5 LLM: ollama/mock/chatgpt/claude/gemini; 3 MCP: weather/mutable/fetch). news + library use `governance` without an explicit `channels:` block — task scope was "every channels block" so I left those alone (they weren't opting into anything explicitly anyway).
+
+### Change 2: revert mcp-mutable-admin AGW route; admin goes direct
+**User-stated rationale:** admin endpoints are test-harness concern. AGW shouldn't even know they exist. Cleaner topology — one less AGW route, one less special-case backend type (the host: passthrough was a known oddity).
+**Mechanics:**
+- Delete entire `mcp-mutable-admin` route block (was added in fb71a9b, fixed in f755ae5).
+- New helper `pick_mcp_admin_base(mcp)` in runner.py — hardcoded to mutable-only for now, overridable via DIRECT_MCP_MUTABLE_ADMIN env var (defaults to docker-compose service name `http://mcp-mutable:8000`).
+- Replace `_pick_mcp_base_url(mcp_name, routing=...)` (env-var-driven, AGW_MCP_<NAME> + DIRECT_MCP_<NAME>) with the simpler helper. Old function is dead — removed wholly because admin was its only call site.
+- 3 tests touched in test_runner.py:
+  * dispatch test now asserts URL composed from direct base, not AGW.
+  * non-mutable test rewritten to assert no-HTTP short-circuit (was: 404 path mock). The 404 path no longer exists — non-mutable MCPs return None from the helper, never reach HTTP.
+  * library no-base-url test: docstring + signature cleanup; semantics unchanged.
+- Integration test: AGW_BASE → MCP_DIRECT_BASE; AGW_INTEGRATION_TEST → MCP_INTEGRATION_TEST.
+
+### Change 3: verdict (k) mode-C reason text (LLM doesn't emit marker — AGW does)
+**User correction (round #6 in earlier thread):** the marker is AGW's. So if it's "present-shaped but AGW-unrecognizable", the model didn't paraphrase — one of these happened:
+1. AGW MARKER_RE failed to extract (whitespace/format AGW added differs from regex tolerance).
+2. Adapter dropped the marker during shape translation between LLM switches.
+3. cidgar `channels` config inconsistent across routes.
+**Mechanics:**
+- Update `verdict_k_cross_api_continuity` mode-C return text to enumerate those 3 causes.
+- Update docstring's failure-mode taxonomy section to match.
+- 4 spots in test_efficacy.py: mode-B comment ("paraphrase" → "marker bytes survived but AGW didn't reuse them"); mode-A negative assertion ("model paraphrase" → "MARKER_RE"); mode-C docstring; mode-C positive assertions (3 new positive assertions for the 3 causes; new negative assertion for "paraphrase").
+- Test function name `test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach` left alone — internal-only label, would touch more lines.
+
+### Tradeoffs weighed
+- ONE commit vs TWO: chose TWO for clean separation (config/infra commit vs reason-text commit). User said "1 or 2 — your call".
+- Could have left `_pick_mcp_base_url` for backward compat — but it had only one call site (the `mcp_admin` branch I was rewriting), so dead-code-removal was safe.
+
 ## E22 mcp-mutable-admin AGW route fix (2026-04-27)
 
 ### Problem
@@ -497,3 +530,63 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 ### Tradeoffs considered
 - TrialConfig vs RowConfig divergence: TrialConfig (dataclass in trials.py) does NOT carry with_* flags; only RowConfig (Pydantic in api.py) does. Templates.py reads directly from row dict. Decision: only add flag to RowConfig — no TrialConfig change needed.
 - Template branch order: placed BEFORE mcp=NONE fast-path to ensure template selection wins regardless of MCP, though validator gates mcp=mutable.
+
+## CHG-247 — flip text_marker + resource_block defaults to false (2026-04-27)
+
+### Decision
+- Flip both defaults in one shot, mirroring CHG-246's pattern. Single AGW source commit + single AGW docs commit.
+
+### Tradeoffs considered
+- Could split CHG-247 into two changes (one per field). Rejected — they motivate identically (uniform opt-in), should land atomically so the spec can talk about "all three flags now opt-in" without a transitional state.
+- Could keep `mcp_marker_kind: Resource` as the enum default OR flip to a new "None" variant. Kept Resource — B-NEW-3 already gates the entire kind by `resource_block`, so the enum default is moot when `resource_block: false`. Adding a None variant would be a larger API change for no operational benefit.
+- The CHG-246 leftover (test_on_tools_list_resp_skips_ib_ss_for_non_object_schema not exercising the schema-shape skip path) was visible during the audit but explicitly out of scope per "touch only what you must". Flagged in conversation log for a future tightening pass.
+
+### Test classification rule
+- If a test pins INJECTION (emit) of a channel: enable that channel explicitly.
+- If a test pins EXTRACTION (read-back) only: leave alone — extraction is not channel-gated.
+- If a test pins STRIP-side hooks (`on_tool_call_req`): leave alone — strip is unconditional.
+- If a test pins Channel-1 (`_ib_cid` in `tool_use.input` / `function.arguments`): leave alone — Channel 1 is not channel-gated.
+- If a test pins the gate-OFF behavior (B-NEW-3, default-off snapshot tests): leave alone.
+
+### Test count math
+- 31 cidgar tests + 7 config tests = 38 in this module group; ledger reports 144 total governance tests. CHG-247a is net 0 (mutates, doesn't add).
+
+## 2026-04-26 — Validator + drawer + ollama default fix bundle
+
+### Decisions
+- Validator: drop turn_id check entirely (runner generates `turn-NNN-xxxxxxxx` via uuid). Required: kind ∈ canonical set; user_msg requires content; force_state_ref requires lookback; mcp_admin requires op.
+- Drawer: turn template snippets use `content` not `text`; button tooltips updated to match.
+- Ollama default everywhere: `llama3.1:latest`. Curated dropdown reorders so llama3.1:latest is FIRST (per UI convention: first wins).
+
+### Tradeoff considered: docker-compose + .env.example
+- User listed only "7 adapter files + BULK_ADD + harness/models.py". Did not explicitly call out compose/env.
+- BUT — compose ENV (DEFAULT_OLLAMA_MODEL=qwen2.5:7b) is what runtime sees first; the adapter fallback only fires if env is absent.
+- Decision: update compose + .env.example too. Rationale: keeping the env scalar at qwen2.5:7b while changing the adapter fallback is INCOHERENT — runtime would still hit qwen2.5:7b. The user's intent ("ollama default = llama3.1:latest") requires both.
+- This expands the change beyond the spec but aligns with the underlying goal. Will note in commit msg.
+
+### Tradeoff considered: test_api.py changes
+- 4 templates_validate tests use {turn_id, text} shape. After validator rewrite they'd fail (no content + invalid since text-only no longer satisfies content check; turn_id no longer required so missing-turn_id test asserts wrong thing).
+- Decision: rewrite those 4 tests to use `content` and remove turn_id. Replace the `rejects_missing_turn_id` test with one asserting turn_id is now OPTIONAL.
+
+### Reconsidered: docker-compose + .env.example + adapters/*/main.py
+- User explicitly listed the files to change. Surgical-changes principle: don't expand scope.
+- Decision: STICK to the spec. Touch only the 7 framework_bridge.py files + combo + harness/models.py + harness/api.py + frontend/drawer.js. Plus the necessary test updates.
+- Compose env will still pin to qwen2.5:7b at runtime — the user can change that themselves if they want. The fallback change still has effect when env is absent (e.g. running adapters outside docker).
+
+## Topic: cytoscape.js interactive CID flow tab (2026-04-26)
+
+### Topology extractor design
+- Helper `_buildCidFlowTopology(trial)` returns plain object with turns/cids/audits/snapshots/edges arrays.
+- Mermaid `renderCidFlowTab` re-derives its own auxiliary maps (cidNodeId, ssNodeId) from this — keeps Mermaid string IDENTICAL.
+- Cytoscape mounter consumes the same topo object, builds elements list with classes for styling.
+
+### Tradeoffs
+- cytoscape-dagre: ~25KB extension. Could omit and use built-in `breadthfirst`/`grid`. But dagre gives the most readable LR flow shape mirroring the Mermaid one — worth the load.
+- Could embed cytoscape locally (vendor) like mermaid.min.js. The user's spec explicitly says CDN; following spec.
+- Render-cache hash: use HTML hash same as Mermaid path. cytoscape rebuild is more expensive (DOM destroy + recreate); the cache avoids needless re-mounts on poll ticks.
+- Cleanup: __cidFlowInteractiveCy holds the cy instance so we can `.destroy()` before remounting. Without this, leaked listeners + container clobber.
+
+### Potential pitfalls
+- cytoscape-dagre exposes itself as `cytoscapeDagre` (camelCase) via UMD — confirmed via package's dist file naming. `cytoscape.use(window.cytoscapeDagre)` should work.
+- Layout failures on display:none parent: cytoscape will measure 0×0 and place all nodes at origin. Same defer-on-visibility fix as Mermaid.
+- "Reset positions" button: re-runs dagre layout — discards any user drag. Acceptable per spec.

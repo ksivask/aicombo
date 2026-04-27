@@ -411,3 +411,158 @@ Sticking to ONE commit per task spec (could split reset_context+verdict-c-refact
 - tests/test_validator.py: 2 new tests — requires mutable + passes with mutable.
 
 **Result:** Pytest 317 → 320 (3 new tests). ONE commit.
+
+## 2026-04-26 — code-review-3-fixes
+- AGW a2286e82: E25 OR→AND, +E20 non-object skip test (137→138)
+- aiplay c7fc59a: verdict_k mode A/B/C disambiguation (318→320 incl. +2 new)
+- Touched ONLY: cidgar.rs, efficacy.py, test_efficacy.py per scope guard
+
+## 2026-04-26 — three small aiplay-side changes (E25/E22/verdict-k mode-C)
+
+### Entry — User prompt (subagent task)
+**User:** Three changes (config + revert + reason text). 1-2 commits. AGW
+sibling subagent flipping snapshot_correlation default to false; need
+aiplay routes to opt in explicitly. Also: admin endpoints are
+test-harness concern → revert mcp-mutable-admin AGW route, dispatch
+direct. Also: mode-C in verdict_k blamed "model paraphrase" — wrong
+because LLM doesn't emit the marker (AGW does); replace with the actual
+root causes.
+
+### Reasoning
+- 8 `channels:` blocks in agw/config.yaml (5 LLM + 3 MCP — news/library
+  have no channels block, so untouched). Added `snapshot_correlation: true`
+  with E25/CHG-246 inline comment to each.
+- Revert path: deleted the entire `mcp-mutable-admin` route from
+  agw/config.yaml (added in fb71a9b, modified in f755ae5). Replaced its
+  comment with a one-paragraph note pointing operators at
+  `pick_mcp_admin_base` in runner.py.
+- Runner: replaced env-var-driven `_pick_mcp_base_url(name, routing)`
+  with hardcoded `pick_mcp_admin_base(mcp)` returning
+  `http://mcp-mutable:8000` (overridable via `DIRECT_MCP_MUTABLE_ADMIN`)
+  for `mcp == "mutable"`, None otherwise.
+- 3 mcp_admin tests in test_runner.py needed surgery:
+  * dispatch test: switch env var (AGW_MCP_MUTABLE → DIRECT_MCP_MUTABLE_ADMIN)
+    and expected URL (agentgateway:8080 → mcp-mutable:8000).
+  * non-mutable test: rewrite to assert short-circuit BEFORE HTTP
+    (no_base_url path) instead of 404 path. Removed httpx mock + monkeypatch.
+  * library no_base_url test: signature + comment cleanup, semantics
+    unchanged (still hits no_base_url path).
+- Integration test rewritten: AGW_BASE → MCP_DIRECT_BASE, env-var marker
+  AGW_INTEGRATION_TEST → MCP_INTEGRATION_TEST. Two test functions hit
+  the direct mcp-mutable URL.
+- Verdict (k) mode-C: dropped "model paraphrase suspected" framing.
+  New text enumerates the 3 actual causes: AGW MARKER_RE didn't extract
+  / adapter dropped marker / channels config inconsistent. Updated
+  docstring failure-mode taxonomy to match. Updated 4 spots in
+  test_efficacy.py — comment, mode-A negative assertion, mode-C
+  docstring, mode-C positive assertions.
+
+### Actions / Commits
+- `8bfb649` config(aiplay): E25 explicit snapshot_correlation; revert
+  mcp-admin AGW route — agw/config.yaml + harness/runner.py +
+  tests/test_runner.py + tests/test_mcp_mutable_integration.py.
+- `ebbfefa` fix(efficacy): verdict (k) — drop "model paraphrase"
+  mode-C framing — harness/efficacy.py + tests/test_efficacy.py.
+- Pytest: 320 → 320 passed, 4 skipped unchanged. Two commits chosen
+  over one for clean separation between config/infra (E25 + E22 revert)
+  and verdict-text fix.
+
+### Constraints honored
+- No AGW source/docs touched (sibling subagent owns it).
+- No verdict_i / verdict_c / templates / validator / api / trials touched.
+- No push.
+
+## 2026-04-27 — CHG-247: flip text_marker + resource_block defaults to false (AGW)
+
+### Entry — User prompt (subagent task)
+Flip ChannelToggles text_marker + resource_block defaults true → false for uniform opt-in. AGW change. Two commits (source + docs). Auto-execute, ≤30 min.
+
+### Reasoning
+- CHG-247 mirrors CHG-246's pattern (which flipped snapshot_correlation). The user verified aiplay precondition: all 10 governance routes already explicit, so flipping defaults is a no-op for aiplay behavior.
+- Audit each `CidGarConfig::default()` call site in `cidgar.rs` to classify by whether the test pins channel-emit (must enable explicitly) vs strip-side / extraction-only / Channel-1 (no change needed).
+- Found 7 cidgar tests that needed explicit channel enabling; the B-NEW-3 gating test already explicitly sets resource_block=false; tests for snapshot_correlation already explicit (CHG-246). Also flipped the in-file `defaults_applied_when_omitted` config test assertions.
+
+### Actions
+- Edited `crates/agentgateway/src/governance/config.rs` (defaults flipped, field docstrings rewritten, in-file test updated).
+- Edited 7 tests in `crates/agentgateway/src/governance/cidgar.rs` to explicitly enable text_marker / resource_block where they pin the now-opt-in emit paths.
+- Verified clippy `--lib --tests -- -D warnings` clean.
+- Verified all 31 governance::cidgar tests + 7 governance::config tests pass under --test-threads=1; 5 representative tests also verified individually.
+- Committed AGW source: 27e09495 (ibfork/feat/cidgar).
+- Updated AGW docs: agw-governance-spec.md (§4.2 channel notes, §14.6 example/gating-note prose, §14.8 example, new §14.9 "Channel toggle defaults — uniform opt-in") + change-ledger.md (CHG-247 / CHG-247a / CHG-247b rows + commit-hash line + test-count net-0 note).
+- Committed AGW docs: 3bfbe19b (ibfork/docs).
+- Did NOT push either repo. Did NOT touch aiplay (precondition satisfied — all routes already explicit).
+- Did NOT touch the unrelated bedrock.rs / responses.rs working-tree modifications in the cidgar worktree.
+
+### Findings / Notes
+- Pre-existing CHG-246 leftover noted (not in scope, not changed): `test_on_tools_list_resp_skips_ib_ss_for_non_object_schema` pins schema-shape gating but with snapshot_correlation now defaulting false, the assertion is trivially satisfied. To preserve semantic intent, that test should explicitly enable `snapshot_correlation = true`. Out of scope for CHG-247; flagged for a future docs/test-tightening pass.
+
+## 2026-04-26 — Validator + drawer + ollama default fix bundle
+
+### Entry — User prompt (subagent task)
+**User:** Four related fixes in aiplay. Logical bundle: validator + drawer + ollama default. ONE commit (or 2 if config separated). Auto-execution policy. HEAD = e623861.
+
+Fix 1: harness/api.py::templates_validate — drop turn_id check, swap text→content, add mcp_admin op check.
+Fix 2: frontend/drawer.js — TURN_TEMPLATES use content (not text) + button title attrs swap text→content.
+Fix 3: Default Ollama model qwen2.5:7b → llama3.1:latest in 7 adapter framework_bridge.py + combo + harness/models.py curated list (reorder so llama3.1:latest is FIRST).
+Fix 4: Combo per-LLM default — verify works after Fix 3 (no extra change needed).
+
+### Reasoning
+- Pytest baseline: 320 passed, 4 skipped (324 collected).
+- BULK_ADD button in frontend/app.js does NOT reference qwen2.5:7b — it lets the runner use DEFAULT_<PROVIDER>_MODEL env. So no app.js change needed.
+- Existing tests in test_api.py (lines 130-185) use `text` + `turn_id` in their /templates/validate calls. Those WILL break unless updated. Will rewrite those test cases to use `content` (no turn_id), per the runner-aligned shape. The override-roundtrip and recompute tests at lines 199/267/364 don't go through validate, just persist/load TurnPlans, so they don't strictly need changes — but for clarity/consistency I'll switch them to `content` too.
+- llamaindex has a comment string "Unknown model 'qwen2.5:7b'" — that's documentation about an upstream OpenAILike behavior, leave alone.
+- adapters/*/main.py also have DEFAULT_OLLAMA_MODEL fallbacks (not just framework_bridge.py); fix those too for consistency.
+- docker-compose.yaml + .env.example also reference qwen2.5:7b; the user didn't list these explicitly but they're the actual deployment defaults. Re-read prompt: "Adapter env var fallbacks (7 files)" — only fall_back_strings in adapters/. But the docker-compose.yaml ENV is what gets injected at runtime, so the adapter env fallback is moot when compose is up. Will update docker-compose.yaml + .env.example too since the user's intent is "default = llama3.1:latest" everywhere.
+
+### Plan
+1. harness/api.py — rewrite templates_validate (drop turn_id, content not text, add mcp_admin)
+2. frontend/drawer.js — TURN_TEMPLATES content + button title strings
+3. harness/models.py — reorder ollama list (llama3.1:latest first)
+4. 7 adapter framework_bridge.py + combo — qwen2.5:7b → llama3.1:latest
+5. adapter main.py info-endpoint defaults
+6. docker-compose.yaml + .env.example
+7. Update test_api.py — turn_id-removal + content (4 tests changed; 1 test renamed since "rejects_missing_turn_id" no longer applies — replace with one that asserts turn_id is OPTIONAL)
+8. Run pytest, run python -c sanity check
+9. ONE commit
+
+### Result
+- Commit: `4cc70eb` on branch main (parent e623861, as spec'd)
+- Pytest: 320 -> 322 passed (4 skipped). Net +2 (added turn_id_optional + mcp_admin_requires_op tests; removed obsolete rejects_missing_turn_id)
+- Files changed: 11 (7 adapter framework_bridge.py + harness/api.py + harness/models.py + frontend/drawer.js + tests/test_api.py)
+- Validator dry-run (per spec):
+  - old-style (text+turn_id): {ok: False, errors: ["turn 0: user_msg requires non-empty 'content'"]}
+  - new-style (content, no turn_id): {ok: True, errors: []}
+  - with_reset shape: {ok: True, errors: []}
+- All 10 defaults.yaml templates validate clean (including direct_mcp, with_e20_verification, with_reset, with_responses_state_force_ref, etc.)
+
+### Honored constraints
+- ONE commit
+- No push
+- No AGW touch
+- Runner not modified (source of truth preserved)
+- Strictly within spec: did NOT touch adapters/*/main.py info-endpoint defaults, docker-compose.yaml, .env.example (user's spec listed only framework_bridge.py + models.py + api.py + drawer.js + app.js — and app.js had no qwen2.5:7b reference so no change there either)
+
+---
+
+## Session: 2026-04-26 — Add cytoscape.js interactive CID flow tab
+
+### User prompt
+Add a new "CID flow (interactive)" tab to trial.html powered by cytoscape.js — drag-droppable nodes, layout selector, same topology data as existing Mermaid CID flow tab. Parallel addition (don't replace existing tab). DRY via shared topology extractor. ONE commit. No push. Auto-execution policy.
+
+### My reasoning
+- Existing renderCidFlowTab in trial.js (lines ~1120-1341) builds Mermaid string from turns/audits/CIDs. Need to extract the topology-building part into _buildCidFlowTopology(trial) helper and have BOTH tabs consume it.
+- cytoscape.js needs a sized container; like Mermaid, it needs visibility-deferred mount. Mirror the __cidFlowNeedsMermaid pattern with __cidFlowInteractiveNeedsMount.
+- cytoscape-dagre is registered via `cytoscape.use(cytoscapeDagre)` — UMD build exposes as `window.cytoscapeDagre`. Need to register before cy creation.
+- Critical: existing Mermaid output must be byte-identical after refactor (tests / saved-screenshots may compare). Refactor should JUST share the topology object; the Mermaid-string-building loop stays in renderCidFlowTab.
+
+### Result
+- Files touched: frontend/trial.html, frontend/trial.js, frontend/style.css
+- Pytest: 322 passed, 4 skipped (unchanged from prior baseline)
+- node --check passes on trial.js
+- Refactor: introduced _buildCidFlowTopology(trial); both renderCidFlowTab (Mermaid) and new renderCidFlowInteractiveTab (cytoscape) consume it. Mermaid string assembly preserves original iteration order, IDs, label format, classDefs — output byte-identical.
+- Layout extension: registered cytoscape-dagre via `cytoscape.use(window.cytoscapeDagre)` gated by a `cytoscape.__dagreRegistered` flag (cytoscape.use throws on re-registration with same name; gating makes it idempotent across remounts during poll cycles). If window.cytoscapeDagre is missing (CDN block), falls back to built-in `breadthfirst` layout — graph still renders, just less pretty.
+- Visibility-defer mount: __cidFlowInteractiveCy held to .destroy() before remounting. mountCytoscapeIfVisible() short-circuits when tab hidden or container missing or cytoscape lib undefined. Mirrors __cidFlowNeedsMermaid pattern.
+- Stash: __lastTrialForCy module-level lets the tab-switch click handler invoke mountCytoscapeIfVisible without needing trial in scope.
+- Empty state: same as Mermaid tab — two branches (no turns/audits/cids vs no CIDs found).
+- Legend: <details> below the canvas with same color coding as Mermaid tab.
+- Constraints honored: ONE commit, NO push, existing CID flow Mermaid tab UNCHANGED in output.
