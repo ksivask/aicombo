@@ -29,9 +29,68 @@ const TURN_TEMPLATES = {
   refresh_tools:           {kind: "refresh_tools"},                              // E21
 };
 
-// Append a copy of TURN_TEMPLATES[key] to plan.turns[] in the editor. If the
-// editor is empty / invalid JSON, initializes a fresh {turns: [picked]}.
-// Exposed on window for click handlers wired in the rendered toolbar HTML.
+// Insert a copy of TURN_TEMPLATES[key] into plan.turns[] at the cursor's
+// current position. Walks the formatted JSON to map cursor.line → turn
+// index: cursor at/before turn N's opening brace inserts BEFORE turn N
+// (so the new turn becomes N and the rest shift down). Cursor past the
+// last turn appends. Cursor outside the turns array → append (sane
+// fallback). Empty editor / invalid JSON → fresh {turns: [picked]}.
+function _cursorToTurnIndex(plan) {
+  if (!cmInstance || !plan.turns || plan.turns.length === 0) return 0;
+  const cursor = cmInstance.getCursor();
+  const lines = cmInstance.getValue().split("\n");
+  // Re-stringify so we can compute the same indentation the editor uses
+  // (JSON.stringify(_, null, 2) is deterministic).
+  const formatted = JSON.stringify(plan, null, 2).split("\n");
+  // Find line indexes of each turn's opening brace inside the turns array.
+  // Each turn-object opener at depth=2 looks like "    {" (4-space indent).
+  let inArray = false, depth = 0;
+  const turnOpenerLines = [];
+  for (let i = 0; i < formatted.length; i++) {
+    const ln = formatted[i];
+    if (!inArray) {
+      if (/"turns":\s*\[/.test(ln)) inArray = true;
+      continue;
+    }
+    // Track nesting depth from { and } characters
+    if (depth === 0 && /^\s{4}\{\s*$/.test(ln)) turnOpenerLines.push(i);
+    for (const c of ln) {
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+    }
+    if (depth < 0) break;   // closing ] of turns array
+  }
+  // The actual editor content may differ from `formatted` if the user
+  // edited freely. Use the editor's text for cursor mapping by re-walking
+  // it the same way (so cursor lines match what the user sees).
+  const liveOpenerLines = [];
+  inArray = false; depth = 0;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (!inArray) {
+      if (/"turns":\s*\[/.test(ln)) inArray = true;
+      continue;
+    }
+    if (depth === 0 && /^\s*\{\s*$/.test(ln)) liveOpenerLines.push(i);
+    for (const c of ln) {
+      if (c === "{") depth++;
+      else if (c === "}") depth--;
+    }
+    if (depth < 0) break;
+  }
+  // Cursor is BEFORE the first turn's opener → insert at 0.
+  // Cursor is AT or PAST the last opener → append.
+  // Cursor between opener[i] and opener[i+1] → insert at i+1 (after turn i).
+  if (liveOpenerLines.length === 0) return plan.turns.length;
+  if (cursor.line < liveOpenerLines[0]) return 0;
+  for (let idx = 0; idx < liveOpenerLines.length - 1; idx++) {
+    if (cursor.line >= liveOpenerLines[idx] && cursor.line < liveOpenerLines[idx + 1]) {
+      return idx + 1;
+    }
+  }
+  return plan.turns.length;
+}
+
 function addTurn(templateKey) {
   if (!cmInstance) return;
   const tmpl = TURN_TEMPLATES[templateKey];
@@ -42,12 +101,18 @@ function addTurn(templateKey) {
     if (!plan || typeof plan !== "object") plan = {turns: []};
     if (!Array.isArray(plan.turns)) plan.turns = [];
   } catch {
+    // Invalid JSON — start fresh; cursor mapping is moot.
     plan = {turns: []};
   }
   // Deep-clone the template so successive clicks don't share references.
-  plan.turns.push(JSON.parse(JSON.stringify(tmpl)));
+  const newTurn = JSON.parse(JSON.stringify(tmpl));
+  const insertAt = _cursorToTurnIndex(plan);
+  plan.turns.splice(insertAt, 0, newTurn);
   cmInstance.setValue(JSON.stringify(plan, null, 2));
-  setStatus("info", `Added ${templateKey} turn (${plan.turns.length} total) — review and Save.`);
+  setStatus(
+    "info",
+    `Inserted ${templateKey} turn at position ${insertAt} (${plan.turns.length} total) — review and Save.`
+  );
 }
 
 function escapeHtml(s) {
