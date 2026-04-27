@@ -204,6 +204,8 @@ const MCP_OPTIONS = ["NONE", "weather", "news", "library", "fetch", "mutable"];
 class MultiSelectCellEditor {
   init(params) {
     this.params = params;
+    // DEBUG (multi-select diagnose) — remove after fix verified
+    console.log("[MSE init]", params.column.getColId(), "params.value =", params.value, "type:", Array.isArray(params.value) ? "array" : typeof params.value);
     const initial = Array.isArray(params.value) ? new Set(params.value)
                   : params.value ? new Set([params.value]) : new Set();
     // Resolve options: cellEditorParams.values can be array OR a function
@@ -240,18 +242,22 @@ class MultiSelectCellEditor {
   }
   getValue() {
     let checked = Array.from(this.eGui.querySelectorAll("input:checked")).map(i => i.value);
+    console.log("[MSE getValue]", this.params.column.getColId(), "checked:", checked, "(", checked.length, "items )");
     if (checked.length === 0) {
-      // Empty state would leak as "" into validator → confusing
-      // "incompatible with api=X" error for required mcp/llm columns.
-      // Auto-recover by selecting NONE if it's an option in this column.
       const noneBox = this.eGui.querySelector('input[value="NONE"]');
       if (noneBox) {
         noneBox.checked = true;
+        console.log("[MSE getValue] empty → returning NONE");
         return "NONE";
       }
+      console.log("[MSE getValue] empty → returning ''");
       return "";
     }
-    if (checked.length === 1) return checked[0];   // legacy single-value
+    if (checked.length === 1) {
+      console.log("[MSE getValue] single → returning string:", checked[0]);
+      return checked[0];
+    }
+    console.log("[MSE getValue] multi → returning array:", checked);
     return checked;
   }
   isPopup() { return true; }
@@ -516,10 +522,16 @@ async function initGrid() {
 
 let debounceTimer = null;
 async function onCellValueChanged(event) {
+  const colId = event.column?.getColId();
+  // DEBUG (multi-select diagnose) — remove after fix verified
+  if (colId === "llm" || colId === "mcp") {
+    console.log("[onCellValueChanged]", colId,
+      "oldValue:", event.oldValue, "(type:", Array.isArray(event.oldValue) ? "array" : typeof event.oldValue, ")",
+      "newValue:", event.newValue, "(type:", Array.isArray(event.newValue) ? "array" : typeof event.newValue, ")");
+  }
   // E9 — handle the model column's "__custom__" sentinel synchronously
   // BEFORE debounce + PATCH, so the sentinel never gets persisted.
   // window.prompt() blocks; if the user cancels we revert to oldValue.
-  const colId = event.column?.getColId();
   if (colId === "model" && event.newValue === "__custom__") {
     const custom = window.prompt(
       "Enter a custom model id (leave blank to use default):",
@@ -569,6 +581,7 @@ async function onCellValueChanged(event) {
       event.api.redrawRows({rowNodes: [event.api.getRowNode(row.row_id)]});
     }
     // Persist
+    console.log("[PATCH]", row.row_id, "llm:", row.llm, "mcp:", row.mcp);
     await fetch(`${API_BASE}/matrix/row/${row.row_id}`, {
       method: "PATCH",
       headers: {"Content-Type": "application/json"},
