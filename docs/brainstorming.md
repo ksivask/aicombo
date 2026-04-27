@@ -453,3 +453,16 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - Model column dropdown is degraded for list-form llm rows (uses `params.data.llm` as a single-string cache key). Out of scope — model UX gets fixed when E24 lands and provides actual multi-LLM trial output to inspect.
 - `parseListLikeCell` collapses single-element lists `["weather"]` back to a plain string `"weather"`. This is intentional: it preserves backwards-compat at the wire level (existing single-MCP rows can edit through the new text editor without changing on disk) but it does mean the frontend is opinionated about "list with 1 item is really a string". Backend accepts both shapes either way.
 - `MULTI_MCP_FRAMEWORKS` empty means EVERY list-form mcp row is currently non-runnable. Intentional — schema lands now, adapters opt in later. Tests confirm the failure mode is loud and explicit ("framework=X doesn't support multi-MCP form...").
+
+## E26 — persist body on AuditEntry (verdict (i) production fix)
+
+### Decisions
+- Field placement: appended `body: dict | None = None` AFTER `captured_at` (also defaulted) on `AuditEntry`. Ensures `AuditEntry(**a)` reconstruction in `TrialStore.load` works for legacy persisted JSONs that have neither `body` nor maybe even `captured_at`. All existing positional/kwarg call sites (api.py, runner.py, tests) keep working unchanged.
+- Lookup precedence in `_audit_correlation_lost`: top-level `entry.body` FIRST (canonical post-E26 production path), then fall back to `raw["correlation_lost"]` (synthetic test fixtures), `raw["body"]["correlation_lost"]` (legacy shape-B-with-body), `raw["fields"]["body"]["correlation_lost"]` (legacy shape-A persisted via raw=obj). All four paths preserved deliberately.
+- Legacy compatibility: pre-E26 trial JSONs reload with `body=None` via the dataclass default — verdict (i) will fall back to `raw` walks for them. Shape-B legacy trials remain silently broken (the prior bug); shape-A legacy trials still work via `raw["fields"]["body"]`.
+- Test mirroring: shape-B test sets `raw={"line": "..."}` (no body in raw) + body on top-level — exactly what production produces. This is the "smoking gun" coverage that proves E26 fixes the real bug, not just round-trip plumbing.
+
+### Trade-offs / known gaps
+- The test for shape-B AuditEntry construction in test_audit_tail.py imports `from trials import AuditEntry`. This is a benign cross-module test dep; conftest already wires harness/ onto sys.path.
+- Did NOT touch any frontend / UI surfaces. AuditEntry serialization gains a `body` field in the JSON dump; UI consumers that didn't expect it will silently ignore it (every consumer reads named fields).
+- Did NOT update verdict (c) (E21) or verdict (k) (E24) per scope guard. Both currently use `entry.raw` walks for their own purposes; out of scope for E26.

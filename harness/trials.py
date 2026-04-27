@@ -61,6 +61,14 @@ class AuditEntry:
     # for in-memory window queries; the two systems never compare
     # directly. Don't unify naively without checking both consumers.
     captured_at: str = ""
+    # E26 — top-level mirror of audit_tail's parsed `body` dict. Both shape A
+    # (JSON) and shape B (regex-parsed) lines surface the body as a top-level
+    # field of the parsed-event dict, but pre-E26 AuditEntry only carried
+    # `raw` so the body was dropped on persist. Verdict (i)
+    # tools_list_correlation reads `correlation_lost` from this field;
+    # legacy persisted trials (loaded via TrialStore.load) default to None
+    # and verdict (i) falls back to walking `raw` for compatibility.
+    body: dict[str, Any] | None = None
 
 
 @dataclass

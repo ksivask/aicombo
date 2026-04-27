@@ -340,3 +340,19 @@ Sticking to ONE commit per task spec (could split reset_context+verdict-c-refact
 - **Pytest: 284 → 293 collected (+9), 282 → 291 active (+9), 2 skipped unchanged.** Zero regressions. Same skip count.
 - Two commits planned: (1) schema + validator + tests, (2) frontend cell editor.
 
+## 2026-04-26 — E26: persist body on AuditEntry (verdict (i) production fix)
+
+### Entry — E26 implementation
+**User:** Implement E26 per spec in docs/enhancements.md (`## E26 — persist body on AuditEntry`). Aiplay-only. ONE commit. Auto-execute (no prompts).
+
+**Reasoning:** Tight ~10 LOC change with explicit step-by-step plan in the prompt. Risks: (1) `AuditEntry(**a)` from legacy persisted JSONs would fail if `body` were positional/required → mitigated by adding it after `captured_at` with default None. (2) Existing verdict (i) tests use `_tool_call_audit` fixture that sets `correlation_lost` directly under `raw` (not under `raw["body"]` or top-level body) → kept that path as a fallback in `_audit_correlation_lost`. (3) Reordered the body lookup to prefer top-level `entry.body` first since it's the canonical post-E26 path that works for both shape A (JSON) and shape B (regex) production logs.
+
+**Actions:**
+- `harness/trials.py`: added `body: dict[str, Any] | None = None` to `AuditEntry` dataclass (after `captured_at`, with explanatory comment).
+- `harness/api.py`: passed `body=entry.get("body")` and `body=e.get("body")` at the two `AuditEntry` construction sites in `_run_trial_bg`.
+- `harness/efficacy.py::_audit_correlation_lost`: prefer top-level `entry.body` before walking `entry.raw`. Kept all legacy fallbacks (raw direct, raw["body"], raw["fields"]["body"]) for synthetic test fixtures + pre-E26 persisted trials.
+- `tests/test_efficacy.py`: +2 tests — `test_verdict_i_reads_body_from_top_level_field` (shape-B mirror — raw has only `{"line": ...}`, body on top-level field) and `test_verdict_i_legacy_raw_body_fallback_still_works` (body=None, correlation under raw["body"] — pre-E26 shape A).
+- `tests/test_audit_tail.py`: +1 test `test_e26_body_carries_through_both_shapes_into_audit_entry` — both shape A and shape B `parse_log_line` output have non-None `body`, AND `AuditEntry` construction round-trips it.
+
+**Files changed:** harness/trials.py, harness/api.py, harness/efficacy.py, tests/test_efficacy.py, tests/test_audit_tail.py
+

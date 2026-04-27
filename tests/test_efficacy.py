@@ -822,6 +822,64 @@ def test_verdict_i_na_when_no_tool_call_audits():
     assert "no tool_call audits" in v["i"].reason
 
 
+def test_verdict_i_reads_body_from_top_level_field():
+    """E26 — production audit_tail surfaces governance body on the new
+    top-level `AuditEntry.body` field. Verdict (i) MUST prefer it over the
+    legacy `raw["body"]` walk; this is the only path that works for
+    shape-B (regex-parsed) cidgar log lines, where `raw` is just
+    `{"line": <text>}`. Mirror the production shape exactly: body lives
+    on the top-level field, raw carries no body dict."""
+    audits = [
+        AuditEntry(
+            trial_id="t", turn_id=None, phase="tool_call",
+            cid="ib_abcdef012345", backend="weather-mcp",
+            raw={"line": "shape-B governance text"},  # no body in raw
+            body={
+                "correlation_lost": False,
+                "snapshot_hash": "deadbeef",
+                "original_tool_name": "get_weather",
+            },
+            captured_at="2026-04-26T00:00:00+00:00",
+        ),
+        AuditEntry(
+            trial_id="t", turn_id=None, phase="tool_call",
+            cid="ib_abcdef012345", backend="weather-mcp",
+            raw={"line": "shape-B governance text"},
+            body={
+                "correlation_lost": False,
+                "snapshot_hash": "cafef00d",
+                "original_tool_name": "get_weather",
+            },
+            captured_at="2026-04-26T00:00:01+00:00",
+        ),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["i"].verdict == "pass", f"got {v['i']}"
+    assert "100%" in v["i"].reason
+
+
+def test_verdict_i_legacy_raw_body_fallback_still_works():
+    """E26 — legacy persisted trials (pre-E26) have body=None on the
+    AuditEntry and the body dict only survived under raw["body"]
+    (shape A) or raw["fields"]["body"] (shape A loaded from JSON). Verdict
+    (i) MUST fall back to those raw walks for backward compatibility."""
+    audits = [
+        # Legacy shape: top-level body field is None (default), correlation
+        # only available under raw["body"].
+        AuditEntry(
+            trial_id="t", turn_id=None, phase="tool_call",
+            cid="ib_abcdef012345", backend="weather-mcp",
+            raw={"body": {"correlation_lost": False, "snapshot_hash": "abc"}},
+            body=None,
+            captured_at="2026-04-26T00:00:00+00:00",
+        ),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["i"].verdict == "pass", f"got {v['i']}"
+
+
 # ── E24 — verdict (k) cross-API continuity (combo / multi-LLM trials) ──
 
 

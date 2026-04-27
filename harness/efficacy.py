@@ -869,17 +869,21 @@ def verdict_h_overhead(trial: Trial, pair_resolver=None) -> Verdict:
 def _audit_correlation_lost(entry) -> bool | None:
     """E20 — extract `correlation_lost` from a `tool_call` audit entry.
 
-    Tolerant to two shapes the verdict can encounter:
+    Tolerant to multiple shapes the verdict can encounter:
 
-      1. AuditEntry dataclass populated by audit_tail / api.py (production):
-         the `correlation_lost` boolean lives inside `entry.raw["body"]` (the
-         parsed cidgar log entry). For shape-B (regex-parsed) lines, `raw`
-         only carries `{"line": <raw_text>}` — there is no body dict to
-         walk. The verdict treats unrecoverable entries as `correlation_lost
-         = True` (worst-case observable: we can't prove the call WAS
-         correlated, so for a reliability metric we count it against).
+      1. AuditEntry dataclass populated by audit_tail / api.py (production,
+         post-E26): the parsed governance body lives on the top-level
+         `entry.body` field. Both shape A (JSON) and shape B (regex-parsed
+         text) cidgar log lines populate this — see audit_tail._parse_line.
+         This is the canonical path; everything below is fallback.
 
-      2. Synthetic dicts / dataclasses that test fixtures hand to the
+      2. AuditEntry dataclass persisted by pre-E26 trials (legacy on-disk
+         JSONs loaded via TrialStore.load): `entry.body` is None because the
+         field didn't exist at persist time. For shape A those legacy trials
+         retained the body via `entry.raw["fields"]["body"]`; shape B was
+         silently broken and stays broken (not recoverable from raw).
+
+      3. Synthetic dicts / dataclasses that test fixtures hand to the
          verdict directly. Tests typically set `entry.raw = {...}` with
          `correlation_lost` and `original_tool_name` as top-level keys for
          readability. Walk both.
@@ -887,20 +891,29 @@ def _audit_correlation_lost(entry) -> bool | None:
     Returns None when the entry doesn't carry the field at all; the caller
     decides the unrecoverable-entry policy.
     """
+    # E26 — prefer the top-level `body` field populated from audit_tail's
+    # parsed dict. This is the only path that works for shape B production
+    # logs. `entry` may be a dataclass or a synthetic dict in tests.
+    body = (
+        entry.get("body") if isinstance(entry, dict)
+        else getattr(entry, "body", None)
+    )
+    if isinstance(body, dict) and "correlation_lost" in body:
+        v = body["correlation_lost"]
+        return bool(v) if v is not None else None
+
+    # Legacy + synthetic-fixture fallbacks: walk `raw`.
     raw = getattr(entry, "raw", None) if not isinstance(entry, dict) else entry.get("raw", entry)
     if isinstance(raw, dict):
         if "correlation_lost" in raw:
             v = raw["correlation_lost"]
             return bool(v) if v is not None else None
-        body = raw.get("body")
-        if isinstance(body, dict) and "correlation_lost" in body:
-            v = body["correlation_lost"]
+        rbody = raw.get("body")
+        if isinstance(rbody, dict) and "correlation_lost" in rbody:
+            v = rbody["correlation_lost"]
             return bool(v) if v is not None else None
-        # JSON-shape (audit_tail shape A): full event dict where body lives
-        # under fields.body. Tolerate either shape so the verdict works on
-        # both shape-A and shape-B production logs once audit_tail starts
-        # forwarding body alongside raw (today AuditEntry only carries
-        # raw — see audit_tail.py for the shape-A vs shape-B note).
+        # JSON-shape (audit_tail shape A) legacy persisted trials: body
+        # survived under fields.body since `raw = obj` for shape A.
         fields = raw.get("fields")
         if isinstance(fields, dict):
             fbody = fields.get("body")

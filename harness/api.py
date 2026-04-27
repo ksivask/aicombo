@@ -445,6 +445,7 @@ async def trial_run(row_id: str):
                 phase=entry.get("phase"), cid=entry.get("cid"),
                 backend=entry.get("backend"), raw=entry.get("raw", {}),
                 captured_at=entry.get("timestamp", ""),
+                body=entry.get("body"),  # E26
             ))
         AUDIT_TAIL.subscribe(trial_id, cb)
 
@@ -481,6 +482,7 @@ async def _run_trial_bg(trial_id: str, adapter, row_id: str | None = None, start
                     phase=e.get("phase"), cid=e.get("cid"),
                     backend=e.get("backend"), raw=e.get("raw", {}),
                     captured_at=e.get("timestamp", ""),
+                    body=e.get("body"),  # E26
                 ))
         return demuxed
 
