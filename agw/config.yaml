@@ -243,6 +243,10 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                channels:
+                  text_marker: true
+                  resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -263,6 +267,10 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                channels:
+                  text_marker: true
+                  resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
