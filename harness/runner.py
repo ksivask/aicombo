@@ -17,27 +17,18 @@ from efficacy import compute_verdicts
 _log = logging.getLogger(__name__)
 
 
-def _pick_mcp_base_url(mcp_name: str, routing: str = "via_agw") -> str | None:
-    """Resolve an MCP base URL for harness-direct calls (E22 mcp_admin).
+def pick_mcp_admin_base(mcp: str) -> str | None:
+    """E22 (post-revert): direct URL to MCP container's admin endpoint.
 
-    Mirrors the AGW_MCP_<NAME> / DIRECT_MCP_<NAME> env-var convention
-    that adapters already use. Returns None if neither var is set —
-    callers should treat that as "skip this turn".
-
-    routing="via_agw"  → AGW_MCP_<NAME> (governed path, but admin route
-                         in agw/config.yaml has policies: {} so the
-                         admin sub-path bypasses cidgar).
-    routing="direct"   → DIRECT_MCP_<NAME> (skip AGW entirely).
+    Returns None for MCPs without admin support (everything except
+    mutable today). Admin endpoints bypass AGW entirely — they're a
+    test-harness concern; AGW stays unaware of them. The container name
+    + port works because all services share docker-compose's default
+    network.
     """
-    name = (mcp_name or "").upper()
-    if not name:
+    if mcp != "mutable":
         return None
-    if routing == "direct":
-        return os.environ.get(f"DIRECT_MCP_{name}")
-    return (
-        os.environ.get(f"AGW_MCP_{name}")
-        or os.environ.get(f"DIRECT_MCP_{name}")
-    )
+    return os.environ.get("DIRECT_MCP_MUTABLE_ADMIN", "http://mcp-mutable:8000")
 
 
 async def run_trial(
@@ -218,11 +209,17 @@ async def run_trial(
                             "reason": f"force_state_ref turn failed: {e}",
                         }
             elif kind == "mcp_admin":
-                # E22 — harness-direct admin call against an MCP server's
-                # /_admin/* endpoint. Adapter-naive: the agent never sees
-                # this happen, which is the WHOLE POINT for E20's
-                # snapshot-correlation tests (mutation drives the agent
-                # to discover a new tools/list on the next fetch).
+                # E22 (revised post-f755ae5): admin endpoints go DIRECTLY
+                # to the MCP container, bypassing AGW entirely. Admin is
+                # a test-harness concern; AGW should be unaware of admin
+                # paths. The harness and MCP containers share the
+                # docker-compose default network, so the service name +
+                # port is reachable.
+                #
+                # Adapter-naive: the agent never sees this happen, which
+                # is the WHOLE POINT for E20's snapshot-correlation tests
+                # (mutation drives the agent to discover a new tools/list
+                # on the next fetch).
                 #
                 # Resolution order for the target MCP name:
                 #   turn_spec.mcp  >  trial.config.mcp
@@ -231,9 +228,7 @@ async def run_trial(
                 mcp_name = turn_spec.get("mcp") or trial.config.mcp
                 op = turn_spec.get("op")
                 payload = turn_spec.get("payload") or {}
-                base = _pick_mcp_base_url(
-                    mcp_name, routing=trial.config.routing,
-                )
+                base = pick_mcp_admin_base(mcp_name)
                 turn.request = {
                     "mcp": mcp_name,
                     "op": op,

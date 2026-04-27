@@ -37,6 +37,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: ollama
@@ -68,6 +69,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: mock-openai
@@ -117,6 +119,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: openai
@@ -156,6 +159,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: anthropic
@@ -189,6 +193,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: gemini
@@ -217,6 +222,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -265,45 +271,15 @@ binds:
                       mcp:
                         host: http://mcp-library:8000/mcp
 
-          # ── MCP route: mutable-admin (E22) ──
-          #
-          # MUST come BEFORE mcp-mutable below — AGW matches routes in
-          # declaration order and we want the more-specific /_admin path
-          # prefix to win. NO governance: the admin endpoints are test
-          # infrastructure for runtime tool-list mutation (E20 verification
-          # harness), not conversational MCP traffic. Routing them through
-          # cidgar would pollute the audit stream with non-conversational
-          # events and add a transformation hop that has no semantic value
-          # for the test surface.
-          - name: mcp-mutable-admin
-            matches:
-              - path:
-                  pathPrefix: /mcp/mutable/_admin
-            policies:
-              urlRewrite:
-                path:
-                  prefix: /_admin
-            backends:
-              # Plain HTTP passthrough (Opaque backend). The admin endpoints
-              # are vanilla REST (Starlette `@mcp.custom_route`), NOT JSON-RPC.
-              # An `mcp:` backend would 415/400 every admin call because
-              # AGW's mcp upstream requires:
-              #   1. Accept header containing BOTH `application/json` AND
-              #      `text/event-stream` (harness sends only application/json),
-              #   2. body to deserialize as `ClientJsonRpcMessage` (harness
-              #      sends `{"tools": [...]}` — pure REST shape).
-              # See AGW src/mcp/streamablehttp.rs::handle_post for both checks.
-              # The urlRewrite above turns `/mcp/mutable/_admin/<op>` into
-              # `/_admin/<op>` so the upstream URL on mcp-mutable:8000 is
-              # exactly what its custom_route handlers register.
-              - host: mcp-mutable:8000
-
           # ── MCP route: mutable (E22) ──
           #
           # Test MCP server with a runtime-mutable tool list. Standard
-          # cidgar governance applies on the MCP path; admin path above
-          # carves out the /_admin/* prefix so harness mutation calls
-          # bypass governance.
+          # cidgar governance applies on the MCP path. The /_admin/* surface
+          # is NOT proxied through AGW — admin endpoints are a test-harness
+          # concern (E20 verification), and AGW deliberately stays unaware
+          # of them. Harness calls hit mcp-mutable:8000/_admin/* directly
+          # over the docker-compose default network. See harness/runner.py
+          # `pick_mcp_admin_base` for the dispatch.
           - name: mcp-mutable
             matches:
               - path:
@@ -322,6 +298,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -354,6 +331,7 @@ binds:
                 channels:
                   text_marker: true
                   resource_block: true
+                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
                   mcp_marker_kind: both  # E7 — emit resource AND text markers.
                   # Requires AGW image built from ibfork/feat/cidgar
                   # commit 5c96003a or later. Older binaries reject this field.

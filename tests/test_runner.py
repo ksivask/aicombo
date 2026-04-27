@@ -368,8 +368,12 @@ async def test_mcp_admin_set_tools_dispatches_to_admin_endpoint(
     store = TrialStore(tmp_data_dir / "trials")
     store.save(trial)
 
+    # E22 (post-revert): admin endpoints go DIRECT to the mcp-mutable
+    # container, NOT through AGW. Override the default container URL via
+    # the DIRECT_MCP_MUTABLE_ADMIN env var so the test doesn't depend on
+    # docker-compose hostnames.
     monkeypatch.setenv(
-        "AGW_MCP_MUTABLE", "http://agentgateway:8080/mcp/mutable",
+        "DIRECT_MCP_MUTABLE_ADMIN", "http://mcp-mutable:8000",
     )
 
     adapter = MagicMock()
@@ -397,13 +401,13 @@ async def test_mcp_admin_set_tools_dispatches_to_admin_endpoint(
             audit_entries_provider=lambda: [],
         )
 
-    # Verify the POST: URL composed from AGW_MCP_MUTABLE + /_admin/set_tools,
-    # JSON body is the turn's payload.
+    # Verify the POST: URL composed from DIRECT_MCP_MUTABLE_ADMIN +
+    # /_admin/set_tools (NOT through AGW), JSON body is the turn's payload.
     fake_client.post.assert_called_once()
     call_args = fake_client.post.call_args
     url = call_args.args[0] if call_args.args else call_args.kwargs.get("url")
     assert url == (
-        "http://agentgateway:8080/mcp/mutable/_admin/set_tools"
+        "http://mcp-mutable:8000/_admin/set_tools"
     ), url
     posted_json = call_args.kwargs.get("json")
     assert posted_json == {
@@ -422,13 +426,15 @@ async def test_mcp_admin_set_tools_dispatches_to_admin_endpoint(
 
 @pytest.mark.asyncio
 async def test_mcp_admin_against_non_mutable_mcp_is_no_op(
-    tmp_data_dir, monkeypatch,
+    tmp_data_dir,
 ):
-    """mcp_admin against an MCP whose admin endpoint 404s logs + skips.
+    """mcp_admin against a non-mutable MCP short-circuits before any HTTP.
 
-    Non-mutable MCPs (weather/news/library/fetch) don't expose /_admin/*.
-    The harness should treat 404 as "skipped" rather than as a
-    trial-failing error so trial scripts can use mcp_admin defensively.
+    E22 (post-revert): only the mutable MCP exposes /_admin/* today.
+    `pick_mcp_admin_base` returns None for every other mcp name, so the
+    runner records a "skipped: no_base_url" sentinel without ever making
+    an HTTP call. Trial scripts can call mcp_admin defensively against
+    any MCP without per-MCP guards.
     """
     cfg = TrialConfig(
         framework="langchain", api="chat", stream=False, state=False,
@@ -449,42 +455,27 @@ async def test_mcp_admin_against_non_mutable_mcp_is_no_op(
     store = TrialStore(tmp_data_dir / "trials")
     store.save(trial)
 
-    monkeypatch.setenv(
-        "AGW_MCP_WEATHER", "http://agentgateway:8080/mcp/weather",
-    )
-
     adapter = MagicMock()
     adapter.create_trial = AsyncMock(return_value={"ok": True})
     adapter.delete_trial = AsyncMock(return_value={"ok": True})
     adapter.drive_turn = AsyncMock()
 
-    # Mock httpx to return 404 on the admin POST (no /_admin endpoint
-    # on the weather MCP).
-    fake_resp = MagicMock(status_code=404)
-    fake_resp.json.side_effect = ValueError("not json")
-    fake_resp.text = "Not Found"
-    fake_client = MagicMock()
-    fake_client.post = AsyncMock(return_value=fake_resp)
-    fake_async_ctx = MagicMock()
-    fake_async_ctx.__aenter__ = AsyncMock(return_value=fake_client)
-    fake_async_ctx.__aexit__ = AsyncMock(return_value=False)
-
-    with patch("runner.httpx.AsyncClient", return_value=fake_async_ctx):
-        await run_trial(
-            trial_id="trial-mcpadmin-noop",
-            store=store,
-            adapter_client=adapter,
-            audit_entries_provider=lambda: [],
-        )
+    # No httpx mock needed — the runner never reaches the HTTP call
+    # because pick_mcp_admin_base("weather") returns None.
+    await run_trial(
+        trial_id="trial-mcpadmin-noop",
+        store=store,
+        adapter_client=adapter,
+        audit_entries_provider=lambda: [],
+    )
 
     loaded = store.load("trial-mcpadmin-noop")
     turn = loaded.turns[0]
-    # 404 → skipped sentinel; turn is NOT marked as an error so the
-    # trial doesn't fail just because the chosen MCP lacks _admin.
+    # Skipped sentinel — turn is NOT marked as an error so the trial
+    # doesn't fail just because the chosen MCP lacks _admin support.
     assert turn.error is None, turn.error
     assert turn.response.get("skipped") is True
-    assert turn.response.get("reason") == "admin_not_found"
-    assert turn.response.get("status") == 404
+    assert turn.response.get("reason") == "no_base_url"
 
 
 # ── E21 — reset_context + refresh_tools turn kinds ─────────────────────
@@ -658,14 +649,14 @@ async def test_runner_records_reset_context_error_on_adapter_failure(
 
 @pytest.mark.asyncio
 async def test_mcp_admin_with_no_base_url_skips_with_log(
-    tmp_data_dir, monkeypatch,
+    tmp_data_dir,
 ):
-    """mcp_admin against an MCP with no AGW_MCP_<NAME> env logs + skips.
+    """mcp_admin against an MCP with no admin support logs + skips.
 
-    Defensive path for trial scripts that reference MCPs the harness
-    isn't configured for. Distinct from the 404 path (the env var is
-    missing entirely) so the audit trail can distinguish "no URL" from
-    "URL but no admin endpoint".
+    E22 (post-revert): only `mutable` has admin support today; every
+    other MCP name resolves to base=None via `pick_mcp_admin_base` and
+    the runner records a `no_base_url` skipped sentinel without making
+    any HTTP call.
     """
     cfg = TrialConfig(
         framework="langchain", api="chat", stream=False, state=False,
@@ -684,9 +675,9 @@ async def test_mcp_admin_with_no_base_url_skips_with_log(
     store = TrialStore(tmp_data_dir / "trials")
     store.save(trial)
 
-    # Make sure neither env var is set so _pick_mcp_base_url returns None.
-    monkeypatch.delenv("AGW_MCP_LIBRARY", raising=False)
-    monkeypatch.delenv("DIRECT_MCP_LIBRARY", raising=False)
+    # E22 (post-revert): only `mutable` has admin support, so for any
+    # other mcp name `pick_mcp_admin_base` returns None unconditionally.
+    # No env-var manipulation needed.
 
     adapter = MagicMock()
     adapter.create_trial = AsyncMock(return_value={"ok": True})
