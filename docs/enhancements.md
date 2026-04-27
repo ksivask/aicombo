@@ -1496,6 +1496,151 @@ E20 verdict (i) is a no-op in production until this lands. Without it, the whole
 
 ---
 
+## E24a — combo adapter intra-turn multi-MCP fan-out
+
+**Status: future. Aiplay combo adapter + validator + tests. ~150-200 LOC.**
+
+### The gap
+
+E24's combo adapter currently warns + ignores `mcp != "NONE"`. E19's `mcp: str | list[str]` schema accepts list-form but `MULTI_MCP_FRAMEWORKS = set()` is empty (no adapter actually wires it up).
+
+Real production agents commonly use multiple MCP servers in one conversation — and within a SINGLE turn the LLM may pick tools spanning multiple servers. User's example: a "Seattle research" turn that needs weather (forecast for Seattle), news (current events), library (books about Seattle history), and fetch (a specific URL summary) — all picked by the LLM in response to one user prompt.
+
+### The proposal
+
+Combo adapter accepts `mcp: list[str]`, connects to all listed servers in parallel at trial init, advertises the UNION of their tools to the LLM, and routes each `tools/call` to the right server based on a `(tool_name → mcp_server)` lookup table.
+
+### Implementation
+
+**Trial init** (`adapters/combo/framework_bridge.py::Trial.__init__`):
+
+```python
+# Accept list-form mcp; coerce single string to list for uniform handling
+mcp_field = config.get("mcp", "NONE")
+if mcp_field == "NONE":
+    self._mcp_list = []
+else:
+    self._mcp_list = mcp_field if isinstance(mcp_field, list) else [mcp_field]
+
+# Build per-MCP client pool + merged tool catalog + routing table
+self._mcp_clients = {}              # {server_name: fastmcp.Client | similar}
+self._merged_tool_catalog = []       # [{name, description, inputSchema}]
+self._tool_routing = {}              # {tool_name: server_name}
+```
+
+**At trial start** (lazy init or eager):
+
+```python
+async def _connect_mcps(self):
+    """Connect to every MCP in self._mcp_list, fetch tools/list, merge
+    into self._merged_tool_catalog with collision-detection + (tool_name
+    → server_name) routing table."""
+    for mcp_name in self._mcp_list:
+        client = await self._build_mcp_client(mcp_name)   # via_agw routing
+        self._mcp_clients[mcp_name] = client
+        tools = await client.list_tools()
+        for tool in tools:
+            if tool.name in self._tool_routing:
+                # Collision — last-server-wins + log warning
+                log.warning(
+                    "tool name collision: %r in both %r and %r — last wins. "
+                    "Consider renaming one tool or using prefixed mode.",
+                    tool.name, self._tool_routing[tool.name], mcp_name,
+                )
+            self._tool_routing[tool.name] = mcp_name
+            self._merged_tool_catalog.append({
+                "name": tool.name,
+                "description": tool.description,
+                "inputSchema": tool.inputSchema,
+            })
+```
+
+**LLM tool advertisement** (per turn):
+
+The combo adapter passes `self._merged_tool_catalog` to the LLM client (OpenAI / Anthropic) as the available tools. LLM picks freely across server boundaries.
+
+**Tool-call dispatch** (intercepted from the LLM client):
+
+```python
+async def _on_tool_call(self, name: str, arguments: dict):
+    """Route to the right MCP server based on the routing table."""
+    server = self._tool_routing.get(name)
+    if not server:
+        raise ValueError(f"unknown tool: {name}")
+    client = self._mcp_clients[server]
+    return await client.call_tool(name, arguments)
+```
+
+### Validator change
+
+`harness/validator.py`:
+
+```python
+MULTI_MCP_FRAMEWORKS = {"combo"}   # was: set() — combo opts in via E24a
+```
+
+This unlocks list-form `mcp` for combo rows. Other frameworks remain single-MCP only until they explicitly opt in.
+
+### Trial flow (your Seattle example)
+
+```yaml
+# Row config:
+framework: combo
+api: chat                     # or messages — combo handles both
+llm: chatgpt                  # single-LLM here; multi-LLM is orthogonal
+mcp: ["weather", "news", "library", "fetch"]
+routing: via_agw
+
+# Default per-MCP template selected by templates.py based on mcp[0],
+# OR override via with_e20_verification / with_reset / etc.
+turns:
+  - {kind: user_msg, content: "What's the weather forecast for Seattle?"}
+  - {kind: user_msg, content: "What are the current news headlines for Seattle?"}
+  - {kind: user_msg, content: "Find books about Seattle tourism in the library."}
+  - {kind: user_msg, content: "Fetch https://seattle.org and summarize its main page."}
+```
+
+Each turn's LLM call sees the FULL merged tool catalog (weather + news + library + fetch tools). LLM picks the right tool per turn; combo routes automatically. AGW sees normal `/mcp/<server>` traffic per call — its existing per-route governance fires as usual.
+
+### Collision handling — first cut
+
+**Last-server-wins** with a logged warning. Collisions are rare in aiplay's 4 production MCPs (`weather_get`, `news_search`, `library_find`, `fetch_url` — all distinct).
+
+If collisions become real, future enhancement (E24a-prefix) could prefix tool names with `<server>__` (e.g., `weather__get`, `news__search`) — would handle collisions at the cost of clean LLM UX. Defer until needed.
+
+### Tests
+
+- Unit: `tests/test_adapter_combo.py::test_init_accepts_list_form_mcp` — config with `mcp: ["weather", "fetch"]` builds `_mcp_list = ["weather", "fetch"]`
+- Unit: `test_connect_mcps_merges_tool_catalogs` — mock 2 MCP clients, assert merged catalog has tools from both
+- Unit: `test_connect_mcps_warns_on_name_collision` — set up 2 mock clients with overlapping tool name, assert warning logged + last-wins routing
+- Unit: `test_on_tool_call_routes_to_correct_server` — assert `weather_get` dispatches to weather client, `fetch_url` to fetch client
+- Integration (skip-marked): full Seattle-style trial against running docker stack; assert each turn's `framework_events` show the right `/mcp/<server>` URL per tool
+
+### Effort
+
+- Combo adapter changes: **M** (~120 LOC + careful async client pool management)
+- Validator change: **XS** (1 LOC + 1 test)
+- Tests: **S** (~80 LOC mocking + 5-7 cases)
+- Frontend (no change needed — multi-select MCP cell editor already shipped post-E19/E23)
+
+Total: **M** (~half-day to a day).
+
+### Cross-references
+
+- E19 — multi-MCP schema (just unblocked at validator level for combo)
+- E24 — multi-LLM-same-CID adapter; E24a is the orthogonal axis (multi-MCP-per-trial)
+- E22 — `mcp_admin` already routes by mcp name; works for any MCP combo includes
+- E37 — drawer plan-flag UI; no change (E24a is data-axis, not flag-axis)
+
+### Open questions
+
+1. **MCP session lifecycle**: connect at trial init (eager) vs first-tool-call (lazy)? Eager is simpler + catches connection failures upfront. Recommend eager for first cut.
+2. **Per-MCP credential / config**: today MCPs use shared docker-compose service names. If different MCPs need different routing (e.g., per-MCP auth headers), need per-server config knobs in the row config. Defer until needed.
+3. **Tool-call timeout / retry per server**: combo currently doesn't expose per-server timeouts. Inherit from the shared `httpx.AsyncClient`'s default. Acceptable first cut.
+4. **AGW route per server**: each MCP in the list must have a corresponding `/mcp/<server>` route in `agw/config.yaml`. Validator could check this; first cut just trusts the config.
+
+---
+
 ## E27 — aggregate verdict (i) measurement per (framework, model) cell
 
 **Status: future. Frontend + harness API. ~80 LOC.**
