@@ -256,17 +256,45 @@ function tryParseSSE(s) {
   if (!payloads.length) return null;
   return payloads.length === 1 ? payloads[0] : payloads;
 }
+// Walk possible body locations (E26: top-level body; legacy: raw.fields.body
+// for shape-A JSON logs; raw.body for older fixtures). Returns the
+// snapshot_hash value if AGW emitted one for this audit (E20 — present on
+// tools_list and tool_call phases when channels.snapshot_correlation is on).
+function _auditSnapshotHash(a) {
+  const body = a.body || a.raw?.fields?.body || a.raw?.body || {};
+  return body.snapshot_hash || null;
+}
+
 function renderAudit(entries) {
   if (!entries.length) return "<em>(no audit entries captured in this turn's time window)</em>";
-  return entries.map(a => `
+  return entries.map(a => {
+    const phase = a.phase || '?';
+    const ss = _auditSnapshotHash(a);
+    // Per-phase header badges:
+    //   tools_list  → snapshot_hash (no cid; tools/list happens before any
+    //                 conversation context, so cid is typically ∅)
+    //   tool_call   → cid AND snapshot_hash (the call carries both — cid for
+    //                 conversation tracking, ss for snapshot correlation E20)
+    //   other       → cid only (legacy behavior)
+    let idBadges = '';
+    if (phase === 'tools_list') {
+      idBadges = `<span class="badge">ss: ${ss || '∅'}</span>`;
+    } else if (phase === 'tool_call') {
+      idBadges = `<span class="badge">cid: ${a.cid || '∅'}</span>` +
+                 `<span class="badge">ss: ${ss || '∅'}</span>`;
+    } else {
+      idBadges = `<span class="badge">cid: ${a.cid || '∅'}</span>`;
+    }
+    return `
     <div class="audit-entry">
-      <span class="badge ${a.phase || 'unknown'}">phase: ${a.phase || '?'}</span>
-      <span class="badge">cid: ${a.cid || '∅'}</span>
+      <span class="badge ${phase}">phase: ${phase}</span>
+      ${idBadges}
       <span class="badge">backend: ${shortenBackend(a.backend)}</span>
       ${a.captured_at ? `<span class="badge">ts: ${a.captured_at.slice(11, 23)}</span>` : ''}
       <details><summary>raw governance log</summary><div class="pre-with-copy">${copyPreBtn()}<pre>${escapeHtml(JSON.stringify(a.raw, null, 2))}</pre></div></details>
     </div>
-  `).join("");
+    `;
+  }).join("");
 }
 function shortenBackend(b) {
   if (!b) return "?";
@@ -520,7 +548,7 @@ async function renderTrial(tid) {
   tabContents.plan.innerHTML = renderPlanTab(plan, (trial.turns || []).length);
 
   const verdicts = trial.verdicts || {};
-  tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts);
+  tabContents.verdicts.innerHTML = renderVerdictsTab(verdicts, trial);
 
   tabContents.note.innerHTML = renderNoteTab(trial);
 
@@ -644,7 +672,34 @@ function renderPlanTab(plan, executedCount) {
   `;
 }
 
-function renderVerdictsTab(verdicts) {
+// Walk all audit entries + collect unique CIDs and snapshot hashes for
+// the verdicts-tab banner. Source of truth is trial.audit_entries (live
+// AGW log) — not the wire bodies, since channels can be disabled and the
+// audit stream is the authoritative record of what AGW saw.
+function _collectIdentifiers(trial) {
+  const cids = new Set();
+  const snapshots = new Set();
+  for (const a of (trial.audit_entries || [])) {
+    if (a.cid) cids.add(a.cid);
+    const ss = _auditSnapshotHash(a);
+    if (ss) snapshots.add(ss);
+  }
+  return {cids: [...cids].sort(), snapshots: [...snapshots].sort()};
+}
+
+function renderIdentifiersBanner(trial) {
+  const {cids, snapshots} = _collectIdentifiers(trial);
+  const cidList = cids.length ? cids.join(", ") : "<em>(none observed)</em>";
+  const ssList = snapshots.length ? snapshots.join(", ") : "<em>(none observed)</em>";
+  return `
+    <div class="identifiers-banner">
+      <div><strong>CIDs (${cids.length}):</strong> <code>${cidList}</code></div>
+      <div><strong>Snapshots (${snapshots.length}):</strong> <code>${ssList}</code></div>
+    </div>
+  `;
+}
+
+function renderVerdictsTab(verdicts, trial) {
   const labels = {
     a: "Presence", b: "Channel structure", c: "Continuity",
     d: "Resilience", e: "State-mode gap", f: "GAR richness",
@@ -733,7 +788,7 @@ function renderVerdictsTab(verdicts) {
       </div>
     `;
   }
-  return abortedBanner + ["a","b","c","d","e","f","h","i","k"].map(lvl => {
+  return renderIdentifiersBanner(trial) + abortedBanner + ["a","b","c","d","e","f","h","i","k"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     const tip = tips[lvl] || "";
     return `

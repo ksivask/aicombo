@@ -729,3 +729,17 @@ table.support-matrix td.cell-na     { color: #999; }
 }
 .multi-select-option:hover { background: #f0f4f8; }
 .multi-select-option input[type="checkbox"] { margin: 0; cursor: pointer; }
+
+/* ── Verdicts tab: identifiers banner ── */
+.identifiers-banner {
+  background: #f8f9fa; border-left: 3px solid #007bff;
+  padding: 8px 12px; margin: 0 0 12px 0; border-radius: 0 3px 3px 0;
+  font-size: 13px;
+}
+.identifiers-banner > div { margin: 2px 0; }
+.identifiers-banner code {
+  background: white; padding: 1px 6px; border-radius: 2px;
+  font-family: ui-monospace, monospace; font-size: 12px;
+  border: 1px solid #e0e0e0; color: #333;
+}
+.identifiers-banner em { color: #999; font-size: 12px; }
