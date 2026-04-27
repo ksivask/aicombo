@@ -1456,6 +1456,46 @@ Total: **M** (~day to day-and-a-half).
 
 ---
 
+## E26 — persist `body` on AuditEntry so verdict (i) works in production
+
+**Status: future. Aiplay-only. ~10 LOC + 1 test.**
+
+### The gap
+
+E20's verdict (i) `tools_list_correlation` walks `audit.raw["body"]` / `audit.raw["fields"]["body"]` to read the `correlation_lost` flag. This works under tests (fixtures put `correlation_lost` directly into `raw["body"]`) but is silently broken in production:
+
+- `harness/audit_tail.py::_parse_line` extracts `body` for both shapes A (JSON) and B (regex-parsed text) and returns it as the top-level `body` field of the parsed-event dict.
+- `harness/trials.py::AuditEntry` has NO `body` field — only `raw`. So persistence drops the top-level `body` on the floor.
+- For shape A trials, `raw = obj` so `raw["fields"]["body"]` happens to retain the body — verdict (i) limps along.
+- For shape B (production default — `RUST_LOG_FORMAT=json` not set in docker-compose), `raw = {"line": line}` — body is gone. Verdict (i) reads None → returns NA on every real trial.
+
+### Fix
+
+Three ~3-LOC edits:
+1. `trials.py::AuditEntry`: add `body: dict | None = None`
+2. `harness/api.py::audit_provider` (or wherever `AuditEntry` is constructed from the audit_tail dict): pass `body=parsed["body"]`
+3. `harness/efficacy.py::_audit_correlation_lost`: prefer `entry.body` over `entry.raw["fields"]["body"]` (keep the raw fallback for legacy persisted trials)
+
+### Tests
+
+- 1 regression in `tests/test_efficacy.py`: synthetic trial with `correlation_lost` set on `entry.body` (top-level, not `raw`) → verdict (i) reads it correctly.
+- 1 unit in `tests/test_audit_tail.py` (or wherever audit-tail tests live): both shape A and shape B parsed events produce a non-empty top-level `body`, and the `AuditEntry` carries it through.
+
+### Effort
+
+**XS** — half-hour.
+
+### Why now
+
+E20 verdict (i) is a no-op in production until this lands. Without it, the whole snapshot-correlation measurement story ships dark.
+
+### Cross-references
+
+- E20 — verdict (i) consumes the persisted body
+- E22 — `mcp_admin` audit emission also benefits (currently the test infra logs admin events at INFO; once persisted body is available, post-trial scripts could correlate admin events to subsequent tool_call hashes)
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
