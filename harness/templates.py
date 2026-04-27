@@ -133,6 +133,18 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
             and "with_responses_state_force_ref" in templates):
         return templates["with_responses_state_force_ref"]
 
+    # E20 — row requests the verification trial. Requires mcp=mutable
+    # (only MCP exposing /_admin/* admin endpoints). NOT resized — verdict
+    # (i) needs the exact 5-turn shape (user_msg → user_msg → mcp_admin →
+    # refresh_tools → user_msg) to produce 2 distinct snapshots.
+    # Precedence (B1, code-review-resolved): with_e20_verification BEFORE
+    # with_reset because E20 is the more-specific test (requires mcp=mutable
+    # + produces snapshot-correlation signal); reset is generic CID
+    # isolation. Order matches the drawer.js E37 hint string.
+    if (row.get("with_e20_verification")
+            and "with_e20_verification" in templates):
+        return templates["with_e20_verification"]
+
     # E21 — row requests the reset_context bracket-test plan. Checked
     # BEFORE the mcp=NONE early-return because verdict (c)'s multi-segment
     # math doesn't depend on whether an MCP is bound — the reset turn is
@@ -141,16 +153,6 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     # shape (2 user_msg → reset_context → 2 user_msg).
     if row.get("with_reset") and "with_reset" in templates:
         return templates["with_reset"]
-
-    # E20 — row requests the verification trial. Requires mcp=mutable
-    # (only MCP exposing /_admin/* admin endpoints). NOT resized — verdict
-    # (i) needs the exact 5-turn shape (user_msg → user_msg → mcp_admin →
-    # refresh_tools → user_msg) to produce 2 distinct snapshots.
-    # Placed BEFORE the per-MCP fast-path so the template selection wins
-    # regardless of mcp value (validator gates mcp=mutable separately).
-    if (row.get("with_e20_verification")
-            and "with_e20_verification" in templates):
-        return templates["with_e20_verification"]
 
     if mcp == "NONE":
         return {"turns": _resize_turns(templates["no_mcp_chat"]["turns"], target)}
