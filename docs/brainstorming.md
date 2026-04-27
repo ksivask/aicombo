@@ -466,3 +466,16 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - The test for shape-B AuditEntry construction in test_audit_tail.py imports `from trials import AuditEntry`. This is a benign cross-module test dep; conftest already wires harness/ onto sys.path.
 - Did NOT touch any frontend / UI surfaces. AuditEntry serialization gains a `body` field in the JSON dump; UI consumers that didn't expect it will silently ignore it (every consumer reads named fields).
 - Did NOT update verdict (c) (E21) or verdict (k) (E24) per scope guard. Both currently use `entry.raw` walks for their own purposes; out of scope for E26.
+
+
+## E20 verification template (with_e20_verification) — 2026-04-26
+
+### Decision: Single template, mcp=mutable gate, NOT resized
+- Closes the loop on E20 measurement: produces 2 distinct `_ib_ss` hashes in one trial via mcp_admin mutation between user_msg turns.
+- Trial flow: discover (H1) → invoke (carries H1) → mutate upstream → refresh_tools → re-discover+invoke (H2 ≠ H1).
+- Gated to mcp=mutable since it is the only MCP exposing /_admin/* endpoints.
+- NOT resized — verdict (i) needs the exact 5-turn shape.
+
+### Tradeoffs considered
+- TrialConfig vs RowConfig divergence: TrialConfig (dataclass in trials.py) does NOT carry with_* flags; only RowConfig (Pydantic in api.py) does. Templates.py reads directly from row dict. Decision: only add flag to RowConfig — no TrialConfig change needed.
+- Template branch order: placed BEFORE mcp=NONE fast-path to ensure template selection wins regardless of MCP, though validator gates mcp=mutable.

@@ -142,6 +142,16 @@ def default_turn_plan(row: dict[str, Any]) -> dict[str, Any]:
     if row.get("with_reset") and "with_reset" in templates:
         return templates["with_reset"]
 
+    # E20 — row requests the verification trial. Requires mcp=mutable
+    # (only MCP exposing /_admin/* admin endpoints). NOT resized — verdict
+    # (i) needs the exact 5-turn shape (user_msg → user_msg → mcp_admin →
+    # refresh_tools → user_msg) to produce 2 distinct snapshots.
+    # Placed BEFORE the per-MCP fast-path so the template selection wins
+    # regardless of mcp value (validator gates mcp=mutable separately).
+    if (row.get("with_e20_verification")
+            and "with_e20_verification" in templates):
+        return templates["with_e20_verification"]
+
     if mcp == "NONE":
         return {"turns": _resize_turns(templates["no_mcp_chat"]["turns"], target)}
 

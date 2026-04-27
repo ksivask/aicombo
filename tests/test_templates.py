@@ -87,6 +87,34 @@ def test_with_reset_overrides_mcp_default_template():
     assert "reset_context" in kinds, kinds
 
 
+def test_with_e20_verification_template_selected_when_flag_set():
+    """E20 — with_e20_verification=true selects the close-the-loop trial
+    template that produces TWO distinct tools/list snapshots in one trial.
+
+    Pinned shape: user_msg → user_msg → mcp_admin → refresh_tools → user_msg.
+    The mcp_admin turn mutates the upstream MCP between the two
+    user_msg-driven discoveries so verdict (i) tools_list_correlation has
+    a real signal (H1 != H2) to measure.
+    """
+    plan = default_turn_plan({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "mutable", "routing": "via_agw",
+        "with_e20_verification": True,
+    })
+    kinds = [t.get("kind") for t in plan["turns"]]
+    assert kinds == [
+        "user_msg", "user_msg", "mcp_admin",
+        "refresh_tools", "user_msg",
+    ], kinds
+    # The mcp_admin turn must target the mutable MCP and carry an op +
+    # payload — the runner-side dispatch dies without these.
+    admin = next(t for t in plan["turns"] if t.get("kind") == "mcp_admin")
+    assert admin.get("mcp") == "mutable"
+    assert admin.get("op") == "set_tools"
+    assert isinstance(admin.get("payload", {}).get("tools"), list)
+
+
 def test_none_llm_with_mcp_produces_direct_mcp_plan():
     """LLM=NONE + MCP=weather → user_msg turns driven by the direct-mcp adapter.
 

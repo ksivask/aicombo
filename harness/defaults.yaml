@@ -72,6 +72,28 @@ turn_plan_templates:
       - {kind: force_state_ref, lookback: 2, content: "Refer back to the earlier fact."}
       - {kind: user_msg, content: "Summarize what we discussed."}
 
+  # E20 verification: produces TWO distinct tools/list snapshots in one
+  # trial (via mcp_admin mutation between the user_msg turns), so verdict
+  # (i) tools_list_correlation has a real signal to measure. Requires
+  # mcp=mutable (the only MCP that exposes /_admin endpoints).
+  #
+  # Trial flow:
+  #   Turn 0: discover tools (snapshot H1)
+  #   Turn 1: invoke a tool (tools/call carries _ib_ss=H1)
+  #   Turn 2: mutate upstream MCP (no LLM involvement; harness-direct)
+  #   Turn 3: invalidate adapter's cached toolset (no LLM involvement)
+  #   Turn 4: re-discover + invoke (snapshot H2 != H1; tools/call carries _ib_ss=H2)
+  with_e20_verification:
+    turns:
+      - {kind: user_msg, content: "What tools do you have available?"}
+      - {kind: user_msg, content: "Use mutable_get for key=foo to check the value."}
+      - {kind: mcp_admin, mcp: mutable, op: set_tools, payload: {tools: [
+          {name: "mutable_v2_count", description: "Count entries", inputSchema: {type: "object", properties: {}}},
+          {name: "mutable_v2_clear", description: "Clear all entries", inputSchema: {type: "object", properties: {}}}
+        ]}}
+      - {kind: refresh_tools}
+      - {kind: user_msg, content: "What tools do you have NOW? Use one of them."}
+
   # E21 — with_reset rows exercise the reset_context boundary semantic.
   # Two distinct conversations on different topics in one trial. Verdict (c)
   # treats the reset_context turn as a segment boundary and asserts no CID

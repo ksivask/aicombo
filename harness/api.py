@@ -134,6 +134,12 @@ class RowConfig(BaseModel):
     # `with_reset` so verdict (c) exercises bracket-aware multi-segment
     # continuity (reset_context boundary + cross-segment leak detection).
     with_reset: bool = False
+    # E20 verification — opt-in flag that switches the row's default turn
+    # plan to `with_e20_verification` so verdict (i) tools_list_correlation
+    # has 2 distinct snapshots to measure against in one trial. Requires
+    # mcp=mutable (only MCP exposing /_admin endpoints) — enforced by
+    # validator.
+    with_e20_verification: bool = False
     # Plan B T12 — when present, takes precedence over default_turn_plan(row).
     # Shape: {"turns": [...]} matching TurnPlan. Edited via the row drawer's
     # CodeMirror JSON editor; persisted via PATCH /matrix/row/{id}; cleared

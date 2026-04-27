@@ -212,6 +212,17 @@ def validate(row: dict[str, Any], available_keys: dict[str, bool] | None = None)
                 f"length ({len(llm)})"
             )
 
+    # E20 verification requires the mutable MCP (only one with /_admin
+    # endpoints). The template's mcp_admin turn calls /_admin/set_tools
+    # which only exists on adapter-mutable; routing the row through any
+    # other MCP would 404 mid-trial.
+    if row.get("with_e20_verification") and mcp != "mutable":
+        runnable = False
+        warnings.append(
+            "with_e20_verification requires mcp=mutable "
+            "(only MCP with admin endpoints)"
+        )
+
     return {
         "disabled_cells": disabled,
         "forced_values": forced,

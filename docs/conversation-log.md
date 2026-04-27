@@ -356,3 +356,24 @@ Sticking to ONE commit per task spec (could split reset_context+verdict-c-refact
 
 **Files changed:** harness/trials.py, harness/api.py, harness/efficacy.py, tests/test_efficacy.py, tests/test_audit_tail.py
 
+
+
+## 2026-04-26 — E20 verification template (with_e20_verification)
+
+### Entry — close-the-loop trial template
+**User (subagent):** Add `with_e20_verification` template that produces TWO distinct tools/list snapshots in one trial (mcp_admin mutation between user_msg turns) so verdict (i) tools_list_correlation has signal to measure.
+
+**Reasoning:** 
+- TrialConfig is a dataclass without `with_*` flags — only RowConfig (Pydantic) carries them. Templates.py reads from row dict directly. So no TrialConfig divergence to mirror.
+- Spec says NOT resized; place template-selection branch BEFORE the per-MCP fast-path (mcp=NONE early-return) to preserve the exact 5-turn shape verdict (i) needs.
+- Validator gates with mcp=mutable (only MCP exposing /_admin endpoints).
+
+**Actions:**
+- harness/defaults.yaml: appended `with_e20_verification` template with 5 turns: user_msg → user_msg → mcp_admin (set_tools) → refresh_tools → user_msg.
+- harness/api.py::RowConfig: added `with_e20_verification: bool = False` flag.
+- harness/templates.py: added template-selection branch parallel to with_force_state_ref/with_reset, BEFORE mcp=NONE fast-path. NOT resized.
+- harness/validator.py: added rule that with_e20_verification=true requires mcp=mutable.
+- tests/test_templates.py: 1 new test pinning the 5-turn shape.
+- tests/test_validator.py: 2 new tests — requires mutable + passes with mutable.
+
+**Result:** Pytest 317 → 320 (3 new tests). ONE commit.

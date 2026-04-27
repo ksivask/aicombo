@@ -229,6 +229,36 @@ def test_validator_rejects_api_incompatible_llm_in_list():
     assert any("claude" in w and "compatible" in w for w in result["warnings"])
 
 
+# ── E20 verification — mcp=mutable gate ──
+
+def test_with_e20_verification_requires_mutable_mcp():
+    """E20: with_e20_verification=true on a non-mutable MCP is non-runnable.
+    The template's mcp_admin turn calls /_admin/set_tools which only exists
+    on adapter-mutable; routing through e.g. weather would 404 mid-trial."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "weather", "routing": "via_agw",
+        "with_e20_verification": True,
+    })
+    assert result["runnable"] is False
+    assert any("with_e20_verification" in w and "mutable" in w
+               for w in result["warnings"])
+
+
+def test_with_e20_verification_passes_with_mutable_mcp():
+    """E20: with_e20_verification=true + mcp=mutable validates as runnable
+    so the row can actually run the close-the-loop verification trial."""
+    result = validate({
+        "framework": "langchain", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "ollama", "mcp": "mutable", "routing": "via_agw",
+        "with_e20_verification": True,
+    })
+    assert result["runnable"] is True
+    assert not any("with_e20_verification" in w for w in result["warnings"])
+
+
 def test_validator_rejects_model_list_length_mismatch():
     """If `model` is also a list, it must align 1:1 with `llm` so the combo
     adapter can pick model[i] for llm[i]."""
