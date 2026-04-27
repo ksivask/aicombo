@@ -27,6 +27,17 @@ const TURN_TEMPLATES = {
   force_state_ref:         {kind: "force_state_ref", lookback: 2, content: "Refer back to earlier."},
   reset_context:           {kind: "reset_context"},                              // E21
   refresh_tools:           {kind: "refresh_tools"},                              // E21
+  mutate_tools: {
+    kind: "mcp_admin",
+    mcp: "mutable",
+    op: "set_tools",
+    payload: {
+      tools: [
+        {name: "mutable_v2_count", description: "Count entries", inputSchema: {type: "object", properties: {}}},
+        {name: "mutable_v2_clear", description: "Clear all entries", inputSchema: {type: "object", properties: {}}},
+      ],
+    },
+  },
 };
 
 // Insert a copy of TURN_TEMPLATES[key] into plan.turns[] at the cursor's
@@ -98,10 +109,8 @@ function escapeHtml(s) {
 }
 
 // E37 — surface which plan flags are currently set. The drawer-paragraph
-// hint below the checkboxes lists a precedence order that is intentionally
-// wrong (per code-review B1, awaiting user decision); the warning here
-// reports the ACTUAL templates.py order so the message is accurate even
-// while the hint is stale.
+// hint below the checkboxes and this warning both reflect the canonical
+// templates.py::default_turn_plan precedence (post-B1).
 function _activePlanFlags(row) {
   return [
     row.with_force_state_ref && "with_force_state_ref",
@@ -114,9 +123,15 @@ function _activePlanFlags(row) {
 function _renderFlagWarning(row) {
   const active = _activePlanFlags(row);
   if (active.length < 2) return "";
-  // Precedence per templates.py — reset BEFORE e20_verification.
-  const order = ["with_force_state_ref", "with_reset", "with_e20_verification", "with_compact"];
-  const winner = order.find(f => active.includes(f));
+  // Precedence per templates.py::default_turn_plan (post-B1):
+  // force_state_ref > e20_verification > reset > compact.
+  const PRECEDENCE = [
+    "with_force_state_ref",     // verdict (e) state-mode gap
+    "with_e20_verification",    // verdict (i) snapshot correlation (more specific than reset; B1 win)
+    "with_reset",               // verdict (c) bracket-aware
+    "with_compact",             // verdict (d) resilience
+  ];
+  const winner = PRECEDENCE.find(f => active.includes(f));
   return `<div class="drawer-flag-warning">⚠ Multiple plan flags set (${escapeHtml(active.join(", "))}). Only <code>${escapeHtml(winner)}</code> will execute (per templates.py precedence). Other flags ignored at runtime.</div>`;
 }
 
@@ -271,17 +286,19 @@ export async function openTurnPlanDrawer(row) {
         <button type="button" data-tpl="user_msg" class="tp-add-turn-btn"
           title='append {"kind":"user_msg","content":"…"}'>user_msg</button>
         <button type="button" data-tpl="compact_drop_half" class="tp-add-turn-btn"
-          title='append {"kind":"compact","strategy":"drop_half"}'>compact (drop_half)</button>
+          title='append {"kind":"compact","strategy":"drop_half"} — verdict (d) resilience'>CompactContext (drop_half)</button>
         <button type="button" data-tpl="compact_drop_tool_calls" class="tp-add-turn-btn"
-          title='append {"kind":"compact","strategy":"drop_tool_calls"}'>compact (drop_tool_calls)</button>
+          title='append {"kind":"compact","strategy":"drop_tool_calls"} — verdict (d) resilience'>CompactContext (drop_tool_calls)</button>
         <button type="button" data-tpl="compact_summarize" class="tp-add-turn-btn"
-          title='append {"kind":"compact","strategy":"summarize"}'>compact (summarize)</button>
+          title='append {"kind":"compact","strategy":"summarize"} — verdict (d) resilience'>CompactContext (summarize)</button>
         <button type="button" data-tpl="force_state_ref" class="tp-add-turn-btn"
-          title='append {"kind":"force_state_ref","lookback":2,"content":"…"}'>force_state_ref (lookback=2)</button>
+          title='append {"kind":"force_state_ref","lookback":2,"content":"…"} — verdict (e) state-mode gap'>RewindResponseId (lookback=2)</button>
         <button type="button" data-tpl="reset_context" class="tp-add-turn-btn"
-          title='append {"kind":"reset_context"} — E21: wipe agent-side LLM history; AGW mints fresh CID on next turn'>reset_context</button>
+          title='append {"kind":"reset_context"} — E21: wipe agent-side LLM history; AGW mints fresh CID on next turn'>ResetContext</button>
         <button type="button" data-tpl="refresh_tools" class="tp-add-turn-btn"
-          title='append {"kind":"refresh_tools"} — E21: force MCP tools/list re-fetch (no-op for adapters that re-fetch per call)'>refresh_tools</button>
+          title='append {"kind":"refresh_tools"} — E21: force MCP tools/list re-fetch (no-op for adapters that re-fetch per call)'>RefreshTools</button>
+        <button type="button" data-tpl="mutate_tools" class="tp-add-turn-btn"
+          title='append {"kind":"mcp_admin","mcp":"mutable","op":"set_tools",...} — E22 mutation; requires mcp=mutable to actually run'>MutateTools (set_tools)</button>
       </div>
       <textarea id="tp-editor"></textarea>
       <p class="plan-note">
