@@ -1641,6 +1641,248 @@ Total: **M** (~half-day to a day).
 
 ---
 
+## E24c — combo adapter intra-turn serial chain (multi-LLM)
+
+**Status: future. Aiplay combo adapter + new turn-plan field + tests. ~150 LOC.**
+
+### The gap
+
+E24's combo adapter implements ONE multi-LLM pattern: **inter-turn round-robin** (one LLM per turn; turn idx mod len(llm_list)). Real production agent patterns commonly chain multiple LLMs WITHIN ONE turn — e.g., "planner LLM" outlines, "executor LLM" fills in detail, optionally "critic LLM" refines. aiplay can't test that today.
+
+### The proposal
+
+New combo mode: **`combo_pattern: "serial_chain"`** (row-config knob; default stays `"interturn_roundrobin"`). Within one turn, combo calls each LLM in `self._llm_list` IN ORDER; each LLM sees the prior LLM's output as part of its input context; the final assistant response is the LAST LLM's output (composition strategy configurable later).
+
+### Trial flow
+
+```yaml
+framework: combo
+api: chat                  # or messages — both supported
+llm: [chatgpt, claude]     # 2-LLM chain
+combo_pattern: serial_chain
+mcp: NONE                  # or any MCP combo per E24a
+
+turns:
+  - {kind: user_msg, content: "Plan a 3-day trip to Seattle."}
+  - {kind: user_msg, content: "Refine the itinerary with cultural events."}
+```
+
+For each turn:
+1. user_msg → LLM[0] (chatgpt) → response_1 (with AGW Channel-2 marker `<!-- ib:cid=ib_aaa -->`)
+2. Adapter feeds `response_1` (verbatim, marker intact) as a user-role message to LLM[1] (claude): `[user(original), assistant(response_1), user("Continue/refine")]` OR appended as a system instruction
+3. LLM[1] (claude) → response_2 (with marker)
+4. Final assistant response = response_2 (or composed concatenation; first cut = last-wins)
+
+### CID survival
+
+Marker preservation works the same as inter-turn:
+- LLM[0]'s response carries `ib_aaa` (Channel-2)
+- Adapter appends `response_1` text (with marker) into LLM[1]'s input messages
+- AGW's MARKER_RE finds `ib_aaa` in LLM[1]'s incoming request body → reuses `ib_aaa`
+- Verdict (k) sees both LLM-route audits sharing `ib_aaa` ✓
+
+The "faster" boundary (intra-turn) is the same mechanism as inter-turn — marker scanning is API-agnostic.
+
+### Composition strategy (open)
+
+How to compose LLM[0..N-1]'s outputs into the final turn response? First-cut options:
+- **Last-wins**: final assistant = last LLM's output (simplest; matches "executor over planner")
+- **Concat**: assistant = `LLM[0].text + "\n\n---\n\n" + LLM[1].text + ...` (matches "council/all-voices")
+- **Custom prompt-driven composition**: a final synthesis LLM call that summarizes the chain (recursive — out of scope first cut)
+
+Recommend **last-wins** as default; expose `combo_compose: "last" | "concat"` knob in row config for opt-in.
+
+### Implementation
+
+`adapters/combo/framework_bridge.py::Trial.turn`:
+```python
+async def turn(self, turn_idx, user_msg, ...):
+    self._canonical_history.append({"role": "user", "content_text": user_msg})
+    pattern = self.config.get("combo_pattern", "interturn_roundrobin")
+    
+    if pattern == "serial_chain":
+        return await self._turn_serial_chain(turn_idx, user_msg)
+    elif pattern == "parallel":     # E24d
+        return await self._turn_parallel(turn_idx, user_msg)
+    else:
+        return await self._turn_inter_turn_roundrobin(turn_idx, user_msg)
+
+
+async def _turn_serial_chain(self, turn_idx, user_msg):
+    """E24c: call every LLM in self._llm_list serially within this turn.
+    Each LLM sees the prior LLM's output as context. Last LLM's output is
+    the final response."""
+    intermediate_responses = []
+    for hop_idx, llm in enumerate(self._llm_list):
+        client = self._clients[llm]
+        # Build per-hop input: include prior intermediate responses as
+        # assistant messages so AGW Channel-2 markers carry through
+        chain_history = list(self._canonical_history)
+        for resp in intermediate_responses:
+            chain_history.append({"role": "assistant", "content_text": resp})
+            # Optionally: prompt instruction asking next LLM to refine
+            if hop_idx > 0:
+                chain_history.append({"role": "user", "content_text": "Continue / refine the above."})
+        api_shape = self._to_shape(chain_history, llm)
+        resp = await client.chat.completions.create(...)
+        assistant_text = self._extract_text(resp, llm)
+        intermediate_responses.append(assistant_text)
+    
+    # Compose final
+    final = intermediate_responses[-1]   # last-wins; concat as alternative
+    self._canonical_history.append({"role": "assistant", "content_text": final})
+    return {
+        "assistant_text": final,
+        "intermediate_responses": intermediate_responses,
+        "llms_used_in_order": list(self._llm_list),
+        ...
+    }
+```
+
+### Tests
+
+- `test_turn_serial_chain_calls_all_llms_in_order` — 2-LLM list, mock both clients, assert both `create()` called in declared order
+- `test_turn_serial_chain_marker_survives_handoff` — synthetic AGW response with marker; assert marker text appears in LLM[1]'s input messages
+- `test_turn_serial_chain_final_response_is_last_llm_output` — pin last-wins composition
+- `test_turn_serial_chain_intermediate_responses_in_envelope` — turn response includes `intermediate_responses` field for inspection
+
+### Effort
+
+**M** (~150 LOC + 4-5 tests).
+
+### Cross-references
+
+- E24 — inter-turn round-robin baseline (this is the orthogonal axis)
+- E24a — multi-MCP intra-turn (independent; combines naturally — serial chain through multiple MCPs is the agentic researcher pattern)
+- E24b — tool-call cross-shape translation (prerequisite for serial chain that includes tools across openai ↔ anthropic boundaries)
+- Verdict (k) — measures CID survival across the intra-turn LLM hops
+
+---
+
+## E24d — combo adapter intra-turn parallel fan-out (multi-LLM)
+
+**Status: future. Aiplay combo adapter + new verdict + tests. ~200 LOC.**
+
+### The gap
+
+E24c (intra-turn serial chain) preserves CID across LLM hops via marker propagation. **Parallel fan-out** is a fundamentally different pattern: the agent calls multiple LLMs IN PARALLEL on the same input, then picks/composes from independent responses. Common production patterns:
+
+- **Best-of-N voting**: ask 3 LLMs same question; pick most-voted answer
+- **Hedging**: race for first response; cancel slowest
+- **Quorum / consensus**: pick the response N-of-M agree on
+- **Confidence-pick**: pick highest-confidence response
+
+aiplay can't test these today, AND the CID semantics are fundamentally different from E24c.
+
+### The proposal
+
+New combo mode: **`combo_pattern: "parallel"`** (row-config knob). Within one turn, combo dispatches `asyncio.gather([call(llm) for llm in self._llm_list])`, awaits all, applies a merge strategy (`combo_compose: "first" | "longest" | "vote" | "concat"`).
+
+### CID semantics — fundamentally different
+
+Each parallel branch starts with the SAME prior context (no marker yet — no LLM has run this turn). Each AGW route's incoming-request scan finds NO marker → mints a FRESH CID via `Cid::generate()`. So the trial ends up with **N distinct CIDs from the same parallel turn**.
+
+This is **NOT a CID isolation breach** — it's the correct semantic for parallel fan-out. The agent intentionally fired N independent requests; each got governance independently.
+
+Verdict (k) `cross_api_continuity` would FAIL on this pattern (no common CID across the N routes), but the failure is misleading — there was no CONTINUITY to maintain in the first place.
+
+### New verdict — `(l) parallel_fanout_attribution`
+
+Measures: did each parallel branch's CID get correctly minted + audited per-route? Pass criteria:
+- Each LLM in the parallel list produced a CID-bearing audit on its corresponding `/llm/<provider>` route
+- The N CIDs are all distinct (proves AGW didn't accidentally cross-link)
+- Each branch's response carried its CID via Channel-2 (so the agent could correlate which response came from which LLM)
+
+```python
+def verdict_l_parallel_fanout_attribution(trial):
+    """E24d: parallel fan-out — verify each branch got its own CID and
+    AGW didn't cross-link them."""
+    if trial.config.get("combo_pattern") != "parallel":
+        return {"verdict": "na", "why": "not a parallel fan-out trial"}
+    audits = trial.get("audit_entries", [])
+    llm_audits = [a for a in audits if (a.get("backend") or "").startswith("llm-")]
+    routes = set(a.get("backend") for a in llm_audits)
+    if len(routes) < 2:
+        return {"verdict": "na", "why": f"fan-out needs ≥2 routes, saw {len(routes)}"}
+    cids_per_route = {}
+    for a in llm_audits:
+        if a.get("cid"):
+            cids_per_route.setdefault(a.get("backend"), set()).add(a.get("cid"))
+    if len(cids_per_route) < len(routes):
+        return {"verdict": "fail", "why": f"some routes missing CIDs"}
+    # Distinct-CID check: union vs sum should match (no shared CID)
+    all_cids = set.union(*cids_per_route.values())
+    total = sum(len(s) for s in cids_per_route.values())
+    if len(all_cids) < total:
+        return {"verdict": "fail", "why": "CID cross-linked across parallel routes (isolation breach)"}
+    return {"verdict": "pass", "why": f"each of {len(routes)} routes minted distinct CID(s)"}
+```
+
+### Implementation
+
+```python
+async def _turn_parallel(self, turn_idx, user_msg):
+    """E24d: dispatch all LLMs in parallel; merge per combo_compose."""
+    api_shape_per_llm = {
+        llm: self._to_shape(self._canonical_history, llm)
+        for llm in self._llm_list
+    }
+    tasks = [
+        self._call_llm(llm, api_shape_per_llm[llm])
+        for llm in self._llm_list
+    ]
+    responses = await asyncio.gather(*tasks, return_exceptions=True)
+    successful = [r for r in responses if not isinstance(r, Exception)]
+    
+    compose = self.config.get("combo_compose", "first")
+    if compose == "first" or len(successful) == 1:
+        final = successful[0]
+    elif compose == "longest":
+        final = max(successful, key=len)
+    elif compose == "concat":
+        final = "\n\n---\n\n".join(successful)
+    elif compose == "vote":
+        # Stub for first cut; real voting needs domain-specific equivalence
+        final = successful[0]
+    
+    self._canonical_history.append({"role": "assistant", "content_text": final})
+    return {
+        "assistant_text": final,
+        "all_branch_responses": [str(r)[:500] for r in responses],
+        "llms_used": list(self._llm_list),
+        "compose_strategy": compose,
+        ...
+    }
+```
+
+### Tests
+
+- `test_turn_parallel_dispatches_all_llms_concurrently` — assert N tasks created via asyncio.gather; mock all `create()` calls; assert all started before any awaited
+- `test_turn_parallel_first_compose` — 3 mock responses; assert final = first
+- `test_turn_parallel_longest_compose` — assert longest-text wins
+- `test_turn_parallel_handles_branch_exception` — one mock raises; assert other branches' results survive
+- `test_verdict_l_pass_when_distinct_cids_per_route` — synthetic 2-route audit, distinct CIDs → pass
+- `test_verdict_l_fail_on_cross_linked_cid` — same CID on 2 routes → fail
+
+### Effort
+
+**M-L** (~200 LOC adapter + 50 LOC verdict + 6-8 tests).
+
+### Open questions
+
+1. **Composition strategies**: first cut = `first` / `longest` / `concat`. Voting / consensus need domain-aware equivalence — defer to E24d-vote follow-up if needed.
+2. **Branch failure handling**: if 1 of N branches errors, do we (a) return what succeeded (current sketch), (b) fail the whole turn, (c) retry the failed branch? First cut = (a) — surfaced via `all_branch_responses` field.
+3. **Cost / rate-limit explosion**: parallel N-way fan-out N×s the token cost per turn. Worth a UI warning + per-trial budget tracker (file as separate enhancement).
+4. **Verdict (l) NA gate**: should ONLY fire on `combo_pattern: "parallel"`. Other combo modes (round-robin, serial chain) don't apply — verdict should NA out cleanly.
+
+### Cross-references
+
+- E24 / E24c — orthogonal modes (round-robin = inter-turn; serial = intra-turn sequential; parallel = intra-turn concurrent)
+- New verdict (l) joins (a)-(k) cluster
+- E24a — multi-MCP integrates orthogonally with parallel (each branch sees the same merged tool catalog; tool-call dispatch routes to correct MCP regardless of which branch's LLM emitted the call)
+
+---
+
 ## E27 — aggregate verdict (i) measurement per (framework, model) cell
 
 **Status: future. Frontend + harness API. ~80 LOC.**
