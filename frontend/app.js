@@ -254,7 +254,10 @@ function buildColumnDefs() {
     {
       headerName: "Framework", field: "framework", editable: true,
       cellEditor: "agSelectCellEditor",
-      cellEditorParams: {values: ["langchain", "langgraph", "crewai", "pydantic-ai", "autogen", "llamaindex"]},
+      // E24: "combo" is the multi-LLM-same-CID adapter; selectable here so
+      // multi-LLM trials can pick it. direct-mcp isn't in this list — it's
+      // selected indirectly via llm=NONE (cellStyle handles the visual).
+      cellEditorParams: {values: ["langchain", "langgraph", "crewai", "pydantic-ai", "autogen", "llamaindex", "combo"]},
       cellStyle: params => (params.data?.llm === "NONE" ? {color: "#bbb", fontStyle: "italic"} : null),
       valueFormatter: params => (params.data?.llm === "NONE" ? "— (direct MCP)" : params.value),
       pinned: "left", width: 120,
