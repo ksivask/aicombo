@@ -2,6 +2,24 @@
 
 Cidgar Harness C playground — designs a multi-framework test harness for the AGW governance pipeline (cidgar feature) beyond what Harness B covers.
 
+## E22 mcp-mutable-admin AGW route fix (2026-04-27)
+
+### Problem
+`agw/config.yaml` `mcp-mutable-admin` route used `mcp:` backend type. AGW's `mcp:` backend (`crates/agentgateway/src/mcp/streamablehttp.rs::handle_post`):
+- Requires Accept header with BOTH `application/json` AND `text/event-stream`.
+- Wraps body in JSON-RPC `ClientJsonRpcMessage` deserialize.
+- Spins up MCP session lifecycle per request.
+
+Harness runner sends plain REST POSTs (`Content-Type: application/json`, body `{"tools":[...]}`). Would fail at Accept check long before reaching the body parser.
+
+### Options weighed
+1. **Switch to `host:` (Opaque) backend** — plain TCP/HTTP passthrough. Used by aiplay's sibling examples (`examples/http`, `examples/oauth2-proxy`). Cleanest fix; preserves the existing `urlRewrite` and `policies: {}`. CHOSEN.
+2. Bypass AGW entirely (point harness at mcp-mutable:8000 directly via DIRECT_MCP_MUTABLE) — would expose a new port in compose, complicate routing config, and lose the unified `via_agw` pattern. Rejected.
+3. Wrap admin in JSON-RPC on both ends — invasive, defeats the purpose of using a stable JSON shape. Rejected.
+
+### Verification path
+Could not run docker stack (not up). Used AGW source-of-truth as ground truth. The integration test is skip-marked (`AGW_INTEGRATION_TEST=1` required); when an operator runs it under a live stack it will exercise the load-bearing claim end-to-end.
+
 ## Goal
 
 Test cidgar efficacy across agent frameworks, LLM APIs, streaming modes, and server-state modes — combinations not reachable from Harness B's scripted curl-only setup. Exercise the governance pipeline through real framework code paths (conversation memory, message compaction, state round-trips) to expose latent gaps before hyperstate/SIB lands.

@@ -1,5 +1,39 @@
 # aiplay — conversation log
 
+## 2026-04-27 — Verify E22 mcp-mutable-admin AGW route
+
+### Entry — User prompt (subagent task)
+**User:** Verify E22's `mcp-mutable-admin` AGW route actually works at runtime; fix if not. Aiplay-only (config + maybe a passthrough backend) plus an integration test. Auto-execution policy: no prompts. ONE commit. Do NOT push.
+
+### Reasoning
+Docker stack is NOT running on this host (`docker ps` returned empty), so cannot empirically curl. Resorted to source-level verification by reading AGW's `mcp:` backend handler.
+
+Read `/my/ws/agw-gh/crates/agentgateway/src/mcp/streamablehttp.rs:85-184` — `handle_post()` strictly enforces:
+1. `Accept` header MUST contain BOTH `application/json` AND `text/event-stream` (else `InvalidAccept`).
+2. Body MUST be a valid `ClientJsonRpcMessage` (else `Deserialize` error).
+3. Stateless mode wraps each message in init→send→delete lifecycle.
+
+The harness runner builds plain REST POSTs at `harness/runner.py:257` (`url = f"{base}/_admin/{op}"`, body `{"tools": [...]}`, content-type `application/json` only). Through the existing `mcp:` backend, those WILL fail at the Accept-header check before any body parse.
+
+**Verification outcome: B** (without curl, but unambiguous from the AGW source).
+
+Fix: swap the admin route's backend from `mcp:` to `host: mcp-mutable:8000` (plain HTTP-passthrough Opaque backend, used in `examples/http/config.yaml` and `examples/oauth2-proxy/config.yaml`). The existing `urlRewrite` rewrites `/mcp/mutable/_admin` → `/_admin`, so the upstream URL becomes `http://mcp-mutable:8000/_admin/state` etc. — exactly what mcp-mutable's Starlette `@mcp.custom_route` handlers expect.
+
+mcp-mutable upstream port is 8000 (uvicorn, plain HTTP). The container has no exposed `ports:` in compose — only network-internal — so all admin traffic still goes through AGW; we're just using the right backend type.
+
+### Actions
+- Edited `/mnt/share/ws/aiplay/agw/config.yaml` lines 286-292: replaced `mcp:` backend with `host: mcp-mutable:8000` plus an inline comment explaining why.
+- Created `/mnt/share/ws/aiplay/tests/test_mcp_mutable_integration.py` — skip-marked unless `AGW_INTEGRATION_TEST=1`.
+- Verified pytest collects integration test cleanly (2 skipped, 0 errors); existing `tests/test_mcp_mutable.py` still passes (5 passed).
+- One commit including config + test.
+
+### Constraints honored
+- NO touch to AGW source (`/my/ws/agw-gh/`).
+- NO touch to AGW docs.
+- NO touch to `harness/efficacy.py` or `harness/templates.py`.
+- NO push.
+- Single commit.
+
 ## 2026-04-21 — Initial design session (Harness C brainstorming)
 
 Session running in parent directory `/mnt/share/ws/agw-gh` where cidgar finalization is also happening. Aiplay scope emerged mid-session as a separate playground.

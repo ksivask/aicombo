@@ -284,12 +284,19 @@ binds:
                 path:
                   prefix: /_admin
             backends:
-              - mcp:
-                  prefixMode: always
-                  targets:
-                    - name: mutable
-                      mcp:
-                        host: http://mcp-mutable:8000/_admin
+              # Plain HTTP passthrough (Opaque backend). The admin endpoints
+              # are vanilla REST (Starlette `@mcp.custom_route`), NOT JSON-RPC.
+              # An `mcp:` backend would 415/400 every admin call because
+              # AGW's mcp upstream requires:
+              #   1. Accept header containing BOTH `application/json` AND
+              #      `text/event-stream` (harness sends only application/json),
+              #   2. body to deserialize as `ClientJsonRpcMessage` (harness
+              #      sends `{"tools": [...]}` — pure REST shape).
+              # See AGW src/mcp/streamablehttp.rs::handle_post for both checks.
+              # The urlRewrite above turns `/mcp/mutable/_admin/<op>` into
+              # `/_admin/<op>` so the upstream URL on mcp-mutable:8000 is
+              # exactly what its custom_route handlers register.
+              - host: mcp-mutable:8000
 
           # ── MCP route: mutable (E22) ──
           #
