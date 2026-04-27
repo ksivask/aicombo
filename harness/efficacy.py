@@ -1041,14 +1041,29 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
     def _cid(a) -> str | None:
         return getattr(a, "cid", None) if not isinstance(a, dict) else a.get("cid")
 
+    # AGW emits backend strings as full route paths like
+    # "default/default/bind/8080/listener0/default/llm-ollama/backend0"
+    # — the "llm-<provider>" segment is in the MIDDLE, not at the start.
+    # Use substring match instead of startswith. Then extract the
+    # "llm-<provider>" segment as the route key for de-duplication and
+    # human-readable verdict reasons (full path is too noisy).
+    import re as _re
+    _ROUTE_SEG_RE = _re.compile(r"(llm-[A-Za-z0-9_-]+)")
+
+    def _route_key(backend: str | None) -> str | None:
+        if not backend:
+            return None
+        m = _ROUTE_SEG_RE.search(backend)
+        return m.group(1) if m else None
+
     llm_audits = [
         a for a in audits
-        if (_backend(a) or "").startswith("llm-")
+        if _route_key(_backend(a)) is not None
     ]
     if not llm_audits:
-        return Verdict("na", "no llm-* backend audits in trial")
+        return Verdict("na", "no llm-* route audits in trial (no /llm-<provider>/ in any backend path)")
 
-    routes_seen = {_backend(a) for a in llm_audits}
+    routes_seen = {_route_key(_backend(a)) for a in llm_audits}
     if len(routes_seen) < 2:
         return Verdict(
             "na",
@@ -1058,9 +1073,9 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
 
     cids_per_route: dict[str, set[str]] = {}
     for a in llm_audits:
-        route = _backend(a)
+        route = _route_key(_backend(a))
         cid = _cid(a)
-        if cid:
+        if cid and route:
             cids_per_route.setdefault(route, set()).add(cid)
 
     # Failure mode A: any route had no CID at all.
