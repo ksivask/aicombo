@@ -1496,6 +1496,275 @@ E20 verdict (i) is a no-op in production until this lands. Without it, the whole
 
 ---
 
+## E27 — aggregate verdict (i) measurement per (framework, model) cell
+
+**Status: future. Frontend + harness API. ~80 LOC.**
+
+### The gap
+
+Verdict (i) `tools_list_correlation` (E20) computes a per-trial pass/fail with the rate in the reason string ("correlation rate 92% (11/12)"). Operators must MANUALLY aggregate across multiple runs to spot which (framework, model) combos are weak. The matrix UI shows a single colored verdict pill per row — a one-shot view of the most recent trial.
+
+### The proposal
+
+Add a "Reliability" view that aggregates verdict (i) results across the last N (default 10) runs of each row:
+
+- New endpoint `GET /matrix/row/{id}/verdict_i_history?limit=N` returning `[{trial_id, started_at, rate, verdict}]`
+- Per-row column "Verdict (i) avg" showing rolling mean rate + sparkline of last N
+- Click → drawer panel with full history + per-trial breakdown
+- Optionally: a "Reliability" tab on the matrix page showing the (framework × model) grid colored by avg correlation rate
+
+### Effort
+
+- Backend endpoint: **XS** (~20 LOC)
+- Frontend column + drawer panel: **S** (~50 LOC)
+- Optional reliability tab: **S** (~30 LOC)
+
+Total: **S** (~half-day).
+
+### Cross-references
+
+- E20 / E26 — provides the per-trial data this aggregates
+- E24 verdict (k) — same aggregation pattern would apply to cross_api_continuity rate
+
+---
+
+## E28 — combo adapter integration test (live OpenAI + Anthropic keys)
+
+**Status: future. Aiplay-only. ~100 LOC test code.**
+
+### The gap
+
+E24's combo adapter has unit tests (15 in `tests/test_adapter_combo.py`) that mock the openai/anthropic SDKs. They prove the canonical-history shape translation works in isolation but DON'T prove the end-to-end CID survival across real LLM switches against live providers. Without a skip-marked integration test, regressions in the marker round-trip wouldn't surface until production trials run.
+
+### The proposal
+
+`tests/test_adapter_combo_integration.py` — skip-marked (`OPENAI_API_KEY` + `ANTHROPIC_API_KEY` required). Stand up the docker stack, drive a 4-turn trial with `framework=combo, llm=["chatgpt", "claude"], mcp=NONE, routing=via_agw`, and assert:
+- Verdict (k) reports pass
+- audit_entries contain entries on both `llm-chatgpt` AND `llm-claude` backends with at least one CID common to both
+- The canonical history's assistant messages on every turn contain `<!-- ib:cid=ib_xxx -->` text marker (verifying AGW injected on every route)
+
+### Cross-references
+
+- E24 — primary test surface
+- E20 / E26 — verdict (i) instrumentation should also fire on the combo trial
+
+---
+
+## E29 — `api: str | list[str]` schema widening (multi-API per-turn)
+
+**Status: future. Schema-impacting; ~30 LOC + tests + frontend.**
+
+### The gap
+
+E23 added `llm: str | list[str]` and `mcp: str | list[str]` to `RowConfig`. The original E23 design contemplated `api: str | list[str]` too but it was deferred. Today a single trial uses ONE API surface (chat OR messages OR responses OR responses+conv). Real production agents sometimes mix — e.g., turn 0 uses chat for cheap routing, turn 1 escalates to responses for a structured tool call.
+
+### The proposal
+
+Mirror E23's pattern for `api`:
+- `RowConfig.api: str | list[str]` (str = legacy single-API; list = per-turn round-robin via turn_idx mod len)
+- Validator: list-form valid only with `MULTI_API_FRAMEWORKS = {"combo"}` (combo only initially; could extend later)
+- Each api in the list must be in the framework's `ADAPTER_CAPABILITIES` set
+- Each api must be supported by the chosen llm via `API_TO_PROVIDERS`
+- Frontend: comma-separated text cell editor (Option A from E23)
+
+Combo adapter (E24) consumes the list:
+```python
+def _api_for_turn(self, turn_idx: int) -> str:
+    apis = self.config.api if isinstance(self.config.api, list) else [self.config.api]
+    return apis[turn_idx % len(apis)]
+```
+
+Combo would dispatch via the appropriate client per turn (chat → AsyncOpenAI.chat.completions.create; responses → AsyncOpenAI.responses.create; messages → AsyncAnthropic.messages.create).
+
+### Effort
+
+- Backend (RowConfig + validator): **XS** (~20 LOC + 3 tests)
+- Frontend cell: **XS** (~10 LOC, reuses E23 helpers)
+- Combo adapter `_api_for_turn` + per-API dispatch routing: **S** (~30 LOC)
+
+Total: **S** (~half-day, mostly the combo dispatch work).
+
+### Why now (or why later)
+
+**Defer**: limited measurable value until combo adapter actually exercises multi-API combinations. File alongside E24's tool-calling extension (E24b).
+
+### Cross-references
+
+- E19 / E23 — schema-pattern parity
+- E24 — primary consumer of multi-API
+- E24b — tool-call shape translation across APIs is the realistic prerequisite
+
+---
+
+## E31 — combo adapter supports all (d) production patterns
+
+**Status: future. Aiplay-only. M-L (each pattern is a separate combo variant or config knob).**
+
+### The gap
+
+E24's combo adapter implements ONE multi-LLM pattern: local switch + translated context (the "Pattern 1" from the d-pattern brainstorm). Real production agents use 4 distinct patterns; aiplay can only test 1 today. Cross-pattern AGW behavior is untested.
+
+### The four patterns (recap)
+
+1. **Local switch + translated context** — agent owns canonical history; per-turn LLM choice; shape-translates history. **Implemented in E24.**
+2. **External AI gateway (LiteLLM)** — agent talks to ONE endpoint; gateway hides provider variation; agent's history is singular. See **E34**.
+3. **Local switch + per-LLM context** — separate `_messages_openai` / `_messages_anthropic`; switch = fresh OR summarized handoff.
+4. **Other**: fan-out parallel (best-of-N voting); speculative routing (small fast LLM tries first; escalate); meta-agent router.
+
+### Implementation shape
+
+Each pattern is a SEPARATE combo variant. Two structuring choices:
+
+**Option A**: separate framework names (`combo-translated`, `combo-litellm`, `combo-percluster`, `combo-fanout`). Cleaner mental model; matrix shows them as distinct framework dropdowns. ~600 LOC per variant.
+
+**Option B**: one framework `combo` with a `combo_pattern` config knob. Matches the row-config pattern of `with_compact` / `with_force_state_ref`. Knob values: `translated` (default — current E24), `litellm`, `per_llm`, `fanout`. Adapter dispatch branches internally. ~200 LOC per pattern increment over E24's base.
+
+**Recommendation**: Option B. Avoids matrix proliferation; single framework name keeps the dropdown clean; row-level knob expresses the test variant.
+
+### Per-pattern dependencies
+
+- Pattern 2 (LiteLLM) — depends on **E34** (LiteLLM in deployment).
+- Pattern 3 (per-LLM context) — handoff-summarization needs an extra LLM call OR a hardcoded summary prompt. Adapter complexity moderate.
+- Pattern 4 (fan-out / speculative / meta-agent) — three sub-variants; could split into E31a/b/c.
+
+### Effort
+
+- Per-pattern increment over E24: **M** (~200-300 LOC + tests)
+- All 4 patterns: **L** (~day-and-a-half to two days)
+
+### Cross-references
+
+- E24 — pattern 1 baseline
+- E34 — pattern 2 dependency
+- Verdict (k) `cross_api_continuity` may need extension per pattern (pattern 4 fan-out has parallel CIDs that all SHOULD survive; pattern 3 per-LLM has DELIBERATELY distinct CIDs by design — verdict needs to know which mode is being tested)
+
+---
+
+## E32 — multi-framework adapter (langchain + crewai in one trial)
+
+**Status: future. Significantly larger scope. ~800-1200 LOC.**
+
+### The gap
+
+Today every trial has ONE framework. Real production agent platforms compose multiple frameworks for different sub-tasks (langchain for RAG, crewai for multi-agent orchestration, autogen for tool-calling). Aiplay can't test cross-framework CID survival.
+
+### The proposal
+
+A new `multi-framework` adapter that wraps OTHER aiplay adapters as black-box sub-agents. Each turn runs through ONE wrapped framework (declared per-turn in turn_plan or round-robin per row config).
+
+```python
+# RowConfig:
+framework: "multi-framework"
+sub_frameworks: ["langchain", "crewai"]   # round-robin or per-turn declared
+llm: ["chatgpt", "claude"]                # one LLM per sub-framework
+api: "chat"                               # single API for first cut
+mcp: "weather"                            # single MCP for first cut
+
+# Per turn: pick sub-framework[i % len], dispatch through that adapter's
+# normal endpoint (POST /trials/{id}/turn) on its container. Capture
+# its response. Track CID continuity across the dispatch boundary.
+```
+
+Implementation challenge: each wrapped adapter has its own `_messages` / `_response_history` state. The multi-framework adapter must shuttle context between them. Either:
+- Each turn is fully independent (no context preservation across sub-frameworks); fresh CID expected → verdict (k) NA case
+- Multi-framework adapter extracts/renders the canonical history before each dispatch (this is the same problem as combo's E24 shape translation, but multiplied by per-framework idiom)
+
+### Effort
+
+- Adapter scaffold: **M** (~300 LOC)
+- Per-framework state shuttling: **L** (~500 LOC + careful per-framework tests)
+- Verdict refinement (cross-framework continuity): **S** (~50 LOC)
+
+Total: **L** (~2-3 days).
+
+### Why not now
+
+E24 (single-framework multi-LLM) is more tractable + tests the same primitive (CID survival across boundaries). Multi-framework adds the orthogonal "framework idiom translation" problem. Defer until E24/E31 are proven valuable AND a real production multi-framework trial scenario emerges.
+
+### Cross-references
+
+- E24 — adjacent in concept (combo is multi-LLM-single-framework; multi-framework is multi-framework-could-be-multi-LLM-too)
+- E19 / E23 — schema-pattern parity (`sub_frameworks: list[str]` mirrors `mcp: list[str]` / `llm: list[str]`)
+
+---
+
+## E34 — LiteLLM in aiplay deployment (placement: BEFORE AGW)
+
+**Status: future. Infra change + new docker-compose service. ~M (compose + agw config + harness env).**
+
+### The gap
+
+aiplay currently has 5 LLM providers (ollama, mock, chatgpt, claude, gemini) each requiring per-provider env vars + per-route AGW config. Real production agents commonly use **LiteLLM** as a unified gateway providing a single OpenAI-compat endpoint that routes across all providers (with retry/fallback/cost-routing built-in).
+
+Adding LiteLLM to aiplay's deployment unlocks:
+1. Combo adapter's **Pattern 2** (gateway-style multi-LLM) test surface
+2. Production-realistic routing (LiteLLM Router for cost/fallback policies)
+3. Simpler agent code (one endpoint instead of N) → tests adapter behavior under uniform-shape inputs
+4. Direct comparison: AGW governance behavior under "agent → LiteLLM → AGW" vs "agent → AGW → provider"
+
+### Placement decision: BEFORE AGW
+
+```
+agent → LiteLLM (provider routing) → AGW (governance) → upstream provider
+```
+
+Reasoning:
+- AGW sees uniform OpenAI-compat traffic from LiteLLM → governance cleanly applies to all upstreams
+- Channel-2 markers AGW injects on responses survive into agent context (LiteLLM passes them through)
+- LiteLLM AFTER AGW would lose markers on shape-rewrite for upstream
+
+**Both placements** is redundant; LiteLLM's job is provider abstraction, AGW's job is governance — they don't conflict at one position.
+
+### Implementation
+
+`docker-compose.yaml`:
+```yaml
+litellm:
+  image: ghcr.io/berriai/litellm:main-stable
+  ports: ["4000:4000"]
+  env_file: [.env]
+  command: ["--config", "/etc/litellm/config.yaml"]
+  volumes: ["./litellm/config.yaml:/etc/litellm/config.yaml:ro"]
+```
+
+`litellm/config.yaml`: model_list mapping `model: gpt-4o-mini → openai/gpt-4o-mini` etc., one entry per (model, provider) combo aiplay supports.
+
+`agw/config.yaml`: new route `llm-litellm` pointing AGW at the LiteLLM container's `:4000/v1` endpoint. Other AGW LLM routes stay (LiteLLM is opt-in per-row via a new routing value or new llm option).
+
+`harness/api.py + frontend`: add a new `llm` value `litellm` (representing "go through LiteLLM router") OR a new `routing: via_litellm` field. Either approach works.
+
+### Effort
+
+- docker-compose + LiteLLM config: **S** (~50 LOC + LiteLLM config file)
+- AGW route config: **XS** (~10 lines)
+- Harness routing field + validator + frontend dropdown: **S** (~50 LOC + tests)
+- E31 Pattern 2 combo variant consuming LiteLLM: **S** (~100 LOC, depends on E31 framework)
+
+Total: **M** (~half-day for infra; **L** if E31 Pattern 2 consumer is bundled).
+
+### Cross-references
+
+- E31 Pattern 2 — direct consumer
+- E24 — current combo could ALSO route via LiteLLM (one provider, no shape translation needed → simplest combo variant)
+- New verdict possibility — `litellm_routing_fidelity` measuring whether LiteLLM's provider choice matches AGW's audit `backend` field
+
+---
+
+## E30 — `_meta.ib_snapshot` belt-and-suspenders [CLOSED — decided NO]
+
+**Status: closed. No incremental value beyond cidgar audit entry. See discussion below.**
+
+The E20 design left open whether to also embed the snapshot hash in MCP `_meta.ib_snapshot` (in addition to the audit entry's `snapshot_hash` field). Decision rationale for closing:
+
+- `_meta` is transport metadata; agents typically discard it
+- Doesn't survive into LLM context (so no round-trip benefit)
+- The hash is ALREADY in the cidgar audit entry — adding to `_meta` is redundant
+- Operator forensics already use the audit stream as the source of truth
+
+If a future need emerges (e.g., direct-mcp adapter tests where there's no LLM and no audit consumer wants to read forensic data inline with the MCP response), can re-open as E30b.
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
