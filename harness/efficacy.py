@@ -1011,6 +1011,24 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
     The verdict consumes `backend` strings prefixed with "llm-" (matches
     AGW's audit log convention for routed LLM calls). Routes for MCP
     backends or direct-mcp are excluded — verdict (k) is LLM-side only.
+
+    Failure-mode taxonomy (used to guide the operator-facing reason):
+      A — agent-side propagation gap: a route had LLM traffic but no
+          CID-bearing audit entry at all (the framework dropped the
+          marker before the request reached AGW).
+      B — AGW minted distinct CIDs per route with no marker text echoed
+          back from the model: a possible AGW isolation breach (e.g. a
+          per-route cidgar mint that should have been shared).
+      C — marker bytes ARE present in request bodies on multiple routes
+          but AGW failed to extract a common CID from them. The LLM
+          itself does NOT emit the marker — AGW does — so this signal
+          points at one of:
+            * AGW MARKER_RE failed to extract the CID (regex strictness
+              vs. whitespace/format AGW added),
+            * an adapter dropped/mangled the marker during shape
+              translation between LLM switches,
+            * cidgar `channels` config inconsistent across the routes
+              (e.g. text_marker enabled on one route but not another).
     """
     audits = (
         trial.audit_entries if hasattr(trial, "audit_entries")
@@ -1067,9 +1085,9 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
 
     # Failure modes B / C disambiguation. Walk request bodies for
     # marker-shaped strings (regex MARKER_RE). If found on multiple routes
-    # but no AGW-extracted CID overlap, the model paraphrased the marker
-    # into AGW-unrecognizable text (mode C); otherwise AGW minted distinct
-    # CIDs per route — possible isolation breach (mode B).
+    # but no AGW-extracted CID overlap, marker bytes survived the round
+    # trip but AGW didn't reuse them (mode C); otherwise AGW minted
+    # distinct CIDs per route — possible isolation breach (mode B).
     routes_with_marker_text = _routes_with_marker_text_in_request_bodies(
         trial, routes_seen,
     )
@@ -1078,7 +1096,9 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
             "fail",
             f"marker-shaped strings present on {len(routes_with_marker_text)} routes "
             f"({sorted(routes_with_marker_text)}) but no AGW-extracted CID overlap — "
-            f"model paraphrase suspected (check assistant_text for marker corruption)",
+            f"possible causes: AGW MARKER_RE didn't extract (whitespace/format "
+            f"mismatch), adapter dropped marker during shape translation, OR "
+            f"channels config inconsistent across routes",
         )
     return Verdict(
         "fail",

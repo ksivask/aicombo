@@ -926,7 +926,8 @@ def test_verdict_k_fail_when_no_common_cid_across_routes():
     assert v["k"].verdict == "fail", f"got {v['k']}"
     assert "no CID common" in v["k"].reason
     # Mode B-specific phrasing — distinguishes from the mode-A
-    # "agent-side propagation gap" and mode-C "model paraphrase".
+    # "agent-side propagation gap" and mode-C "marker bytes survived
+    # but AGW didn't reuse them" (extraction/adapter/config issue).
     assert "AGW minted distinct CIDs" in v["k"].reason
 
 
@@ -1003,12 +1004,15 @@ def test_verdict_k_distinguishes_route_with_no_cid():
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
     assert v["k"].verdict == "fail", f"got {v['k']}"
-    # Mode A — agent-side, NOT switch-breach (B) or marker-corruption (C).
+    # Mode A — agent-side, NOT switch-breach (B) or marker-extraction-
+    # failure (C). Pin the operator-facing language so silent regressions
+    # to a misleading reason are caught.
     assert "agent-side propagation gap" in v["k"].reason
     assert "not a switch breach" in v["k"].reason
-    # Must NOT misreport this as the AGW-minted-distinct-CIDs (mode B) reason.
+    # Must NOT misreport this as the AGW-minted-distinct-CIDs (mode B)
+    # reason or the mode-C "AGW MARKER_RE didn't extract" reason.
     assert "AGW minted distinct CIDs" not in v["k"].reason
-    assert "model paraphrase" not in v["k"].reason
+    assert "MARKER_RE" not in v["k"].reason
 
 
 def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
@@ -1016,10 +1020,14 @@ def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
     apply), CIDs don't overlap (so it would default to mode B), BUT
     request bodies on multiple routes contain marker-shaped text.
 
-    That bytes-present-but-AGW-didn't-reuse signal points at the model
-    (paraphrased the marker into AGW-unrecognizable form), not AGW
-    isolation. Reason must say "model paraphrase" — operators look at
-    assistant_text, not gateway config.
+    The LLM does NOT emit the marker — AGW does — so a "marker bytes
+    present but AGW didn't reuse them" signal points at one of:
+      * AGW MARKER_RE failed to extract the CID (whitespace / format
+        mismatch between what AGW wrote and what the regex tolerates),
+      * an adapter dropped the marker during shape translation between
+        LLM switches,
+      * cidgar `channels` config inconsistent across the routes.
+    Reason must enumerate those causes — NOT blame model paraphrase.
     """
     cfg = TrialConfig(framework="combo", api="chat", stream=False, state=False,
                       llm=["chatgpt", "claude"], mcp="NONE", routing="via_agw")
@@ -1059,11 +1067,17 @@ def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
     trial = _trial_with(turns=[turn0, turn1], audit_entries=audits, cfg=cfg)
     v = compute_verdicts(trial)
     assert v["k"].verdict == "fail", f"got {v['k']}"
-    # Mode C-specific phrasing — points operator at the model (paraphrase),
-    # NOT at AGW (mode B) or the agent (mode A).
-    assert "model paraphrase" in v["k"].reason
+    # Mode C-specific phrasing — enumerate the AGW-extraction /
+    # adapter-translation / channels-config causes. Must NOT collapse
+    # back to mode B (AGW minted distinct CIDs) or mode A (agent-side
+    # gap) and must NOT blame model paraphrase (the LLM doesn't emit
+    # the marker — AGW does).
+    assert "MARKER_RE didn't extract" in v["k"].reason
+    assert "adapter dropped marker" in v["k"].reason
+    assert "channels config inconsistent" in v["k"].reason
     assert "AGW minted distinct CIDs" not in v["k"].reason
     assert "agent-side propagation gap" not in v["k"].reason
+    assert "paraphrase" not in v["k"].reason
 
 
 def test_body_has_any_tool_call_detects_both_shapes():
