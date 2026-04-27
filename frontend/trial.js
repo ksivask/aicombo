@@ -647,7 +647,10 @@ function renderPlanTab(plan, executedCount) {
 function renderVerdictsTab(verdicts) {
   const labels = {
     a: "Presence", b: "Channel structure", c: "Continuity",
-    d: "Resilience", e: "State-mode gap", f: "GAR richness"
+    d: "Resilience", e: "State-mode gap", f: "GAR richness",
+    h: "Latency overhead",                                  // governance per-turn cost
+    i: "Snapshot correlation",                              // E20 _ib_ss rate
+    k: "Cross-API continuity",                              // E24 combo across LLM routes
   };
   // Hover help (title attr) explaining what each verdict actually checks.
   // Pairs with the explanations in docs/agw-governance-spec.md §4.2 + §13.
@@ -662,10 +665,13 @@ function renderVerdictsTab(verdicts) {
        "Channel 2 (text marker '<!-- ib:cid=… -->'). This is the wire-side " +
        "verification that what AGW logged actually got injected per the " +
        "channel spec — not just that some CID exists somewhere.",
-    c: "Continuity — Did the SAME CID survive across consecutive turns? " +
-       "Pass = ≥3 turns share at least one CID (the conversation didn't " +
-       "fragment into multiple CIDs). Detects cases where Channels 1+2+3 " +
-       "all fired but the agent dropped them between turns.",
+    c: "Continuity (bracket-aware, E21) — Turns are split into segments by " +
+       "reset_context turns. Pass = (a) per-segment continuity holds AND " +
+       "(b) NO cross-segment CID leak (a CID appearing in two distinct " +
+       "segments is treated as governance failure — agent should have minted " +
+       "fresh CID after reset). Single-segment trials use the legacy " +
+       "consecutive-pair check. Detects both 'agent dropped CID between " +
+       "turns' and 'reset boundary failed to isolate'.",
     d: "Resilience — Did the CID survive a 'compact' turn? " +
        "Pass = the CIDs observed BEFORE a compact turn intersect with " +
        "those observed AFTER. Tests whether at least one channel " +
@@ -682,7 +688,28 @@ function renderVerdictsTab(verdicts) {
        "(goal, need, impact, dspm, alt)? Pass = at least one tool_call " +
        "carries a well-formed GAR object. Fail = present but malformed " +
        "(missing keys, not JSON). NA = LLM omitted GAR (spec §9.2 " +
-       "compliant) OR no tool_calls in the trial."
+       "compliant) OR no tool_calls in the trial.",
+    h: "Latency overhead — Per-turn governance cost vs paired baseline " +
+       "(routing=direct twin via E4 clone-baseline). Pass = mean overhead " +
+       "<20% across turns. NA when no baseline twin exists. Higher = AGW " +
+       "is meaningfully slowing requests; investigate channel mutations + " +
+       "audit emission cost.",
+    i: "Snapshot correlation (E20) — For each tools/call audit, did the " +
+       "request carry a valid _ib_ss matching a known tools/list snapshot " +
+       "hash? Aggregates correlation_lost flags across all tools_calls. " +
+       "Pass = ≥80% correlated. Drops below 80% indicate the LLM (often " +
+       "smaller models — ollama qwen/llama base) is omitting the required " +
+       "_ib_ss param. NA = no tools_call audits in the trial.",
+    k: "Cross-API continuity (E24, combo only) — For trials hitting ≥2 " +
+       "LLM routes, does at least one CID appear on every route touched? " +
+       "Pass = cross-route intersection non-empty (CID survived all LLM " +
+       "switches). Fail modes: (A) some route had LLM traffic but no CID " +
+       "(agent-side propagation gap), (B) all routes have CIDs but no " +
+       "overlap (AGW minted distinct per route — possible isolation " +
+       "breach), (C) marker text present in bodies on multiple routes but " +
+       "AGW didn't extract — MARKER_RE format mismatch / adapter dropped " +
+       "marker / cidgar config inconsistent across routes. NA for " +
+       "single-route trials."
   };
   // T14 — render the `_aborted` marker at the top if present so the user
   // immediately sees that the verdicts below are partial.
@@ -706,7 +733,7 @@ function renderVerdictsTab(verdicts) {
       </div>
     `;
   }
-  return abortedBanner + ["a","b","c","d","e","f"].map(lvl => {
+  return abortedBanner + ["a","b","c","d","e","f","h","i","k"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     const tip = tips[lvl] || "";
     return `
