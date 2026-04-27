@@ -672,3 +672,24 @@ Investigation:
 - Fix 2 (app.js Add Bulk): code at L806-857 ALREADY sets `model: null` for all bulk rows. The brief HYPOTHESIZED a hardcoded model issue ("likely hardcodes"); current code already matches the recommendation. Need to verify and possibly add explicit per-LLM defaults map for clarity, and ensure null path stays correct.
 - Fix 3 (combo MCP surfacing): `_connect_mcps_if_needed` at L434-484 swallows per-MCP build/list failures with `log.error` + `continue`. Need to record failures in `_mcp_connect_failures: list[dict]` instance attr (init in `__init__`) + surface as `mcp_connect_failure` synthetic events on turn 0's `framework_events`.
 
+
+### Actions
+- docker-compose.yaml::adapter-combo: added 5 AGW_MCP_* + 5 DIRECT_MCP_* entries; updated DEFAULT_OLLAMA_MODEL to llama3.1:latest in all 7 adapter blocks; rewrote stale "NO MCP" comment to E24+E24a accurate description.
+- frontend/app.js::Add Bulk: added explicit per-LLM defaults documentation block + inline "do not hardcode" comment. `model: null` behavior unchanged (was already correct).
+- adapters/combo/framework_bridge.py: added `_mcp_connect_failures` + `_mcp_connect_failures_emitted` instance attrs; record failures in `_connect_mcps_if_needed` build/list_tools exception paths; emit `mcp_connect_failure` synthetic events PREPENDED to turn 0's framework_events; clear in `_drive_refresh_tools`.
+- tests/test_adapter_combo.py: +1 test `test_connect_failure_surfaces_in_turn_zero_framework_events` (mocks _build_mcp_client to raise, asserts turn 0 emits 2 mcp_connect_failure events, turn 1 doesn't).
+
+### Verification
+- pytest: 333 -> 334 passed, 4 skipped (combo suite 25 -> 26).
+- python3 -m py_compile combo bridge OK; python3 yaml.safe_load compose OK.
+- node syntax-check on app.js blocked by sandbox (used py-only checks; visual review of the comment-only diff).
+
+### Commit
+f81a5fe — single commit, 6 files (4 source + 2 docs), +235/-22.
+
+### Constraints honored
+- NO push.
+- NO AGW touched.
+- NO templates.py / runner.py touched.
+- pytest still green (+1 new test).
+
