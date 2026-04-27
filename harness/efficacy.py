@@ -1045,15 +1045,16 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
         if cid:
             cids_per_route.setdefault(route, set()).add(cid)
 
-    # If some routes registered zero CID entries, we can't measure
-    # continuity — that's a fail (a route had LLM traffic but no CIDs
-    # observable, suggesting cidgar wasn't in path on that hop).
+    # Failure mode A: any route had no CID at all.
+    # The agent likely failed to propagate the marker (canonical history
+    # corruption; not a marker-paraphrase). Distinct from B/C which both
+    # have CIDs on every route.
     routes_without_cid = routes_seen - set(cids_per_route)
     if routes_without_cid:
         return Verdict(
             "fail",
-            f"routes {sorted(routes_without_cid)} had no CID-bearing "
-            f"audits — CID was not present on every LLM route",
+            f"route(s) {sorted(routes_without_cid)} had LLM traffic but no CID "
+            f"(agent-side propagation gap, not a switch breach)",
         )
 
     common_cids = set.intersection(*cids_per_route.values())
@@ -1063,11 +1064,80 @@ def verdict_k_cross_api_continuity(trial: Trial) -> Verdict:
             f"CID(s) {sorted(common_cids)} survived across "
             f"{len(routes_seen)} routes ({sorted(routes_seen)})",
         )
+
+    # Failure modes B / C disambiguation. Walk request bodies for
+    # marker-shaped strings (regex MARKER_RE). If found on multiple routes
+    # but no AGW-extracted CID overlap, the model paraphrased the marker
+    # into AGW-unrecognizable text (mode C); otherwise AGW minted distinct
+    # CIDs per route — possible isolation breach (mode B).
+    routes_with_marker_text = _routes_with_marker_text_in_request_bodies(
+        trial, routes_seen,
+    )
+    if len(routes_with_marker_text) >= 2:
+        return Verdict(
+            "fail",
+            f"marker-shaped strings present on {len(routes_with_marker_text)} routes "
+            f"({sorted(routes_with_marker_text)}) but no AGW-extracted CID overlap — "
+            f"model paraphrase suspected (check assistant_text for marker corruption)",
+        )
     return Verdict(
         "fail",
-        f"no CID common across all {len(routes_seen)} routes "
-        f"{sorted(routes_seen)} — CID reset at LLM switch boundary",
+        f"no CID common across {len(routes_seen)} routes "
+        f"{sorted(routes_seen)} (AGW minted distinct CIDs — possible isolation breach)",
     )
+
+
+def _llm_url_to_backend(url: str) -> str | None:
+    """Map an LLM URL like `http://agentgateway:8080/llm/chatgpt/...` to
+    the backend audit-log convention `llm-chatgpt`. Returns None if the
+    URL doesn't match the gateway's `/llm/<provider>/...` shape."""
+    if not isinstance(url, str):
+        return None
+    m = re.search(r"/llm/([^/]+)/", url)
+    return f"llm-{m.group(1)}" if m else None
+
+
+def _routes_with_marker_text_in_request_bodies(
+    trial: Trial, routes: set[str],
+) -> set[str]:
+    """Find which routes have request bodies that CONTAIN marker-shaped
+    text (matched by MARKER_RE) — used to disambiguate model-paraphrase
+    failures (mode C: marker bytes present but AGW-unrecognizable) from
+    AGW-isolation breaches (mode B: per-route CID minting with no
+    marker echo at all).
+
+    Scans `framework_events[].request.body` on every turn and resolves
+    each event's route via its `llm_for_turn` field if present (combo
+    adapter convention) or via `_llm_url_to_backend(request.url)`.
+    """
+    out: set[str] = set()
+    turns = trial.turns if hasattr(trial, "turns") else trial.get("turns", [])
+    for turn in turns:
+        events = (
+            turn.framework_events
+            if hasattr(turn, "framework_events")
+            else turn.get("framework_events", [])
+        )
+        for ev in events or []:
+            if not isinstance(ev, dict):
+                continue
+            phase = ev.get("t") or ev.get("kind", "")
+            if not isinstance(phase, str) or not phase.startswith("llm_"):
+                continue
+            req = ev.get("request") or {}
+            # Prefer the adapter-supplied route hint (combo sets this);
+            # fall back to URL parsing for adapters that don't.
+            route = ev.get("llm_for_turn")
+            if isinstance(route, str):
+                route = f"llm-{route}"
+            else:
+                route = _llm_url_to_backend(req.get("url", ""))
+            if route not in routes:
+                continue
+            body_str = json.dumps(req.get("body", ""))
+            if MARKER_RE.search(body_str):
+                out.add(route)
+    return out
 
 
 def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:

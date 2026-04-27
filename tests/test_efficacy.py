@@ -914,7 +914,9 @@ def test_verdict_k_pass_when_cid_common_across_routes():
 
 def test_verdict_k_fail_when_no_common_cid_across_routes():
     """Two routes, distinct CIDs (chatgpt has ib_aaa, claude has ib_bbb,
-    no overlap) → fail. CID got reset at the LLM-switch boundary."""
+    no overlap) → fail. With no marker-shaped text in any request body
+    (no turns/framework_events here), this is failure mode B: AGW minted
+    distinct CIDs — possible isolation breach."""
     audits = [
         _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
         _llm_audit("llm-claude",  "ib_bbbbbbbbbbbb"),
@@ -923,11 +925,15 @@ def test_verdict_k_fail_when_no_common_cid_across_routes():
     v = compute_verdicts(trial)
     assert v["k"].verdict == "fail", f"got {v['k']}"
     assert "no CID common" in v["k"].reason
+    # Mode B-specific phrasing — distinguishes from the mode-A
+    # "agent-side propagation gap" and mode-C "model paraphrase".
+    assert "AGW minted distinct CIDs" in v["k"].reason
 
 
 def test_verdict_k_fail_when_route_lacks_any_cid():
     """One route had LLM traffic but no CID-bearing audits — that's a
-    failure of CID propagation, not a "verdict not applicable"."""
+    failure of CID propagation (failure mode A: agent-side gap), not a
+    "verdict not applicable"."""
     audits = [
         _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
         _llm_audit("llm-claude",  None),  # no CID on this route's entry
@@ -935,7 +941,10 @@ def test_verdict_k_fail_when_route_lacks_any_cid():
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
     assert v["k"].verdict == "fail", f"got {v['k']}"
-    assert "had no CID-bearing" in v["k"].reason
+    # Failure mode A reason — distinct from B/C so operators can route
+    # the investigation to the agent-side, not AGW.
+    assert "agent-side propagation gap" in v["k"].reason
+    assert "llm-claude" in v["k"].reason
 
 
 def test_verdict_k_na_for_single_route():
@@ -979,6 +988,82 @@ def test_verdict_k_pass_three_routes_all_share_one_cid():
     assert "ib_xxxxxxxxxxxx" in v["k"].reason
     # Must report all 3 routes in the reason (sanity check).
     assert "3 routes" in v["k"].reason
+
+
+def test_verdict_k_distinguishes_route_with_no_cid():
+    """Failure mode A — a route had LLM traffic but no CID at all. The
+    reason string MUST point at agent-side propagation, NOT switch
+    breach (which is mode B). This is the same scenario as
+    test_verdict_k_fail_when_route_lacks_any_cid but pinning the
+    operator-facing language — easy to silently regress otherwise."""
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  None),
+    ]
+    trial = _trial_with(turns=[], audit_entries=audits)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "fail", f"got {v['k']}"
+    # Mode A — agent-side, NOT switch-breach (B) or marker-corruption (C).
+    assert "agent-side propagation gap" in v["k"].reason
+    assert "not a switch breach" in v["k"].reason
+    # Must NOT misreport this as the AGW-minted-distinct-CIDs (mode B) reason.
+    assert "AGW minted distinct CIDs" not in v["k"].reason
+    assert "model paraphrase" not in v["k"].reason
+
+
+def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
+    """Failure mode C — every route HAS a CID (so mode A doesn't
+    apply), CIDs don't overlap (so it would default to mode B), BUT
+    request bodies on multiple routes contain marker-shaped text.
+
+    That bytes-present-but-AGW-didn't-reuse signal points at the model
+    (paraphrased the marker into AGW-unrecognizable form), not AGW
+    isolation. Reason must say "model paraphrase" — operators look at
+    assistant_text, not gateway config.
+    """
+    cfg = TrialConfig(framework="combo", api="chat", stream=False, state=False,
+                      llm=["chatgpt", "claude"], mcp="NONE", routing="via_agw")
+    # Each turn carries a framework_event whose request body contains a
+    # marker-shaped string (MARKER_RE matches `<!-- ib:cid=ib_xxxxxxxxxxxx -->`).
+    # The marker text is present on BOTH routes, but each route's
+    # AGW-extracted CID differs (no overlap). That's mode C.
+    marker_str = "user said: <!-- ib:cid=ib_aaaaaaaaaaaa --> hi"
+    turn0 = Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        framework_events=[{
+            "t": "llm_dispatch_0",
+            "llm_for_turn": "chatgpt",
+            "request": {
+                "url": "http://agentgateway:8080/llm/chatgpt/v1/chat/completions",
+                "body": {"messages": [{"role": "user", "content": marker_str}]},
+            },
+            "response": None,
+        }],
+    )
+    turn1 = Turn(
+        turn_id="t1", turn_idx=1, kind="user_msg",
+        framework_events=[{
+            "t": "llm_dispatch_0",
+            "llm_for_turn": "claude",
+            "request": {
+                "url": "http://agentgateway:8080/llm/claude/v1/messages",
+                "body": {"messages": [{"role": "user", "content": marker_str}]},
+            },
+            "response": None,
+        }],
+    )
+    audits = [
+        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),  # AGW saw a CID here…
+        _llm_audit("llm-claude",  "ib_bbbbbbbbbbbb"),  # …and a different CID here
+    ]
+    trial = _trial_with(turns=[turn0, turn1], audit_entries=audits, cfg=cfg)
+    v = compute_verdicts(trial)
+    assert v["k"].verdict == "fail", f"got {v['k']}"
+    # Mode C-specific phrasing — points operator at the model (paraphrase),
+    # NOT at AGW (mode B) or the agent (mode A).
+    assert "model paraphrase" in v["k"].reason
+    assert "AGW minted distinct CIDs" not in v["k"].reason
+    assert "agent-side propagation gap" not in v["k"].reason
 
 
 def test_body_has_any_tool_call_detects_both_shapes():
