@@ -17,6 +17,28 @@ binds:
       - protocol: HTTP
         routes:
 
+          # NOTE — every governed route below carries an IDENTICAL
+          # `channels:` block:
+          #     channels:
+          #       text_marker: true
+          #       resource_block: true
+          #       snapshot_correlation: true
+          # Post-CHG-247 these channel defaults are `false` upstream, so each
+          # route must opt in EXPLICITLY (no implicit on). The mcp-fetch route
+          # additionally sets `mcp_marker_kind: both` (E7 demo).
+          #
+          # YAML anchors (`<<: *defaults`) were considered to deduplicate but
+          # NOT used: AGW loads this file via crates/agentgateway/src/serdes.rs
+          # `yamlviajson::from_str` which serde_transcodes the YAML event
+          # stream straight into JSON without calling
+          # `serde_yaml::Value::apply_merge`. The literal `<<` key would survive
+          # transcode and then trip `deny_unknown_fields` on the channels
+          # schema. Plus, defining the anchor at this scope would itself add
+          # an unknown field to the routes-list. If/when AGW grows first-class
+          # defaulting (or `apply_merge` is wired into the loader), revisit.
+          # Keep these blocks BYTE-FOR-BYTE identical so a future grep/sed
+          # consolidation is mechanical.
+
           # ── LLM route: Ollama (primary provider in Plan A) ──
           - name: llm-ollama
             matches:

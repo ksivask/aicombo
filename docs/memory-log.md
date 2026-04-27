@@ -71,3 +71,11 @@ Background subagent hit permission denial on Bash + Write to `/my/ws/aiplay/`. M
 - Tests: 237 → 245 pytest (+8). All green. No touch to harness/efficacy.py (E20 sibling work).
 - Open follow-up: when E21 lands (refresh_tools turn kind), add a `with_mutation` template variant to defaults.yaml exercising mcp_admin + refresh_tools composition. Spec calls this out as the canonical E20 verification trial.
 - Open follow-up: integration test that drives the full pipeline (docker-compose up, real http POSTs). Currently the mcp-mutable container is built but no test boots it. Spec calls this out under §Tests > Integration; deferred since requires running services.
+
+
+## 2026-04-26 — AGW yaml loader does NOT apply merge keys
+- AGW loads `agw/config.yaml` via `crates/agentgateway/src/serdes.rs::yamlviajson::from_str`, which is `serde_yaml::Deserializer::from_str` + `serde_transcode::transcode` → JSON.
+- `serde_transcode` is a streaming event-by-event copy. It does NOT invoke `serde_yaml::Value::apply_merge`.
+- Combined with the global `deny_unknown_fields` set by the `schema!` macro alias in serdes.rs:52–56, this means YAML merge keys (`<<: *anchor`) WILL FAIL at runtime — the literal `<<` key reaches the schema and is rejected.
+- DO NOT introduce YAML anchors anywhere in `agw/config.yaml` or any other AGW-consumed YAML file until this loader changes.
+- Future fix: wire `serde_yaml::Value::apply_merge` into `yamlviajson::from_str` before the transcode (or migrate to `serde_yml`/manual `Value` round-trip). Then merge keys become safe.

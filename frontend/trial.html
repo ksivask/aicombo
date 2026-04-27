@@ -19,10 +19,21 @@
   <!-- Cytoscape (interactive CID-flow tab). UMD globals: `cytoscape`,
        `dagre`, `cytoscapeDagre`. Loaded from CDN to keep the repo small;
        falls back gracefully (renderCidFlowInteractiveTab logs a warn and
-       leaves the container empty if `cytoscape` is undefined at mount). -->
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.0/dist/cytoscape.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
+       leaves the container empty if `cytoscape` is undefined at mount).
+       SRI sha384 integrity hashes pin the exact bytes — if jsDelivr ever
+       serves modified content the browser refuses to execute. Re-compute
+       on version bumps:
+         curl -sL <url> | openssl dgst -sha384 -binary | openssl base64 -A
+       crossorigin="anonymous" is required for SRI on cross-origin scripts. -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.0/dist/cytoscape.min.js"
+          integrity="sha384-kpMsYllYzyaWU69Piok08rPNktpnjqAoDMdB00fjqUkEk3lkuUbSuwJ+oXrjvN6B"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"
+          integrity="sha384-2IH3T69EIKYC4c+RXZifZRvaH5SRUdacJW7j6HtE5rQbvLhKKdawxq6vpIzJ7j9M"
+          crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"
+          integrity="sha384-u69h9ebXeSjlg6q/rb1zKTRAGu/h8deCl0409xpS/QJctMKnc4M9Fzkm01VOQdeF"
+          crossorigin="anonymous"></script>
 </head>
 <body class="trial-page">
   <header class="trial-header">
