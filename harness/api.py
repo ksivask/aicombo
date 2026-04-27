@@ -350,10 +350,11 @@ def matrix_clear_override(row_id: str):
 def templates_validate(payload: dict = Body(...)):
     """T12 — validate a turn_plan dict. Returns {ok, errors}.
 
-    Checks the shape the runner expects (turns list of dicts with kind + turn_id;
-    user_msg requires text; force_state_ref requires lookback). The drawer's
-    Validate button hits this before Save so users get a clear error list
-    without having to trigger a trial first.
+    Checks the shape the runner expects (turns list of dicts with kind;
+    user_msg requires content; force_state_ref requires lookback;
+    mcp_admin requires op). turn_id is optional — the runner auto-
+    generates one per turn at dispatch time (`turn-NNN-xxxxxxxx`), so
+    user-authored plans don't need to carry it.
     """
     errors: list[str] = []
     plan = payload.get("turn_plan", {})
@@ -372,16 +373,15 @@ def templates_validate(payload: dict = Body(...)):
                 "reset_context", "refresh_tools",
             ):
                 errors.append(f"turn {i}: invalid kind '{t['kind']}'")
-            if "turn_id" not in t:
-                errors.append(f"turn {i}: missing 'turn_id'")
-            if t.get("kind") == "user_msg" and "text" not in t:
-                errors.append(f"turn {i}: user_msg requires 'text'")
+            # user_msg requires content (NOT text — runner reads turn_spec["content"])
+            if t.get("kind") == "user_msg" and not t.get("content"):
+                errors.append(f"turn {i}: user_msg requires non-empty 'content'")
             if t.get("kind") == "force_state_ref" and "lookback" not in t:
                 errors.append(f"turn {i}: force_state_ref requires 'lookback' (int)")
             # E22 — mcp_admin requires `op`; `mcp` and `payload` are
             # optional (mcp falls back to trial.config.mcp; payload to {}).
-            if t.get("kind") == "mcp_admin" and "op" not in t:
-                errors.append(f"turn {i}: mcp_admin requires 'op'")
+            if t.get("kind") == "mcp_admin" and not t.get("op"):
+                errors.append(f"turn {i}: mcp_admin requires 'op' (e.g., 'set_tools', 'reset')")
             # E21 — reset_context and refresh_tools have no required fields
             # beyond `kind`; both are zero-arg dispatch markers.
     return {"ok": not errors, "errors": errors}

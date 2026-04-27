@@ -20,11 +20,11 @@ let cmInstance = null;
 // Canonical turn templates surfaced as one-click buttons above the CM editor.
 // Keys here are the dropdown values / button data attributes.
 const TURN_TEMPLATES = {
-  user_msg:                {kind: "user_msg", text: "Your prompt here"},
+  user_msg:                {kind: "user_msg", content: "Your prompt here"},
   compact_drop_half:       {kind: "compact", strategy: "drop_half"},
   compact_drop_tool_calls: {kind: "compact", strategy: "drop_tool_calls"},
   compact_summarize:       {kind: "compact", strategy: "summarize"},
-  force_state_ref:         {kind: "force_state_ref", lookback: 2, text: "Refer back to earlier."},
+  force_state_ref:         {kind: "force_state_ref", lookback: 2, content: "Refer back to earlier."},
   reset_context:           {kind: "reset_context"},                              // E21
   refresh_tools:           {kind: "refresh_tools"},                              // E21
 };
@@ -163,7 +163,7 @@ export async function openTurnPlanDrawer(row) {
       <div class="tp-add-turn-bar">
         <span class="tp-add-turn-label">+ Add turn:</span>
         <button type="button" data-tpl="user_msg" class="tp-add-turn-btn"
-          title='append {"kind":"user_msg","text":"…"}'>user_msg</button>
+          title='append {"kind":"user_msg","content":"…"}'>user_msg</button>
         <button type="button" data-tpl="compact_drop_half" class="tp-add-turn-btn"
           title='append {"kind":"compact","strategy":"drop_half"}'>compact (drop_half)</button>
         <button type="button" data-tpl="compact_drop_tool_calls" class="tp-add-turn-btn"
@@ -171,7 +171,7 @@ export async function openTurnPlanDrawer(row) {
         <button type="button" data-tpl="compact_summarize" class="tp-add-turn-btn"
           title='append {"kind":"compact","strategy":"summarize"}'>compact (summarize)</button>
         <button type="button" data-tpl="force_state_ref" class="tp-add-turn-btn"
-          title='append {"kind":"force_state_ref","lookback":2,"text":"…"}'>force_state_ref (lookback=2)</button>
+          title='append {"kind":"force_state_ref","lookback":2,"content":"…"}'>force_state_ref (lookback=2)</button>
         <button type="button" data-tpl="reset_context" class="tp-add-turn-btn"
           title='append {"kind":"reset_context"} — E21: wipe agent-side LLM history; AGW mints fresh CID on next turn'>reset_context</button>
         <button type="button" data-tpl="refresh_tools" class="tp-add-turn-btn"

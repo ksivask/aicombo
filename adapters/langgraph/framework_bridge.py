@@ -118,7 +118,7 @@ def _default_model(llm: str) -> str:
     Env-var overrides let operators pin a specific model without code changes.
     """
     if llm == "ollama":
-        return os.environ.get("DEFAULT_OLLAMA_MODEL", "qwen2.5:7b")
+        return os.environ.get("DEFAULT_OLLAMA_MODEL", "llama3.1:latest")
     if llm == "chatgpt":
         return os.environ.get("DEFAULT_OPENAI_MODEL", "gpt-4o-mini")
     if llm == "gemini":

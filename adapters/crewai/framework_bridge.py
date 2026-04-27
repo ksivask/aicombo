@@ -135,7 +135,7 @@ def _llm_model_string(config: dict) -> str:
     requested = config.get("model")
     if api == "chat":
         if llm == "ollama":
-            return f"ollama/{requested or os.environ.get('DEFAULT_OLLAMA_MODEL', 'qwen2.5:7b')}"
+            return f"ollama/{requested or os.environ.get('DEFAULT_OLLAMA_MODEL', 'llama3.1:latest')}"
         if llm == "chatgpt":
             return f"openai/{requested or os.environ.get('DEFAULT_OPENAI_MODEL', 'gpt-4o-mini')}"
         if llm == "gemini":

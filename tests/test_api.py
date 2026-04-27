@@ -128,27 +128,42 @@ def test_info_frameworks_mirrors_validator_capabilities():
 # ── Plan B T12 — turn_plan_override + /templates/validate ──
 
 def test_templates_validate_accepts_minimal_plan():
+    """Plans use `content` for user_msg (matches runner.py:115). turn_id is
+    optional — runner auto-generates one per turn at dispatch time."""
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": [
-        {"turn_id": "t0", "kind": "user_msg", "text": "hi"},
+        {"kind": "user_msg", "content": "hi"},
     ]}})
     assert out["ok"] is True
     assert out["errors"] == []
 
 
-def test_templates_validate_rejects_missing_turn_id():
+def test_templates_validate_turn_id_is_optional():
+    """turn_id is NOT required — the runner generates `turn-NNN-xxxxxxxx`
+    at dispatch time, so user-authored plans can omit it."""
+    from api import templates_validate
+    out = templates_validate({"turn_plan": {"turns": [
+        {"kind": "user_msg", "content": "hi"},
+    ]}})
+    assert out["ok"] is True, out["errors"]
+
+
+def test_templates_validate_rejects_user_msg_with_text_but_no_content():
+    """Old-style plans using `text` (not `content`) silently produced empty
+    user messages at runtime (runner reads turn_spec["content"]). Validator
+    catches that misshape now."""
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": [
         {"kind": "user_msg", "text": "hi"},
     ]}})
     assert out["ok"] is False
-    assert any("turn_id" in e for e in out["errors"])
+    assert any("content" in e for e in out["errors"])
 
 
 def test_templates_validate_rejects_unknown_kind():
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": [
-        {"turn_id": "t0", "kind": "wat", "text": "hi"},
+        {"kind": "wat", "content": "hi"},
     ]}})
     assert out["ok"] is False
     assert any("invalid kind" in e for e in out["errors"])
@@ -157,22 +172,33 @@ def test_templates_validate_rejects_unknown_kind():
 def test_templates_validate_force_state_ref_requires_lookback():
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": [
-        {"turn_id": "t0", "kind": "user_msg", "text": "hi"},
-        {"turn_id": "t1", "kind": "force_state_ref"},
+        {"kind": "user_msg", "content": "hi"},
+        {"kind": "force_state_ref"},
     ]}})
     assert out["ok"] is False
     assert any("lookback" in e for e in out["errors"])
 
 
-def test_templates_validate_accepts_reset_context_and_refresh_tools():
-    """E21 — both new turn kinds parse without errors; no required
-    fields beyond `kind` and `turn_id`."""
+def test_templates_validate_mcp_admin_requires_op():
+    """E22 — mcp_admin requires `op`. Missing or empty op → error."""
     from api import templates_validate
     out = templates_validate({"turn_plan": {"turns": [
-        {"turn_id": "t0", "kind": "user_msg", "text": "hi"},
-        {"turn_id": "t1", "kind": "reset_context"},
-        {"turn_id": "t2", "kind": "refresh_tools"},
-        {"turn_id": "t3", "kind": "user_msg", "text": "hi again"},
+        {"kind": "user_msg", "content": "hi"},
+        {"kind": "mcp_admin", "mcp": "mutable"},  # no op
+    ]}})
+    assert out["ok"] is False
+    assert any("op" in e for e in out["errors"])
+
+
+def test_templates_validate_accepts_reset_context_and_refresh_tools():
+    """E21 — both new turn kinds parse without errors; no required
+    fields beyond `kind`."""
+    from api import templates_validate
+    out = templates_validate({"turn_plan": {"turns": [
+        {"kind": "user_msg", "content": "hi"},
+        {"kind": "reset_context"},
+        {"kind": "refresh_tools"},
+        {"kind": "user_msg", "content": "hi again"},
     ]}})
     assert out["ok"] is True, out["errors"]
     assert out["errors"] == []

@@ -108,7 +108,7 @@ def pick_api_key(llm: str) -> str:
 # config nor an explicit override supplies one. Mirrors the convention
 # used across sibling adapters.
 DEFAULT_MODEL_PER_LLM: dict[str, str] = {
-    "ollama":  os.environ.get("DEFAULT_OLLAMA_MODEL",  "qwen2.5:7b"),
+    "ollama":  os.environ.get("DEFAULT_OLLAMA_MODEL",  "llama3.1:latest"),
     "mock":    "mock",
     "chatgpt": os.environ.get("DEFAULT_OPENAI_MODEL",  "gpt-4o-mini"),
     "gemini":  os.environ.get("DEFAULT_GEMINI_MODEL",  "gemini-2.0-flash"),
