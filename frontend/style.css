@@ -745,3 +745,17 @@ table.support-matrix td.cell-na     { color: #999; }
   border: 1px solid #e0e0e0; color: #333;
 }
 .identifiers-banner em { color: #999; font-size: 12px; }
+
+/* ── Drawer plan flags (E37) ── */
+.drawer-flags-row {
+  display: flex; flex-wrap: wrap; gap: 12px; padding: 4px 0 8px 0;
+}
+.drawer-flag label {
+  display: inline-flex; align-items: center; gap: 6px;
+  cursor: pointer; user-select: none;
+  padding: 4px 8px; background: #fafbfc; border: 1px solid #e0e0e0;
+  border-radius: 4px; font-size: 13px;
+}
+.drawer-flag label:hover { background: #f0f4f8; border-color: #b8c6d3; }
+.drawer-flag input[type="checkbox"] { margin: 0; cursor: pointer; }
+.drawer-flag small { color: #888; font-size: 11px; }

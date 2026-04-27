@@ -206,6 +206,30 @@ export async function openTurnPlanDrawer(row) {
        </div>`
     : "";
 
+  // E37 — verdict-purposed plan flags. Each toggle PATCHes the row +
+  // surfaces a hint that the editor still shows the OLD plan (user must
+  // click 'Reset to default' to load the new template). Precedence per
+  // templates.py::default_turn_plan: with_force_state_ref >
+  // with_e20_verification > with_reset > with_compact.
+  const flagsRow = `
+    <div class="drawer-flag" title="Verdict (d) — append a compact turn between user_msg turns">
+      <label><input type="checkbox" data-flag="with_compact" ${row.with_compact ? "checked" : ""}>
+        with_compact <small>(verdict d)</small></label>
+    </div>
+    <div class="drawer-flag" title="Verdict (e) — exercise force_state_ref jump for Responses-API state-mode">
+      <label><input type="checkbox" data-flag="with_force_state_ref" ${row.with_force_state_ref ? "checked" : ""}>
+        with_force_state_ref <small>(verdict e)</small></label>
+    </div>
+    <div class="drawer-flag" title="Verdict (c) bracket-aware — split trial into segments by reset_context">
+      <label><input type="checkbox" data-flag="with_reset" ${row.with_reset ? "checked" : ""}>
+        with_reset <small>(verdict c segments)</small></label>
+    </div>
+    <div class="drawer-flag" title="Verdict (i) — exercise mcp_admin mutation between turns; requires mcp=mutable">
+      <label><input type="checkbox" data-flag="with_e20_verification" ${row.with_e20_verification ? "checked" : ""}>
+        with_e20_verification <small>(verdict i; mcp=mutable required)</small></label>
+    </div>
+  `;
+
   document.getElementById("drawer-body").innerHTML = `
     <div class="drawer-section">
       <div class="drawer-section-header">
@@ -214,6 +238,21 @@ export async function openTurnPlanDrawer(row) {
       </div>
       <div class="row-summary">${renderChips(row)}</div>
       ${baselineHint}
+    </div>
+    <div class="drawer-section">
+      <div class="drawer-section-header">
+        <h3 style="margin:0;">Plan flags</h3>
+        <div id="drawer-flags-status" class="tp-status"></div>
+      </div>
+      <div class="drawer-flags-row">${flagsRow}</div>
+      <p class="plan-note">
+        Each flag swaps the default turn plan to a verdict-purposed
+        template. If multiple are set, precedence wins:
+        <code>with_force_state_ref</code> > <code>with_e20_verification</code> >
+        <code>with_reset</code> > <code>with_compact</code>. Toggling a
+        flag PATCHes the row immediately; click <code>Reset to default</code>
+        below to reload the editor with the new template.
+      </p>
     </div>
     <div class="drawer-section">
       <div class="drawer-section-header">
@@ -294,6 +333,33 @@ export async function openTurnPlanDrawer(row) {
   // ── Wire add-turn quick-template buttons (above the editor) ──
   document.querySelectorAll(".tp-add-turn-btn").forEach(btn => {
     btn.onclick = () => addTurn(btn.dataset.tpl);
+  });
+
+  // ── Wire E37 plan-flag checkboxes ──
+  document.querySelectorAll(".drawer-flag input[type=checkbox]").forEach(cb => {
+    cb.onchange = async () => {
+      const flag = cb.dataset.flag;
+      const value = cb.checked;
+      const status = document.getElementById("drawer-flags-status");
+      try {
+        const r = await fetch(`${API_BASE}/matrix/row/${row.row_id}`, {
+          method: "PATCH",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({[flag]: value}),
+        });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        // Mutate the local row object so subsequent toggles see fresh state
+        row[flag] = value;
+        status.textContent = `✓ ${flag} = ${value} saved. Click 'Reset to default' to reload editor with the new template.`;
+        status.className = "tp-status tp-status-info";
+      } catch (e) {
+        // Revert UI checkbox on failure so it reflects backend truth
+        cb.checked = !value;
+        status.textContent = `✗ ${flag}: ${e.message}`;
+        status.className = "tp-status tp-status-error";
+      }
+      setTimeout(() => { status.textContent = ""; }, 4000);
+    };
   });
 
   // ── Wire buttons ──
