@@ -715,3 +715,17 @@ table.support-matrix td.cell-na     { color: #999; }
 .support-legend .cell-tbd    { color: #b8860b; font-weight: 600; }
 .support-legend .cell-no     { color: #dc3545; font-weight: 600; }
 .support-legend .cell-na     { color: #999; }
+
+/* ── Multi-select cell editor (E19/E23 mcp + llm columns) ── */
+.multi-select-editor {
+  background: white; border: 1px solid #888; border-radius: 4px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  padding: 4px 0; min-width: 140px; max-height: 280px;
+  overflow-y: auto; font-size: 13px; font-family: system-ui, sans-serif;
+}
+.multi-select-option {
+  display: flex; align-items: center; gap: 6px;
+  padding: 4px 10px; cursor: pointer; user-select: none;
+}
+.multi-select-option:hover { background: #f0f4f8; }
+.multi-select-option input[type="checkbox"] { margin: 0; cursor: pointer; }

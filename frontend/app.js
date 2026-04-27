@@ -189,6 +189,65 @@ function formatListLikeCell(value) {
   return value == null ? "" : String(value);
 }
 
+// All MCP options. Used by the multi-select dropdown on the mcp column.
+// "NONE" means "no MCP bound" — selectable as a single value only (auto-
+// uniques in the editor: ticking NONE clears any other selections).
+const MCP_OPTIONS = ["NONE", "weather", "news", "library", "fetch", "mutable"];
+
+// Multi-select cell editor — popup with a checkbox per option. Returns:
+//   - "" if nothing checked
+//   - the single string if exactly one checked (legacy single-value shape)
+//   - list[string] if 2+ checked (E19/E23 multi-form)
+// "NONE" is mutually exclusive with everything else (ticking NONE unticks
+// the rest; ticking anything else unticks NONE). This matches the
+// validator's semantics — "NONE" inside a list is invalid.
+class MultiSelectCellEditor {
+  init(params) {
+    this.params = params;
+    const initial = Array.isArray(params.value) ? new Set(params.value)
+                  : params.value ? new Set([params.value]) : new Set();
+    // Resolve options: cellEditorParams.values can be array OR a function
+    // (function form lets the LLM editor reflect the row's current api).
+    const raw = params.values || (params.colDef.cellEditorParams && params.colDef.cellEditorParams.values);
+    this.options = typeof raw === "function" ? raw(params) : (raw || []);
+
+    this.eGui = document.createElement("div");
+    this.eGui.className = "multi-select-editor";
+    this.eGui.innerHTML = this.options.map(opt => {
+      const checked = initial.has(opt) ? " checked" : "";
+      return `<label class="multi-select-option">` +
+             `<input type="checkbox" value="${opt}"${checked}> ${opt}` +
+             `</label>`;
+    }).join("");
+
+    // Wire NONE-mutex behavior on every checkbox change.
+    this.eGui.addEventListener("change", e => {
+      if (e.target.tagName !== "INPUT") return;
+      const boxes = Array.from(this.eGui.querySelectorAll("input[type=checkbox]"));
+      if (e.target.value === "NONE" && e.target.checked) {
+        for (const b of boxes) if (b.value !== "NONE") b.checked = false;
+      } else if (e.target.value !== "NONE" && e.target.checked) {
+        const noneBox = boxes.find(b => b.value === "NONE");
+        if (noneBox) noneBox.checked = false;
+      }
+    });
+  }
+  getGui() { return this.eGui; }
+  afterGuiAttached() {
+    // Focus first checkbox so keyboard users can space-toggle immediately.
+    const first = this.eGui.querySelector("input[type=checkbox]");
+    if (first) first.focus();
+  }
+  getValue() {
+    const checked = Array.from(this.eGui.querySelectorAll("input:checked")).map(i => i.value);
+    if (checked.length === 0) return "";
+    if (checked.length === 1) return checked[0];   // legacy single-value
+    return checked;
+  }
+  isPopup() { return true; }
+  destroy() {}
+}
+
 function buildColumnDefs() {
   return [
     {headerName: "#", valueGetter: "node.rowIndex + 1", width: 60, pinned: "left"},
@@ -235,13 +294,17 @@ function buildColumnDefs() {
     },
     {
       headerName: "LLM", field: "llm", editable: true,
-      // E23 — accept comma-separated text so multi-LLM rows can be entered
-      // (e.g. "ollama, chatgpt"). Single-value typing keeps the legacy
-      // string shape via parseListLikeCell. The dropdown UX is sacrificed
-      // for first-cut simplicity (Option A); revisit with a multi-select
-      // editor when E24's combo adapter ships and richer UX is warranted.
-      cellEditor: "agTextCellEditor",
-      valueParser: params => parseListLikeCell(params.newValue),
+      // E23 multi-LLM: dropdown checkbox editor (Option B from the design
+      // doc; supersedes the Option A text-input fallback). Single-tick
+      // returns a string (legacy shape); multi-tick returns list[string]
+      // for combo-style rows. Options reflect API_TO_PROVIDERS for the
+      // current row's api so users can't accidentally pick incompatible
+      // LLMs (validator double-checks server-side).
+      cellEditor: MultiSelectCellEditor,
+      cellEditorPopup: true,
+      cellEditorParams: {
+        values: params => llmOptionsForRow(params.data || {}),
+      },
       valueFormatter: params => formatListLikeCell(params.value),
       cellStyle: params => {
         const row = params.data || {};
@@ -307,13 +370,15 @@ function buildColumnDefs() {
     },
     {
       headerName: "MCP", field: "mcp", editable: true,
-      // E19 — accept comma-separated text for multi-MCP rows
-      // (e.g. "weather, fetch"). Single values stay as strings via
-      // parseListLikeCell, preserving the existing single-MCP behaviour.
-      // Validator gates list-form against MULTI_MCP_FRAMEWORKS server-side
-      // (currently empty — adapters opt in incrementally).
-      cellEditor: "agTextCellEditor",
-      valueParser: params => parseListLikeCell(params.newValue),
+      // E19 multi-MCP: dropdown checkbox editor (Option B from the design
+      // doc; supersedes the Option A text-input fallback). NONE is mutex
+      // with the others (ticking NONE clears the rest, and vice versa).
+      // Single tick → string; multi tick → list[string]. Validator gates
+      // list-form against MULTI_MCP_FRAMEWORKS server-side (currently
+      // empty — adapters opt in incrementally).
+      cellEditor: MultiSelectCellEditor,
+      cellEditorPopup: true,
+      cellEditorParams: {values: MCP_OPTIONS},
       valueFormatter: params => formatListLikeCell(params.value),
       tooltipValueGetter: params => {
         if (Array.isArray(params.value) && params.value.length > 1) {
