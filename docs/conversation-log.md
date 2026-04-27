@@ -658,3 +658,17 @@ Add a new "CID flow (interactive)" tab to trial.html powered by cytoscape.js —
 - tests/test_validator.py — flip combo+list test + add new accepts test.
 - tests/test_adapter_combo.py — add 6 new tests.
 - ONE commit; no push.
+
+## 2026-04-26 — Three trial-diagnosis fixes (compose env / Add Bulk / combo MCP surfacing)
+
+### Entry — User prompt (subagent task)
+**User:** Three related fixes uncovered by trial diagnosis: (1) docker-compose adapter-combo missing AGW_MCP_*/DIRECT_MCP_* env + stale qwen2.5:7b default + stale "no MCP" comment; (2) Add Bulk model assignment per-LLM defaults; (3) surface combo MCP connect failures in framework_events. ONE commit OK or 3 logical groupings. Auto-execution policy: no prompts.
+
+### Reasoning
+HEAD = `259c5bf` aiplay/main, baseline pytest = 333 passed / 4 skipped / 337 collected.
+
+Investigation:
+- Fix 1 (compose): combo's environment block at lines 343-356 is missing all 5 AGW_MCP_* + 5 DIRECT_MCP_* vars present in adapter-langchain (lines 69-73, 78-82). Also has stale `DEFAULT_OLLAMA_MODEL=qwen2.5:7b` (commit `4cc70eb` updated source defaults to llama3.1:latest but missed compose env scalars). Stale comment at L333-339 says "NO MCP integration, NO tool calling" — false post-E24a (commit `639d372`).
+- Fix 2 (app.js Add Bulk): code at L806-857 ALREADY sets `model: null` for all bulk rows. The brief HYPOTHESIZED a hardcoded model issue ("likely hardcodes"); current code already matches the recommendation. Need to verify and possibly add explicit per-LLM defaults map for clarity, and ensure null path stays correct.
+- Fix 3 (combo MCP surfacing): `_connect_mcps_if_needed` at L434-484 swallows per-MCP build/list failures with `log.error` + `continue`. Need to record failures in `_mcp_connect_failures: list[dict]` instance attr (init in `__init__`) + surface as `mcp_connect_failure` synthetic events on turn 0's `framework_events`.
+

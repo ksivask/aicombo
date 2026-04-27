@@ -257,6 +257,12 @@ class Trial:
                             slice is returned in framework_events
       _claude_tool_warned — one-shot flag so the "claude+tools needs E24b"
                             warning fires once per trial, not per turn
+      _mcp_connect_failures — list of {mcp, error} dicts recorded by
+                            _connect_mcps_if_needed when a per-MCP build
+                            or list_tools call raises. Surfaced as
+                            synthetic `mcp_connect_failure` framework_events
+                            on turn 0 so operators see failures in the
+                            trial JSON without grepping container logs.
 
     See design.md §E24 + enhancements.md §E24a for carrier mechanics.
     """
@@ -307,6 +313,14 @@ class Trial:
         # One-shot warning flag — claude + tools is logged once per trial,
         # then claude turns silently fall back to no-tools mode (E24b deferred).
         self._claude_tool_warned: bool = False
+        # Per-MCP connect-time failures (build or list_tools). Recorded by
+        # _connect_mcps_if_needed and surfaced on turn 0 as synthetic
+        # framework_events so operators see them without grepping logs.
+        self._mcp_connect_failures: list[dict] = []
+        # Idempotency guard so the synthetic failure events emit ONCE
+        # (on the first turn after connect ran), even though the failure
+        # list itself remains queryable for the lifetime of the trial.
+        self._mcp_connect_failures_emitted: bool = False
 
         # Source of truth — provider-agnostic.
         self._canonical_history: list[dict[str, Any]] = []
@@ -451,6 +465,9 @@ class Trial:
                     "combo: failed to build MCP client for mcp=%s: %s",
                     mcp_name, e,
                 )
+                self._mcp_connect_failures.append(
+                    {"mcp": mcp_name, "error": str(e)}
+                )
                 continue
             self._mcp_clients[mcp_name] = client
             try:
@@ -459,6 +476,9 @@ class Trial:
             except Exception as e:
                 log.error(
                     "combo: failed tools/list for mcp=%s: %s", mcp_name, e,
+                )
+                self._mcp_connect_failures.append(
+                    {"mcp": mcp_name, "error": str(e)}
                 )
                 continue
             for tool_raw in tools_raw:
@@ -722,6 +742,41 @@ class Trial:
             if ex.get("resp"):
                 last_response = copy.deepcopy(ex["resp"])
 
+        # Build framework_events list: prepend any pending mcp_connect_failure
+        # synthetic events on turn 0 (before the LLM dispatch events). This
+        # surfaces silent per-MCP build/list_tools failures into the trial JSON
+        # so operators see "mcp_connect_failure" entries on Trial detail
+        # pages without grepping container logs. One-shot via
+        # _mcp_connect_failures_emitted — turns 1..N still see the (already
+        # log.error'd) failures via the queryable list, but only emit
+        # synthetic events once.
+        framework_events: list[dict] = []
+        if self._mcp_connect_failures and not self._mcp_connect_failures_emitted:
+            for fail in self._mcp_connect_failures:
+                framework_events.append({
+                    "t": "mcp_connect_failure",
+                    "mcp": fail["mcp"],
+                    "request": {
+                        "url": f"<MCP {fail['mcp']} connect>",
+                        "method": "MCP",
+                    },
+                    "response": {
+                        "status": "error",
+                        "body": fail["error"],
+                    },
+                })
+            self._mcp_connect_failures_emitted = True
+        framework_events.extend(
+            {
+                "t": f"llm_dispatch_{i}",
+                "llm_for_turn": llm,
+                "model": model_for_turn,
+                "request": copy.deepcopy(ex.get("req")),
+                "response": copy.deepcopy(ex.get("resp")),
+            }
+            for i, ex in enumerate(turn_exchanges)
+        )
+
         return {
             "turn_id": turn_id,
             "assistant_msg": assistant_text,
@@ -737,16 +792,7 @@ class Trial:
                 "headers": {},
                 "body": {"note": "no exchange captured this turn"},
             },
-            "framework_events": [
-                {
-                    "t": f"llm_dispatch_{i}",
-                    "llm_for_turn": llm,
-                    "model": model_for_turn,
-                    "request": copy.deepcopy(ex.get("req")),
-                    "response": copy.deepcopy(ex.get("resp")),
-                }
-                for i, ex in enumerate(turn_exchanges)
-            ],
+            "framework_events": framework_events,
             # Combo-specific surface for the inspector / verdict_k / tests.
             "llm_for_turn": llm,
             "model": model_for_turn,
@@ -913,6 +959,11 @@ class Trial:
         self._tool_routing = {}
         self._mcp_clients = {}
         self._mcp_connected = False
+        # Clear stale connect-failure list + emit-flag so a re-attempted
+        # connect can record a fresh set of (or absence of) failures and
+        # surface them again on the next turn.
+        self._mcp_connect_failures = []
+        self._mcp_connect_failures_emitted = False
         return {
             "refresh_tools": "ok",
             "mcp_list": list(self._mcp_list),

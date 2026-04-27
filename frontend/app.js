@@ -774,7 +774,25 @@ document.getElementById("btn-add-row").addEventListener("click", async () => {
 // creates one row per combo. LLM = first API-compatible provider from
 // API_TO_PROVIDERS (chat→ollama, messages→claude, responses/+conv→chatgpt);
 // MCP = randomly picked from {weather, news, library, fetch}; routing =
-// via_agw; model = null (lets the runner use DEFAULT_<PROVIDER>_MODEL env).
+// via_agw; model = null for ALL rows.
+//
+// Why model=null (not a per-LLM hardcode like "llama3.1:latest"):
+//   harness/models.py is the source of truth for curated models. A
+//   hardcoded model name in this file drifts as soon as that catalog
+//   changes (and crucially, an ollama model name on a chatgpt row would
+//   500 the trial). Sending `model: null` over the wire lets each
+//   adapter pick its own DEFAULT_<PROVIDER>_MODEL env (set per-adapter
+//   in docker-compose.yaml) — correct per-LLM defaults without any
+//   frontend knowledge of model names. Users can still override via
+//   the model cell dropdown after Add Bulk creates the row.
+//
+// For reference, the per-LLM env-var defaults (see docker-compose.yaml
+// adapter env blocks; harness/models.py for curated lists):
+//   ollama  → DEFAULT_OLLAMA_MODEL   (compose default: llama3.1:latest)
+//   chatgpt → DEFAULT_OPENAI_MODEL   (adapter default: gpt-4o-mini)
+//   claude  → DEFAULT_CLAUDE_MODEL   (adapter default: claude-haiku-4-5)
+//   gemini  → DEFAULT_GEMINI_MODEL   (adapter default: gemini-2.0-flash)
+//   mock    → "mock"                 (adapter literal)
 //
 // Source of truth: /info.frameworks (the I-NEW-1 endpoint backed by
 // validator.py::ADAPTER_CAPABILITIES). Falls back to the in-JS
@@ -812,6 +830,8 @@ document.getElementById("btn-add-bulk").addEventListener("click", async () => {
     for (const api of apis) {
       const llm = BULK_API_TO_FIRST_LLM[api];
       if (!llm) continue;  // unknown api → skip
+      // model: null — per-LLM env defaults win at adapter time. Do NOT
+      // hardcode a model name here (would drift; would mismatch llm).
       combos.push({
         framework: fw, api,
         stream: false, state: false,

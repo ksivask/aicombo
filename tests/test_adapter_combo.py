@@ -656,3 +656,91 @@ async def test_to_shape_anthropic_filters_tool_messages(combo_env, caplog):
         assert any("E24b" in m for m in warn_msgs)
     finally:
         await trial.aclose()
+
+
+# ── E24a — surface MCP connect failures in framework_events ──
+
+async def test_connect_failure_surfaces_in_turn_zero_framework_events(
+    combo_env, monkeypatch,
+):
+    """E24a — when a per-MCP build raises (e.g. missing AGW_MCP_<NAME> env
+    var), the failure is recorded on the Trial and surfaced as a
+    `mcp_connect_failure` synthetic event in the FIRST turn's
+    `framework_events`. Subsequent turns must NOT re-emit the synthetic
+    events (one-shot via _mcp_connect_failures_emitted).
+
+    Without this surfacing, operators see no failure indication in the
+    trial JSON — only a `log.error` line buried in container logs — and
+    the trial can appear to "succeed" while multi-MCP infrastructure
+    silently never engaged.
+    """
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-mcpfail",
+        config=_cfg(llm="chatgpt", mcp=["weather", "fetch"]),
+    )
+    try:
+        # Stub _build_mcp_client so BOTH weather + fetch raise — simulates
+        # the trial-21be4b99 pattern where compose env is missing the
+        # AGW_MCP_<NAME> vars and combo's pick_mcp_base_url ValueErrors.
+        def fake_build(self, mcp_name):
+            raise ValueError(
+                f"combo: env var AGW_MCP_{mcp_name.upper()} not set"
+            )
+        monkeypatch.setattr(Trial, "_build_mcp_client", fake_build)
+
+        # Stub _run_openai_loop so we don't need a real OpenAI server —
+        # we only care about framework_events shape, not the LLM dispatch.
+        async def fake_loop(self, client, model, tools_enabled):
+            return ("hello back", [])
+        monkeypatch.setattr(Trial, "_run_openai_loop", fake_loop)
+
+        # Drive turn 0 — _connect_mcps_if_needed will record both failures.
+        out0 = await trial.turn(turn_id="t0", user_msg="hello")
+
+        # Both failures captured on the Trial.
+        assert len(trial._mcp_connect_failures) == 2
+        names = {f["mcp"] for f in trial._mcp_connect_failures}
+        assert names == {"weather", "fetch"}
+        for fail in trial._mcp_connect_failures:
+            assert "AGW_MCP_" in fail["error"]
+
+        # Turn 0 framework_events have a `mcp_connect_failure` per MCP,
+        # at the START of the list (before any llm_dispatch_* events).
+        events = out0["framework_events"]
+        fail_events = [e for e in events if e["t"] == "mcp_connect_failure"]
+        assert len(fail_events) == 2
+        # Order matches the order failures were recorded (stable, list-order).
+        assert fail_events[0]["mcp"] == "weather"
+        assert fail_events[1]["mcp"] == "fetch"
+        # Each event carries an MCP-shaped request + an error response.
+        for ev in fail_events:
+            assert ev["request"]["method"] == "MCP"
+            assert f"<MCP {ev['mcp']} connect>" == ev["request"]["url"]
+            assert ev["response"]["status"] == "error"
+            assert "AGW_MCP_" in ev["response"]["body"]
+        # Synthetic events emit BEFORE the llm_dispatch chain.
+        first_dispatch_idx = next(
+            (i for i, e in enumerate(events)
+             if e["t"].startswith("llm_dispatch_")),
+            None,
+        )
+        if first_dispatch_idx is not None:
+            assert all(
+                events[i]["t"] == "mcp_connect_failure"
+                for i in range(first_dispatch_idx)
+            )
+
+        # Turn 1: the failure list is still queryable on the Trial, but
+        # the synthetic events do NOT re-emit (one-shot).
+        out1 = await trial.turn(turn_id="t1", user_msg="hello again")
+        fail_events_1 = [e for e in out1["framework_events"]
+                         if e["t"] == "mcp_connect_failure"]
+        assert fail_events_1 == [], (
+            "mcp_connect_failure events must emit ONCE (turn 0 only); "
+            f"got {len(fail_events_1)} on turn 1"
+        )
+        # But the trial-level state still records them for later inspection.
+        assert len(trial._mcp_connect_failures) == 2
+    finally:
+        await trial.aclose()

@@ -625,3 +625,28 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 
 ### Open
 - fastmcp.Client lifecycle confirmed by inspecting direct-mcp: each list_tools / call_tool wrapped in `async with`. Combo follows same pattern.
+
+## 2026-04-26 — three trial-diagnosis fixes
+
+### Fix 1 — docker-compose adapter-combo env catch-up
+- combo's env block was missing all 5 AGW_MCP_* + 5 DIRECT_MCP_* entries that adapter-langchain has. Without those env vars, combo's `pick_mcp_base_url` ValueErrors at first-turn connect, which then gets silently swallowed (Fix 3 surfaces this).
+- Also: `DEFAULT_OLLAMA_MODEL=qwen2.5:7b` stale in 7 compose entries (adapter-langchain through adapter-combo). Commit `4cc70eb` updated the in-source defaults but missed compose env scalars. Updated all 7.
+- Stale comment on combo entry said "NO MCP integration, NO tool calling" — false post-`639d372` (E24a). Replaced with accurate E24+E24a description noting MULTI_MCP_FRAMEWORKS opt-in.
+
+### Fix 2 — Add Bulk model assignment
+- Brief HYPOTHESIZED `model: "llama3.1:latest"` hardcode. Verified: current code already does `model: null` (commit `9a662e4` got it right). The trial `32e62464` was likely user-edited or pre-dated `9a662e4`.
+- Made the `model: null` decision EXPLICIT via a comment block listing per-LLM env-var defaults so future readers don't introduce a regression. This also doubles as documentation that DEFAULT_OPENAI_MODEL etc. are how per-LLM defaults flow.
+
+### Fix 3 — Surface combo MCP connect failures in framework_events
+- Added `_mcp_connect_failures: list[dict]` + `_mcp_connect_failures_emitted: bool` to Trial.__init__.
+- `_connect_mcps_if_needed` records `(mcp, error)` on both build + list_tools exception paths (preserves existing log.error).
+- `Trial.turn` builds framework_events with mcp_connect_failure synthetic entries PREPENDED on the first turn after connect ran, then sets the emit-flag so subsequent turns don't repeat.
+- `_drive_refresh_tools` clears both attrs so a re-attempted connect can fresh-record.
+- One new test `test_connect_failure_surfaces_in_turn_zero_framework_events`.
+
+### Tradeoffs considered
+- Surface on every turn (rejected: noisy / repetitive in trial JSON).
+- Crash the trial on any connect failure (rejected: brief explicitly says "log + skip" must continue working so a single bad MCP doesn't tank the trial).
+- Surface in turn-level metadata field instead of framework_events (rejected: brief specifies framework_events as the surface; existing UI/tests already iterate it).
+- Bonus suggestion (note registry surface) skipped per "likely overkill for first cut".
+
