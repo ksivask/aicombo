@@ -8,4 +8,8 @@ httpx>=0.27.0
 # captures wire bytes for every call regardless of provider.
 openai>=1.0
 anthropic>=0.30
+# E24a — multi-MCP fan-out. fastmcp.Client is used to talk to each MCP
+# server in the trial's `mcp` list; per-tool dispatch routes through
+# self._tool_routing to the right server.
+fastmcp>=2.0.0
 pytest>=8.0.0

@@ -609,3 +609,19 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - **Fallback per task spec:** keep duplication, add a coordination comment at top of `routes:` explaining the 3 fields, the WHY (serde_transcode path, no apply_merge, deny_unknown_fields), the mcp-fetch exception, and when to revisit.
 - **Verification:** pyyaml safe_load passes; tree walk confirmed 10 channels blocks (9×3 fields, 1×4 fields with mcp_marker_kind:both).
 - **If/when to revisit:** if AGW grows first-class config defaulting OR wires `apply_merge` into `yamlviajson::from_str` before the transcode, this becomes safe. Until then the duplication is tolerable (only ~30 lines).
+
+## 2026-04-27 — E24a combo multi-MCP fan-out
+
+### Decisions
+- **MCP list field shape:** `mcp: str | list[str]`. Coerce single str to one-elt list at init (uniform downstream handling). `"NONE"` and `[]` both -> empty `_mcp_list`.
+- **Eager vs lazy connect:** spec recommends eager. Implement as "lazy at the edge but eager-once" via `_connect_mcps_if_needed` at the start of `turn()`. Idempotent via `_mcp_connected`. Tests can construct a Trial without an MCP server running.
+- **fastmcp client:** mirror direct-mcp pattern: StreamableHttpTransport + httpx_client_factory that prepends our existing event hooks so MCP wire bytes flow into the same `_exchanges` list as LLM traffic.
+- **Tool advertisement (OpenAI):** `{"type":"function","function":{"name","description","parameters":<inputSchema>}}` via `tools=` kwarg.
+- **Tool dispatch:** routing table `{tool_name: server_name}`; collisions resolved last-wins + WARNING.
+- **Tool-call loop:** classic OpenAI pattern. After response, if `choices[0].message.tool_calls`, iterate, dispatch each, append assistant + per-call tool messages, re-call. Cap MAX_TOOL_HOPS=5.
+- **Anthropic + tools:** SKIP per spec (E24b territory). Log + warn, fall back to no-tools path for claude even when MCPs are wired.
+- **Canonical history extension:** add optional `tool_calls` (assistant) and `tool_call_id` (tool role) fields. _to_shape openai propagates; anthropic filters tool-role + bare-tool-call-assistant messages with one warning.
+- **aclose:** close every MCP client. fastmcp.Client doesn't have a separate close in our usage (sessions opened via `async with` per-op and torn down at exit-block) so the pool aclose is a best-effort no-op alongside the existing httpx aclose.
+
+### Open
+- fastmcp.Client lifecycle confirmed by inspecting direct-mcp: each list_tools / call_tool wrapped in `async with`. Combo follows same pattern.

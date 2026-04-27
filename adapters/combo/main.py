@@ -11,9 +11,10 @@ so harness/adapters_registry.py talks to combo identically:
   GET    /info                      framework metadata
   GET    /health                    liveness
 
-First-cut API coverage: chat (openai-shape providers) + messages (claude
-via anthropic SDK). NO MCP, NO tool calling, NO streaming, NO responses
-APIs — see framework_bridge.py preamble for deferral notes (E24a/b/c).
+API coverage: chat (openai-shape providers) + messages (claude via
+anthropic SDK). E24a adds intra-turn multi-MCP fan-out + OpenAI-shape
+tool calling; anthropic-shape tool_use translation is still deferred to
+E24b. NO streaming, NO responses APIs — see framework_bridge.py preamble.
 """
 from __future__ import annotations
 
@@ -76,15 +77,19 @@ class CompactReq(BaseModel):
 def info():
     return {
         "framework": "combo",
-        "version": "0.1",
+        "version": "0.2",  # E24a — multi-MCP fan-out + OpenAI tool calling.
         "supports": {
             "apis": list(SUPPORTED_APIS),
-            "mcps": [],  # No MCP integration in first cut.
-            "agent_loop": False,  # No tool calling yet.
+            # E24a — combo accepts mcp:list and fans out per turn. Concrete
+            # server names are resolved at trial init from row config; the
+            # adapter doesn't enumerate them statically here.
+            "mcps": "*",
+            "agent_loop": True,  # OpenAI tool-call loop wired in E24a.
             "streaming": False,
             "state_modes": ["stateless"],
             "compact_strategies": [],  # parity stub only — see compact()
-            "multi_llm": True,  # The whole point of this adapter.
+            "multi_llm": True,
+            "multi_mcp": True,  # E24a opt-in for the validator's MULTI_MCP_FRAMEWORKS.
         },
     }
 

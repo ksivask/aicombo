@@ -32,7 +32,7 @@ Special note on Important 3 (drawer multi-flag warning): the inline drawer-parag
 - node syntax-check requested but Bash sandbox blocked; visually verified module-scope helpers + dead-code-removed paths.
 
 ### Commit
-Single commit per brief option. SHA recorded below post-commit.
+Single commit: `c6b839a` (9 files: 8 source + this log; +157 / -62).
 
 ### Constraints honored
 - NO push.
@@ -624,3 +624,37 @@ Add a new "CID flow (interactive)" tab to trial.html powered by cytoscape.js —
 - Edited `/mnt/share/ws/aiplay/frontend/trial.html` — added integrity/crossorigin to all 3 cytoscape scripts plus header comment with re-compute recipe.
 - Edited `/mnt/share/ws/aiplay/agw/config.yaml` — added a 16-line comment block at the top of `routes:` explaining the deduplication tradeoff.
 - About to create ONE commit covering both items, then stop (no push).
+
+## 2026-04-26 drawer-triple — drawer.js triple change (commit ea7a34d)
+
+- Fixed `_renderFlagWarning` PRECEDENCE constant: now `force_state_ref > e20_verification > reset > compact` (post-B1, was stale `force_state_ref > reset > e20_verification > compact`).
+- Hint paragraph (lines 268-269) was already correct, no edit needed.
+- Renamed 6 add-turn button labels (kind strings + data-tpl keys preserved).
+- Added MutateTools button + `mutate_tools` TURN_TEMPLATES entry (mcp_admin/set_tools with 2 example mutable_v2 tools).
+- Touched only frontend/drawer.js. No AGW / templates.py / runner.py / validator.py changes. ONE commit, no push.
+- Sandbox blocked node --check; verified structurally via Read/Grep (braces match, 8 buttons + 8 keys present).
+
+## 2026-04-27 — Subagent: E24a combo multi-MCP fan-out
+
+### Entry — User prompt (subagent task)
+**User:** Implement E24a per docs/enhancements.md::E24a. Aiplay-only. ONE commit.
+- Validator: MULTI_MCP_FRAMEWORKS = {"combo"} + flip combo+list test
+- Combo adapter: accept mcp:list, eager-connect to fastmcp pool, build merged tool catalog + routing, OpenAI tool-call loop, anthropic limitation logged
+- Tests: ~6 new combo + 1 new validator
+- Constraints: NO touch to AGW / other adapters / templates.py; NO push; NO prompt.
+
+### Reasoning
+- Combo Trial.__init__ already had a `_mcp_warning` swallow; replace with list coercion + pool stash.
+- Eager connect via `_connect_mcps_if_needed` at start of turn() — idempotent on `_mcp_connected`. Lets unit tests skip connection entirely.
+- fastmcp.Client construction copies direct-mcp pattern (StreamableHttpTransport + httpx_client_factory).
+- pick_mcp_base_url: copy AGW_MCP_<NAME> shape; combo via_agw only per spec.
+- OpenAI tool-call loop: standard pattern with canonical-history extension.
+- Tests mock fastmcp by monkeypatching Trial._build_mcp_client to return AsyncMock with list_tools + call_tool.
+
+### Response/actions
+- harness/validator.py — flip MULTI_MCP_FRAMEWORKS to {"combo"}.
+- adapters/combo/framework_bridge.py — list-form mcp + pool + merged catalog + routing + dispatch + OpenAI tool-call loop + anthropic-skip.
+- adapters/combo/requirements.txt — add fastmcp>=2.0.0.
+- tests/test_validator.py — flip combo+list test + add new accepts test.
+- tests/test_adapter_combo.py — add 6 new tests.
+- ONE commit; no push.

@@ -39,11 +39,13 @@ PROVIDER_TO_KEY = {
 LLM_SUPPORTS_RESPONSES_STATE = {"chatgpt"}
 
 # E19 — frameworks whose adapter knows how to merge tool sets from
-# multiple MCP servers (list-form `mcp` in RowConfig). Initially empty:
-# the schema lands now so adapter wiring can opt in incrementally without
-# a second migration. When an adapter learns multi-MCP merging, add its
-# framework name here and the validator will accept list-form for it.
-MULTI_MCP_FRAMEWORKS: set[str] = set()
+# multiple MCP servers (list-form `mcp` in RowConfig). E24a opts combo
+# in: combo's framework_bridge connects to every listed MCP at trial init,
+# advertises the union of their tools to the LLM, and routes tools/call
+# back to the originating server via a (tool_name -> server) routing
+# table. Other adapters remain single-MCP-only until they explicitly
+# implement the same fan-out + routing contract.
+MULTI_MCP_FRAMEWORKS: set[str] = {"combo"}   # E24a — combo opts in via fan-out impl
 
 # E23 — frameworks whose adapter knows how to dispatch across multiple
 # LLMs (list-form `llm` in RowConfig). The combo adapter (E24) is the

@@ -289,14 +289,14 @@ async def test_drive_reset_clears_canonical_history(combo_env):
         await trial.aclose()
 
 
-async def test_drive_refresh_tools_is_noop_first_cut(combo_env):
-    """Combo first-cut has no MCP integration — refresh is documented no-op."""
+async def test_drive_refresh_tools_is_noop_when_no_mcps(combo_env):
+    """Without any MCPs configured, refresh is a documented no-op (skipped)."""
     from framework_bridge import Trial
     trial = Trial(trial_id="t-rt", config=_cfg(llm=["chatgpt"]))
     try:
         result = await trial._drive_refresh_tools()
         assert result["refresh_tools"] == "skipped"
-        assert "no MCP" in result["reason"]
+        assert "no MCPs" in result["reason"]
     finally:
         await trial.aclose()
 
@@ -325,5 +325,334 @@ async def test_canonical_history_preserves_marker_text_across_shapes(combo_env):
         anthropic_shape = trial._to_shape(canonical, "claude")
         assert marker in openai_shape[1]["content"]
         assert marker in anthropic_shape[1]["content"][0]["text"]
+    finally:
+        await trial.aclose()
+
+
+# ── E24a — multi-MCP fan-out (list-form `mcp` + connect/dispatch) ──
+
+class _FakeMCPClient:
+    """Minimal stand-in for fastmcp.Client used by E24a unit tests.
+
+    Behaves as an async context manager (mirrors fastmcp's `async with`
+    session semantics that combo's `_dispatch_tool_call` and
+    `_connect_mcps_if_needed` rely on) and exposes async `list_tools`
+    and `call_tool` methods returning canned data.
+    """
+
+    def __init__(self, tools=None, call_results=None):
+        self._tools = tools or []
+        self._call_results = call_results or {}
+        self.list_tools_calls = 0
+        self.call_tool_calls: list[tuple[str, dict]] = []
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):
+        return False
+
+    async def list_tools(self):
+        self.list_tools_calls += 1
+        return list(self._tools)
+
+    async def call_tool(self, name, args):
+        self.call_tool_calls.append((name, args))
+        result = self._call_results.get(name, {"content": [{"type": "text", "text": f"ok:{name}"}]})
+        return result
+
+
+def _fake_tool(name, description="", input_schema=None):
+    """Build a dict-shaped tool entry — combo's _tool_to_dict accepts dicts."""
+    return {
+        "name": name,
+        "description": description,
+        "inputSchema": input_schema or {"type": "object", "properties": {}},
+    }
+
+
+def test_init_accepts_list_form_mcp(combo_env):
+    """E24a: config with `mcp: [..]` populates `_mcp_list` from the list
+    and leaves the pool unconnected (eager-once happens at first turn)."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-mcplist",
+        config=_cfg(llm="chatgpt", mcp=["weather", "fetch"]),
+    )
+    try:
+        assert trial._mcp_list == ["weather", "fetch"]
+        assert trial._mcp_connected is False
+        assert trial._mcp_clients == {}
+        assert trial._merged_tool_catalog == []
+        assert trial._tool_routing == {}
+    finally:
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(trial.aclose())
+
+
+def test_init_accepts_str_form_mcp_for_backwards_compat(combo_env):
+    """E24a: legacy single-string `mcp: "weather"` coerces to a 1-elt list."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-mcpstr",
+        config=_cfg(llm="chatgpt", mcp="weather"),
+    )
+    try:
+        assert trial._mcp_list == ["weather"]
+        assert trial._mcp_connected is False
+    finally:
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(trial.aclose())
+
+
+def test_init_accepts_none_mcp_as_empty_list(combo_env):
+    """E24a: mcp='NONE' (and the missing field default) yields an empty
+    `_mcp_list` so the no-MCP path stays the same as pre-E24a behavior."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-mcpnone",
+        config=_cfg(llm="chatgpt", mcp="NONE"),
+    )
+    try:
+        assert trial._mcp_list == []
+    finally:
+        import asyncio
+        asyncio.get_event_loop().run_until_complete(trial.aclose())
+
+
+async def test_connect_mcps_merges_tool_catalogs(combo_env, monkeypatch):
+    """E24a: connecting to N MCPs merges their tools into one catalog +
+    populates the `(tool_name -> server)` routing table."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-merge",
+        config=_cfg(llm="chatgpt", mcp=["weather", "fetch"]),
+    )
+    try:
+        weather_client = _FakeMCPClient(tools=[
+            _fake_tool("weather_get", "get the weather"),
+            _fake_tool("weather_forecast", "10-day forecast"),
+        ])
+        fetch_client = _FakeMCPClient(tools=[
+            _fake_tool("fetch_url", "fetch a URL"),
+        ])
+        clients_by_name = {"weather": weather_client, "fetch": fetch_client}
+
+        def fake_build(self, mcp_name):
+            return clients_by_name[mcp_name]
+
+        monkeypatch.setattr(Trial, "_build_mcp_client", fake_build)
+
+        await trial._connect_mcps_if_needed()
+
+        # Pool populated for both servers + connect flag set.
+        assert trial._mcp_connected is True
+        assert set(trial._mcp_clients.keys()) == {"weather", "fetch"}
+        # Merged catalog has all 3 tools (preserving each server's tools).
+        names = {t["name"] for t in trial._merged_tool_catalog}
+        assert names == {"weather_get", "weather_forecast", "fetch_url"}
+        # Routing table maps each tool to its originating server.
+        assert trial._tool_routing == {
+            "weather_get":      "weather",
+            "weather_forecast": "weather",
+            "fetch_url":        "fetch",
+        }
+        # Idempotent: a second call doesn't re-list_tools on either client.
+        await trial._connect_mcps_if_needed()
+        assert weather_client.list_tools_calls == 1
+        assert fetch_client.list_tools_calls == 1
+    finally:
+        await trial.aclose()
+
+
+async def test_connect_mcps_warns_on_name_collision(combo_env, monkeypatch, caplog):
+    """E24a: when two MCPs both expose `get_thing`, the LATER server wins
+    in the routing table and a WARNING is logged with both server names."""
+    import logging
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-collide",
+        config=_cfg(llm="chatgpt", mcp=["weather", "fetch"]),
+    )
+    try:
+        weather_client = _FakeMCPClient(tools=[
+            _fake_tool("get_thing", "weather flavor"),
+        ])
+        fetch_client = _FakeMCPClient(tools=[
+            _fake_tool("get_thing", "fetch flavor"),
+        ])
+        clients_by_name = {"weather": weather_client, "fetch": fetch_client}
+
+        def fake_build(self, mcp_name):
+            return clients_by_name[mcp_name]
+
+        monkeypatch.setattr(Trial, "_build_mcp_client", fake_build)
+
+        with caplog.at_level(logging.WARNING, logger="aiplay.adapter.combo"):
+            await trial._connect_mcps_if_needed()
+
+        # Last-server-wins on routing.
+        assert trial._tool_routing["get_thing"] == "fetch"
+        # Catalog has the LATE entry only (deduplicated by name).
+        gt_entries = [t for t in trial._merged_tool_catalog
+                      if t["name"] == "get_thing"]
+        assert len(gt_entries) == 1
+        assert gt_entries[0]["description"] == "fetch flavor"
+        # Warning surfaced and mentions BOTH server names.
+        warn_records = [
+            r for r in caplog.records
+            if r.levelname == "WARNING" and "collision" in r.getMessage()
+        ]
+        assert warn_records, "expected a collision WARNING"
+        msg = warn_records[0].getMessage()
+        assert "weather" in msg and "fetch" in msg
+    finally:
+        await trial.aclose()
+
+
+async def test_dispatch_tool_call_routes_to_correct_server(combo_env):
+    """E24a: _dispatch_tool_call("weather_get", ..) hits weather's
+    fastmcp.Client, NOT fetch's."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-route",
+        config=_cfg(llm="chatgpt", mcp=["weather", "fetch"]),
+    )
+    try:
+        weather_client = _FakeMCPClient(call_results={
+            "weather_get": {"content": [{"type": "text", "text": "sunny 72F"}]},
+        })
+        fetch_client = _FakeMCPClient()
+        # Hand-build the routing table so this test focuses on dispatch only
+        # (not on the connect path that test_connect_mcps_merges_tool_catalogs covers).
+        trial._mcp_clients = {"weather": weather_client, "fetch": fetch_client}
+        trial._tool_routing = {"weather_get": "weather", "fetch_url": "fetch"}
+        trial._mcp_connected = True
+
+        result = await trial._dispatch_tool_call("weather_get", {"city": "Seattle"})
+
+        assert weather_client.call_tool_calls == [("weather_get", {"city": "Seattle"})]
+        assert fetch_client.call_tool_calls == []  # not touched
+        assert "sunny 72F" in result["content"]
+    finally:
+        await trial.aclose()
+
+
+async def test_dispatch_tool_call_unknown_tool_errors(combo_env):
+    """E24a: dispatching an unmapped tool name returns an `error` dict
+    rather than crashing; this lets the LLM see + recover."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-unknown",
+        config=_cfg(llm="chatgpt", mcp=["weather"]),
+    )
+    try:
+        # Empty routing table — every call is unknown.
+        trial._mcp_clients = {"weather": _FakeMCPClient()}
+        trial._tool_routing = {}
+        trial._mcp_connected = True
+
+        result = await trial._dispatch_tool_call("nope_tool", {"x": 1})
+
+        assert "error" in result
+        assert "nope_tool" in result["error"]
+    finally:
+        await trial.aclose()
+
+
+async def test_openai_tool_specs_translates_merged_catalog(combo_env):
+    """E24a: _openai_tool_specs renders the merged catalog into the
+    OpenAI chat-completions tool-spec format that goes on the wire."""
+    from framework_bridge import Trial
+    trial = Trial(
+        trial_id="t-specs",
+        config=_cfg(llm="chatgpt", mcp=["weather"]),
+    )
+    try:
+        trial._merged_tool_catalog = [
+            _fake_tool("weather_get", "get the weather",
+                       {"type": "object", "properties": {"city": {"type": "string"}}}),
+        ]
+        specs = trial._openai_tool_specs()
+        assert specs == [{
+            "type": "function",
+            "function": {
+                "name":        "weather_get",
+                "description": "get the weather",
+                "parameters":  {"type": "object", "properties": {"city": {"type": "string"}}},
+            },
+        }]
+    finally:
+        await trial.aclose()
+
+
+async def test_to_shape_openai_renders_tool_call_history(combo_env):
+    """E24a: canonical tool_calls / tool messages translate into the
+    OpenAI chat-completions wire shape (assistant.tool_calls + role=tool).
+    """
+    from framework_bridge import Trial
+    trial = Trial(trial_id="t-tc-shape", config=_cfg(llm="chatgpt"))
+    try:
+        canonical = [
+            {"role": "user", "content_text": "what's the weather?"},
+            {
+                "role": "assistant",
+                "content_text": "",
+                "tool_calls": [
+                    {"id": "call_1", "name": "weather_get",
+                     "arguments": {"city": "Seattle"}},
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1",
+             "content_text": "sunny 72F"},
+            {"role": "assistant", "content_text": "It's sunny in Seattle."},
+        ]
+        out = trial._to_shape(canonical, "chatgpt")
+        # User message preserved.
+        assert out[0] == {"role": "user", "content": "what's the weather?"}
+        # Assistant tool-call message: tool_calls present, content None-ish.
+        assert out[1]["role"] == "assistant"
+        assert out[1]["tool_calls"][0]["id"] == "call_1"
+        assert out[1]["tool_calls"][0]["function"]["name"] == "weather_get"
+        # Arguments serialised to JSON string per OpenAI spec.
+        import json as _json
+        assert _json.loads(out[1]["tool_calls"][0]["function"]["arguments"]) == {"city": "Seattle"}
+        # Tool-role message carries tool_call_id linking back to the call.
+        assert out[2] == {"role": "tool", "tool_call_id": "call_1", "content": "sunny 72F"}
+        # Final plain-text assistant.
+        assert out[3] == {"role": "assistant", "content": "It's sunny in Seattle."}
+    finally:
+        await trial.aclose()
+
+
+async def test_to_shape_anthropic_filters_tool_messages(combo_env, caplog):
+    """E24a: until E24b lands cross-shape tool_use translation, claude
+    history shape SILENTLY DROPS tool_calls/tool messages and logs ONE
+    informational warning per trial. User + plain assistant text (which
+    carries the AGW CID marker) is preserved."""
+    import logging
+    from framework_bridge import Trial
+    trial = Trial(trial_id="t-cs", config=_cfg(llm=["claude"], api="messages"))
+    try:
+        canonical = [
+            {"role": "user", "content_text": "hi"},
+            {"role": "assistant", "content_text": "",
+             "tool_calls": [{"id": "c", "name": "n", "arguments": {}}]},
+            {"role": "tool", "tool_call_id": "c", "content_text": "result"},
+            {"role": "assistant", "content_text": "the answer is 42"},
+        ]
+        with caplog.at_level(logging.WARNING, logger="aiplay.adapter.combo"):
+            out = trial._to_shape(canonical, "claude")
+
+        # Only user + plain assistant survive; both rendered as anthropic blocks.
+        assert len(out) == 2
+        assert out[0]["role"] == "user"
+        assert out[0]["content"][0]["text"] == "hi"
+        assert out[1]["role"] == "assistant"
+        assert out[1]["content"][0]["text"] == "the answer is 42"
+        # Warning surfaced exactly once and mentions E24b.
+        warn_msgs = [r.getMessage() for r in caplog.records
+                     if r.levelname == "WARNING"]
+        assert any("E24b" in m for m in warn_msgs)
     finally:
         await trial.aclose()

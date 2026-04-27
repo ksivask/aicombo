@@ -155,8 +155,9 @@ def test_validator_accepts_str_mcp_legacy_form():
 
 
 def test_validator_rejects_list_mcp_for_non_multi_mcp_framework():
-    """E19: list-form `mcp` is not runnable until a framework opts into
-    MULTI_MCP_FRAMEWORKS (intentionally empty in the first cut)."""
+    """E19: list-form `mcp` is not runnable on a framework that hasn't
+    opted into MULTI_MCP_FRAMEWORKS. langchain remains single-MCP-only;
+    only combo (E24a) wires the fan-out."""
     result = validate({
         "framework": "langchain", "api": "chat",
         "stream": False, "state": False,
@@ -164,6 +165,19 @@ def test_validator_rejects_list_mcp_for_non_multi_mcp_framework():
     })
     assert result["runnable"] is False
     assert any("multi-MCP" in w for w in result["warnings"])
+
+
+def test_multi_mcp_framework_combo_accepts_list_form_mcp():
+    """E24a: combo opted into MULTI_MCP_FRAMEWORKS — list-form `mcp`
+    on combo + a chat-compatible llm is RUNNABLE with no multi-MCP
+    warning."""
+    result = validate({
+        "framework": "combo", "api": "chat",
+        "stream": False, "state": False,
+        "llm": "chatgpt", "mcp": ["weather", "fetch"], "routing": "via_agw",
+    })
+    assert result["runnable"] is True
+    assert not any("multi-MCP" in w for w in result["warnings"])
 
 
 def test_validator_warns_on_none_in_mcp_list():
