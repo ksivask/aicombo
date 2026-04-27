@@ -16,6 +16,13 @@
        locally to eliminate CDN dependency and avoid Firefox strict
        tracking-protection blocking third-party script loads. -->
   <script src="/vendor/mermaid.min.js"></script>
+  <!-- Cytoscape (interactive CID-flow tab). UMD globals: `cytoscape`,
+       `dagre`, `cytoscapeDagre`. Loaded from CDN to keep the repo small;
+       falls back gracefully (renderCidFlowInteractiveTab logs a warn and
+       leaves the container empty if `cytoscape` is undefined at mount). -->
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape@3.30.0/dist/cytoscape.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dagre@0.8.5/dist/dagre.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/cytoscape-dagre@2.5.0/cytoscape-dagre.js"></script>
 </head>
 <body class="trial-page">
   <header class="trial-header">
@@ -39,6 +46,7 @@
       <button class="trial-tab-btn" data-tab="verdicts">Verdicts</button>
       <button class="trial-tab-btn" data-tab="note">Note</button>
       <button class="trial-tab-btn" data-tab="cidflow">CID flow</button>
+      <button class="trial-tab-btn" data-tab="cidflow-interactive">CID flow (interactive)</button>
       <button class="trial-tab-btn" data-tab="services">Services</button>
       <button class="trial-tab-btn" data-tab="raw">Raw JSON</button>
     </div>
@@ -47,6 +55,7 @@
     <div id="tab-verdicts" class="tab-content"></div>
     <div id="tab-note" class="tab-content"></div>
     <div id="tab-cidflow" class="tab-content"></div>
+    <div id="tab-cidflow-interactive" class="tab-content"></div>
     <div id="tab-services" class="tab-content"></div>
     <div id="tab-raw" class="tab-content"><div class="pre-with-copy"><button class="copy-btn copy-pre-btn" title="copy contents to clipboard">📋</button><pre id="raw-json"></pre></div></div>
   </main>

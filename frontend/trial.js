@@ -24,6 +24,12 @@ const elRowSummary = document.getElementById("row-summary");
 // poll/SSE loop skip the (expensive + race-prone) Mermaid re-render when
 // the trial JSON didn't change in any way that affects the CID flow tab.
 let __cidFlowLastSourceHash = null;
+// Interactive (cytoscape) CID flow tab — same render-cache pattern as
+// the Mermaid tab. The cy instance is held so we can `.destroy()` it
+// before remounting (otherwise listeners + canvas leak on re-renders).
+let __cidFlowInteractiveLastSourceHash = null;
+let __cidFlowInteractiveCy = null;
+let __cidFlowInteractiveNeedsMount = false;
 // Services topology render-cache: same pattern as cidflow above.
 let __servicesLastSourceHash = null;
 // Mermaid render-deferral state. Mermaid 9.4.3's getBBox()-based label
@@ -154,6 +160,7 @@ const tabContents = {
   verdicts: document.getElementById("tab-verdicts"),
   note: document.getElementById("tab-note"),
   cidflow: document.getElementById("tab-cidflow"),
+  "cidflow-interactive": document.getElementById("tab-cidflow-interactive"),
   services: document.getElementById("tab-services"),
   raw: document.getElementById("tab-raw"),
 };
@@ -193,6 +200,10 @@ tabBtns.forEach(btn => btn.addEventListener("click", () => {
     if (runMermaidIfVisible("cidflow")) __cidFlowNeedsMermaid = false;
   } else if (tab === "services" && __servicesNeedsMermaid) {
     if (runMermaidIfVisible("services")) __servicesNeedsMermaid = false;
+  } else if (tab === "cidflow-interactive" && __cidFlowInteractiveNeedsMount) {
+    // Same display:none caveat as Mermaid: cytoscape measures 0×0 on a
+    // hidden container. Defer mount until the tab is actually visible.
+    if (mountCytoscapeIfVisible(__lastTrialForCy)) __cidFlowInteractiveNeedsMount = false;
   }
 }));
 
@@ -575,6 +586,22 @@ async function renderTrial(tid) {
     __cidFlowNeedsMermaid = true;
     setTimeout(() => {
       if (runMermaidIfVisible("cidflow")) __cidFlowNeedsMermaid = false;
+    }, 0);
+  }
+
+  // Interactive (cytoscape) CID flow tab — same render-cache pattern as
+  // the Mermaid tab. Mount is deferred to the tab-switch handler when the
+  // tab is hidden (cytoscape measures 0×0 on a display:none parent — same
+  // root cause as Mermaid's getBBox issue).
+  __lastTrialForCy = trial;
+  const cyHtml = renderCidFlowInteractiveTab(trial);
+  const cyHash = _hashStr(cyHtml);
+  if (cyHash !== __cidFlowInteractiveLastSourceHash) {
+    tabContents["cidflow-interactive"].innerHTML = cyHtml;
+    __cidFlowInteractiveLastSourceHash = cyHash;
+    __cidFlowInteractiveNeedsMount = true;
+    setTimeout(() => {
+      if (mountCytoscapeIfVisible(trial)) __cidFlowInteractiveNeedsMount = false;
     }, 0);
   }
 
@@ -1117,40 +1144,26 @@ function _scanBodyForCids(t) {
   return found;
 }
 
-function renderCidFlowTab(trial) {
+// Shared topology extractor for both CID flow tabs (Mermaid + cytoscape).
+// Returns an empty-ish topology when there's no data to visualize; the
+// callers decide what empty-state UI to show. Mermaid renderer composes
+// IDs/strings on top of this; cytoscape renderer maps directly to its
+// elements/classes shape. Keeping IDs out of this helper lets each renderer
+// own its own ID conventions (Mermaid: T0, A0, C_<hex>, SS_<hash>;
+// cytoscape: same identifiers reused — happens to match for free).
+function _buildCidFlowTopology(trial) {
   const turns = trial.turns || [];
   const audits = trial.audit_entries || [];
 
-  // Per-turn CID sets and global CID universe.
-  const turnCids = turns.map(t => _scanBodyForCids(t));  // Set<cid> per turn
+  // Per-turn CID sets + global universe.
+  const turnCids = turns.map(t => _scanBodyForCids(t));
   const auditCids = new Set();
-  for (const a of audits) {
-    if (a.cid) auditCids.add(a.cid);
-  }
+  for (const a of audits) if (a.cid) auditCids.add(a.cid);
   const allCids = new Set();
   for (const s of turnCids) for (const c of s) allCids.add(c);
   for (const c of auditCids) allCids.add(c);
 
-  // Empty state: no turns, no audits, no CIDs.
-  if (turns.length === 0 && audits.length === 0 && allCids.size === 0) {
-    return `<div class="cid-flow"><p class="empty-state-msg">No CID flow to visualize — run the trial first or check verdict (a) for why no CIDs were observed.</p></div>`;
-  }
-  if (allCids.size === 0) {
-    return `
-      <div class="cid-flow">
-        <p class="empty-state-msg">
-          No CIDs found in any turn body or audit entry. Check verdict (a)
-          for whether AGW governance fired. Trial has ${turns.length}
-          turn(s) and ${audits.length} audit entry(ies).
-        </p>
-      </div>
-    `;
-  }
-
-  // Compute per-CID survivability classification for color coding.
-  // - "preserved": appears in ≥2 turns (Channels did their job + agent kept it)
-  // - "single": appears in exactly 1 turn (single-use, fine for trivial trials)
-  // - "auditonly": appears only in audit entries, never on the wire (channels broke)
+  // Per-CID survivability classification (preserved/single/auditonly).
   const cidClass = {};
   for (const cid of allCids) {
     let inTurns = 0;
@@ -1160,93 +1173,20 @@ function renderCidFlowTab(trial) {
     else cidClass[cid] = "auditonly";
   }
 
-  // Mermaid node id helper: CIDs contain only [a-f0-9_] so safe as-is, but
-  // the "ib_" prefix collides with no other id space in our graph (T*, A*).
-  const cidNodeId = cid => `C_${cid.slice(3)}`;
-
-  let mer = "graph LR\n";
-
-  // Turn nodes — kind is the user-visible label. Errored turns get the
-  // erroredTurn class for a red border (see classDef below).
-  turns.forEach((t, i) => {
-    const kind = (t.kind || "?").replace(/[\[\]"]/g, "");
-    const label = `Turn ${i}\n${kind}`;
-    mer += `  T${i}["${label}"]\n`;
-    if (t.error) mer += `  class T${i} erroredTurn\n`;
-  });
-
-  // CID nodes — assign survivability class for fill color.
-  for (const cid of allCids) {
-    const nid = cidNodeId(cid);
-    // Show only the last 8 hex chars in the label to keep nodes compact;
-    // the full CID is recoverable from hover (Mermaid renders title attrs).
-    const shortLabel = `${cid.slice(0, 6)}…${cid.slice(-4)}`;
-    mer += `  ${nid}(["${shortLabel}"])\n`;
-    mer += `  class ${nid} cid${cidClass[cid]}\n`;
-  }
-
-  // Audit entry nodes — phase is the most useful label; fall back to "audit".
-  audits.forEach((a, i) => {
-    const phase = (a.phase || "audit").replace(/[\[\]"]/g, "");
-    mer += `  A${i}["${phase}"]\n`;
-    mer += `  class A${i} auditNode\n`;
-  });
-
-  // E20 — snapshot (ib_ss) nodes + correlation edges.
-  // Walk audits to collect (audit_idx, phase, snapshot_hash) triples; build
-  // SS_<hash> nodes for each unique snapshot, classify by whether any
-  // tools_call referenced it, and emit edges from both tools_list and
-  // tools_call audits to the matching SS node.
+  // Snapshot (E20) audits + classification.
   const ssAudits = audits.map((a, i) => ({
     i, phase: a.phase || "", ss: _auditSnapshotHash(a),
   })).filter(x => x.ss);
   const allSnapshots = new Set(ssAudits.map(x => x.ss));
-  const ssClass = {};   // hash → "consumed" | "orphan"
+  const ssClass = {};
   for (const ss of allSnapshots) {
     const hasCall = ssAudits.some(x => x.ss === ss && x.phase === "tool_call");
     ssClass[ss] = hasCall ? "snapshotconsumed" : "snapshotorphan";
   }
-  const ssNodeId = ss => `SS_${ss}`;
-  for (const ss of allSnapshots) {
-    // Show first 8 chars (full hash by design); braces around for round-rect
-    mer += `  ${ssNodeId(ss)}>"_ib_ss=${ss}"]\n`;     // asymmetric shape distinguishes from CID
-    mer += `  class ${ssNodeId(ss)} ${ssClass[ss]}\n`;
-  }
 
-  // Edges: turn → CID (solid). One edge per (turn, cid) pair where the
-  // turn body contained that CID.
-  turns.forEach((t, i) => {
-    for (const cid of turnCids[i]) {
-      mer += `  T${i} --> ${cidNodeId(cid)}\n`;
-    }
-  });
-
-  // Edges: audit → CID (solid).
-  audits.forEach((a, i) => {
-    if (a.cid && allCids.has(a.cid)) {
-      mer += `  A${i} --> ${cidNodeId(a.cid)}\n`;
-    }
-  });
-
-  // E20 — Edges: SS → audit. Direction inverted so SS nodes appear LEFT
-  // of the turn/audit/CID column in Mermaid's LR auto-layout (otherwise
-  // they end up far right and visually outweigh the rest of the graph).
-  // Semantic reads naturally either way:
-  //   solid: SS → tools_list  ("this snapshot belongs to this list call")
-  //   thick: SS ==> tool_call ("this snapshot was carried into this call")
-  for (const x of ssAudits) {
-    if (x.phase === "tools_list") {
-      mer += `  ${ssNodeId(x.ss)} --> A${x.i}\n`;
-    } else if (x.phase === "tool_call") {
-      mer += `  ${ssNodeId(x.ss)} ==> A${x.i}\n`;     // ==> = thick edge
-    }
-  }
-
-  // Edges: turn → audit (dotted). Use header-demux (audit.turn_id) when any
-  // audit carries it; otherwise fall back to time-window correlation. Mirrors
-  // the same logic as pickAudits() above so the graph and the per-turn
-  // governance audit panel agree.
+  // Header-demux vs time-window correlation for turn↔audit edges.
   const headerDemux = audits.some(a => a.turn_id);
+  const turnToAudit = [];
   turns.forEach((t, i) => {
     audits.forEach((a, j) => {
       let match = false;
@@ -1258,9 +1198,141 @@ function renderCidFlowTab(trial) {
         const end = t.finished_at || "9999";
         match = (ts >= start && ts <= end);
       }
-      if (match) mer += `  T${i} -.-> A${j}\n`;
+      if (match) turnToAudit.push({turnIdx: i, auditIdx: j});
     });
   });
+
+  // turn → CID edges (one per (turn, cid) pair).
+  const turnToCid = [];
+  turns.forEach((_, i) => {
+    for (const cid of turnCids[i]) turnToCid.push({turnIdx: i, cid});
+  });
+  // audit → CID edges (only when the audit's cid is in allCids).
+  const auditToCid = [];
+  audits.forEach((a, i) => {
+    if (a.cid && allCids.has(a.cid)) auditToCid.push({auditIdx: i, cid: a.cid});
+  });
+
+  return {
+    turns: turns.map((t, i) => ({
+      idx: i, kind: (t.kind || "?"), errored: !!t.error,
+    })),
+    audits: audits.map((a, i) => ({
+      idx: i, phase: a.phase || "audit", cid: a.cid || null,
+      ss: _auditSnapshotHash(a),
+    })),
+    cids: [...allCids].map(cid => ({
+      cid, klass: cidClass[cid],
+    })),
+    snapshots: [...allSnapshots].map(ss => ({
+      hash: ss, klass: ssClass[ss],
+    })),
+    edges: {
+      turnToCid, auditToCid, turnToAudit,
+      ssAudits,   // [{i, phase, ss}] — used for SS→list/SS→call edges
+    },
+    counts: {
+      turns: turns.length, audits: audits.length, cids: allCids.size,
+      preserved: Object.values(cidClass).filter(c => c === "preserved").length,
+      single: Object.values(cidClass).filter(c => c === "single").length,
+      auditOnly: Object.values(cidClass).filter(c => c === "auditonly").length,
+    },
+  };
+}
+
+function renderCidFlowTab(trial) {
+  const topo = _buildCidFlowTopology(trial);
+  const {turns: tTurns, audits: tAudits, cids: tCids, snapshots: tSnaps,
+         edges: tEdges, counts} = topo;
+
+  // Empty state: no turns, no audits, no CIDs.
+  if (counts.turns === 0 && counts.audits === 0 && counts.cids === 0) {
+    return `<div class="cid-flow"><p class="empty-state-msg">No CID flow to visualize — run the trial first or check verdict (a) for why no CIDs were observed.</p></div>`;
+  }
+  if (counts.cids === 0) {
+    return `
+      <div class="cid-flow">
+        <p class="empty-state-msg">
+          No CIDs found in any turn body or audit entry. Check verdict (a)
+          for whether AGW governance fired. Trial has ${counts.turns}
+          turn(s) and ${counts.audits} audit entry(ies).
+        </p>
+      </div>
+    `;
+  }
+
+  // Mermaid node id helpers — CIDs/SS ids match the cytoscape ones so
+  // hover/debug feel symmetric across the two tabs. Output below is
+  // intentionally byte-identical to the pre-refactor version.
+  const cidNodeId = cid => `C_${cid.slice(3)}`;
+  const ssNodeId = ss => `SS_${ss}`;
+
+  let mer = "graph LR\n";
+
+  // Turn nodes — kind is the user-visible label. Errored turns get the
+  // erroredTurn class for a red border (see classDef below).
+  for (const t of tTurns) {
+    const kind = t.kind.replace(/[\[\]"]/g, "");
+    const label = `Turn ${t.idx}\n${kind}`;
+    mer += `  T${t.idx}["${label}"]\n`;
+    if (t.errored) mer += `  class T${t.idx} erroredTurn\n`;
+  }
+
+  // CID nodes — assign survivability class for fill color.
+  for (const c of tCids) {
+    const nid = cidNodeId(c.cid);
+    // Show only the last 8 hex chars in the label to keep nodes compact;
+    // the full CID is recoverable from hover (Mermaid renders title attrs).
+    const shortLabel = `${c.cid.slice(0, 6)}…${c.cid.slice(-4)}`;
+    mer += `  ${nid}(["${shortLabel}"])\n`;
+    mer += `  class ${nid} cid${c.klass}\n`;
+  }
+
+  // Audit entry nodes — phase is the most useful label; fall back to "audit".
+  for (const a of tAudits) {
+    const phase = a.phase.replace(/[\[\]"]/g, "");
+    mer += `  A${a.idx}["${phase}"]\n`;
+    mer += `  class A${a.idx} auditNode\n`;
+  }
+
+  // E20 — snapshot (ib_ss) nodes.
+  for (const s of tSnaps) {
+    // Show first 8 chars (full hash by design); braces around for round-rect
+    mer += `  ${ssNodeId(s.hash)}>"_ib_ss=${s.hash}"]\n`;     // asymmetric shape distinguishes from CID
+    mer += `  class ${ssNodeId(s.hash)} ${s.klass}\n`;
+  }
+
+  // Edges: turn → CID (solid). One edge per (turn, cid) pair where the
+  // turn body contained that CID.
+  for (const e of tEdges.turnToCid) {
+    mer += `  T${e.turnIdx} --> ${cidNodeId(e.cid)}\n`;
+  }
+
+  // Edges: audit → CID (solid).
+  for (const e of tEdges.auditToCid) {
+    mer += `  A${e.auditIdx} --> ${cidNodeId(e.cid)}\n`;
+  }
+
+  // E20 — Edges: SS → audit. Direction inverted so SS nodes appear LEFT
+  // of the turn/audit/CID column in Mermaid's LR auto-layout (otherwise
+  // they end up far right and visually outweigh the rest of the graph).
+  // Semantic reads naturally either way:
+  //   solid: SS → tools_list  ("this snapshot belongs to this list call")
+  //   thick: SS ==> tool_call ("this snapshot was carried into this call")
+  for (const x of tEdges.ssAudits) {
+    if (x.phase === "tools_list") {
+      mer += `  ${ssNodeId(x.ss)} --> A${x.i}\n`;
+    } else if (x.phase === "tool_call") {
+      mer += `  ${ssNodeId(x.ss)} ==> A${x.i}\n`;     // ==> = thick edge
+    }
+  }
+
+  // Edges: turn → audit (dotted). Header-demux vs time-window correlation
+  // is computed in _buildCidFlowTopology (mirrors pickAudits() above so the
+  // graph and the per-turn governance audit panel agree).
+  for (const e of tEdges.turnToAudit) {
+    mer += `  T${e.turnIdx} -.-> A${e.auditIdx}\n`;
+  }
 
   // Style classes. Mermaid classDef syntax: classDef <name> <style;style;...>
   // - cidpreserved: green fill (CID survived ≥2 turns — chain preserved)
@@ -1279,18 +1351,18 @@ function renderCidFlowTab(trial) {
   mer += "  classDef auditNode fill:#f0f0f0,stroke:#999,color:#333;\n";
 
   // Counts banner above the graph for quick orientation.
-  const preservedCount = Object.values(cidClass).filter(c => c === "preserved").length;
-  const singleCount = Object.values(cidClass).filter(c => c === "single").length;
-  const auditOnlyCount = Object.values(cidClass).filter(c => c === "auditonly").length;
+  const preservedCount = counts.preserved;
+  const singleCount = counts.single;
+  const auditOnlyCount = counts.auditOnly;
 
   return `
     <div class="cid-flow">
       <div class="cid-flow-stats">
-        <span><strong>${allCids.size}</strong> unique CID${allCids.size === 1 ? "" : "s"}</span>
+        <span><strong>${counts.cids}</strong> unique CID${counts.cids === 1 ? "" : "s"}</span>
         <span> · </span>
-        <span><strong>${turns.length}</strong> turn${turns.length === 1 ? "" : "s"}</span>
+        <span><strong>${counts.turns}</strong> turn${counts.turns === 1 ? "" : "s"}</span>
         <span> · </span>
-        <span><strong>${audits.length}</strong> audit entr${audits.length === 1 ? "y" : "ies"}</span>
+        <span><strong>${counts.audits}</strong> audit entr${counts.audits === 1 ? "y" : "ies"}</span>
         ${preservedCount ? `<span class="cid-legend-chip preserved">${preservedCount} preserved (≥2 turns)</span>` : ""}
         ${singleCount ? `<span class="cid-legend-chip single">${singleCount} single-use</span>` : ""}
         ${auditOnlyCount ? `<span class="cid-legend-chip auditonly">${auditOnlyCount} audit-only (channels broke)</span>` : ""}
@@ -1338,6 +1410,270 @@ function renderCidFlowTab(trial) {
       </details>
     </div>
   `;
+}
+
+// ── CID flow tab — interactive (cytoscape.js) ──
+//
+// Same topology as the Mermaid tab (via _buildCidFlowTopology) but
+// rendered with cytoscape.js so users can drag nodes around and switch
+// auto-layouts. Keeps the static Mermaid tab as the canonical "screenshot
+// + copy-the-source" view; this is the explore-the-graph view.
+//
+// We split rendering in two so the visibility-deferred mount works:
+//   renderCidFlowInteractiveTab(trial)  → returns the toolbar+container HTML
+//   _buildAndMountCytoscape(trial, el)  → instantiates cytoscape into el
+// (Mounting on a display:none parent makes cytoscape measure 0×0 and
+// dump every node at the origin — same root cause as Mermaid's getBBox
+// problem. Defer until the tab is visible.)
+
+// Last trial reference held so the tab-switch handler can mount
+// cytoscape on first navigation (we don't have `trial` in that handler's
+// scope, so stash it from the most recent renderTrial pass).
+let __lastTrialForCy = null;
+
+function renderCidFlowInteractiveTab(trial) {
+  const topo = _buildCidFlowTopology(trial);
+  if (topo.counts.turns === 0 && topo.counts.audits === 0 && topo.counts.cids === 0) {
+    return `<div class="cid-flow-cy"><p class="empty-state-msg">No CID flow to visualize — run the trial first or check verdict (a) for why no CIDs were observed.</p></div>`;
+  }
+  if (topo.counts.cids === 0) {
+    return `
+      <div class="cid-flow-cy">
+        <p class="empty-state-msg">
+          No CIDs found in any turn body or audit entry. Trial has
+          ${topo.counts.turns} turn(s) and ${topo.counts.audits} audit entry(ies).
+        </p>
+      </div>
+    `;
+  }
+  return `
+    <div class="cid-flow-cy">
+      <div class="cy-toolbar">
+        <label>Layout:
+          <select id="cy-layout">
+            <option value="dagre" selected>dagre (left-to-right flow)</option>
+            <option value="cose">cose (force-directed)</option>
+            <option value="breadthfirst">breadthfirst</option>
+            <option value="grid">grid</option>
+            <option value="circle">circle</option>
+          </select>
+        </label>
+        <button id="cy-fit">Fit</button>
+        <button id="cy-reset">Reset positions</button>
+        <span class="cy-hint">Drag nodes to rearrange · scroll to zoom · drag background to pan</span>
+      </div>
+      <div id="cy-container" class="cy-container"></div>
+      <details class="cid-flow-help">
+        <summary>Legend + interactions</summary>
+        <div class="cid-flow-help-body">
+          <p>Same color coding as the static <strong>CID flow</strong> tab. Drag any node to rearrange; scroll-wheel to zoom; drag the background to pan. Use the <strong>Layout</strong> selector to try different auto-arrangements; <strong>Reset positions</strong> reapplies the dagre LR layout (discards your drag).</p>
+          <ul>
+            <li><span class="legend-color preserved">●</span> green CID — preserved (≥2 turns)</li>
+            <li><span class="legend-color single">●</span> yellow CID — single-use (1 turn)</li>
+            <li><span class="legend-color auditonly">●</span> red CID — audit-only (channels broke)</li>
+            <li><span class="legend-color snapshotconsumed">●</span> solid purple SS — snapshot consumed by a tool_call</li>
+            <li><span class="legend-color snapshotorphan">●</span> dashed purple SS — snapshot orphan (no consuming tool_call)</li>
+          </ul>
+          <p>Edges: thin solid for turn→CID and audit→CID; dotted for turn→audit correlation; thick purple for SS→tool_call (E20 correlation).</p>
+        </div>
+      </details>
+    </div>
+  `;
+}
+
+// Mount cytoscape into the tab's container IF the tab is currently visible.
+// Returns true on successful mount (caller should clear the
+// __cidFlowInteractiveNeedsMount flag), false if hidden or lib missing.
+function mountCytoscapeIfVisible(trial) {
+  if (!trial) return false;
+  const tab = tabContents["cidflow-interactive"];
+  if (!tab || !tab.classList.contains("active")) return false;
+  if (typeof cytoscape === "undefined") {
+    console.warn("cytoscape lib not loaded; interactive CID flow tab will be empty");
+    return false;
+  }
+  const container = tab.querySelector("#cy-container");
+  if (!container) return false;
+  if (__cidFlowInteractiveCy) {
+    // Tear down prior instance so we don't leak listeners + canvas.
+    try { __cidFlowInteractiveCy.destroy(); } catch {}
+    __cidFlowInteractiveCy = null;
+  }
+  __cidFlowInteractiveCy = _buildAndMountCytoscape(trial, container);
+  return true;
+}
+
+function _buildAndMountCytoscape(trial, container) {
+  const topo = _buildCidFlowTopology(trial);
+  const cidNodeId = cid => `C_${cid.slice(3)}`;
+  const ssNodeId = ss => `SS_${ss}`;
+
+  const elements = [];
+  // Turn nodes
+  for (const t of topo.turns) {
+    elements.push({
+      data: {id: `T${t.idx}`, label: `Turn ${t.idx}\n${t.kind}`},
+      classes: t.errored ? "node-turn errored" : "node-turn",
+    });
+  }
+  // CID nodes
+  for (const c of topo.cids) {
+    const shortLabel = `${c.cid.slice(0, 6)}…${c.cid.slice(-4)}`;
+    elements.push({
+      data: {id: cidNodeId(c.cid), label: shortLabel, fullCid: c.cid},
+      classes: `node-cid cid-${c.klass}`,
+    });
+  }
+  // Audit nodes
+  for (const a of topo.audits) {
+    elements.push({
+      data: {id: `A${a.idx}`, label: a.phase},
+      classes: "node-audit",
+    });
+  }
+  // Snapshot nodes
+  for (const s of topo.snapshots) {
+    elements.push({
+      data: {id: ssNodeId(s.hash), label: `_ib_ss=${s.hash}`},
+      classes: `node-ss ss-${s.klass}`,
+    });
+  }
+  // Edges
+  for (const e of topo.edges.turnToCid) {
+    elements.push({
+      data: {source: `T${e.turnIdx}`, target: cidNodeId(e.cid)},
+      classes: "edge-turn-cid",
+    });
+  }
+  for (const e of topo.edges.auditToCid) {
+    elements.push({
+      data: {source: `A${e.auditIdx}`, target: cidNodeId(e.cid)},
+      classes: "edge-audit-cid",
+    });
+  }
+  for (const e of topo.edges.turnToAudit) {
+    elements.push({
+      data: {source: `T${e.turnIdx}`, target: `A${e.auditIdx}`},
+      classes: "edge-turn-audit dotted",
+    });
+  }
+  for (const x of topo.edges.ssAudits) {
+    if (x.phase === "tools_list") {
+      elements.push({
+        data: {source: ssNodeId(x.ss), target: `A${x.i}`},
+        classes: "edge-ss-list",
+      });
+    } else if (x.phase === "tool_call") {
+      elements.push({
+        data: {source: ssNodeId(x.ss), target: `A${x.i}`},
+        classes: "edge-ss-call thick",
+      });
+    }
+  }
+
+  // Register dagre layout extension. cytoscape-dagre's UMD build exposes
+  // itself as window.cytoscapeDagre; gate registration so cytoscape.use
+  // is idempotent (cytoscape throws if you re-register the same name).
+  if (typeof window !== "undefined" && window.cytoscapeDagre && !cytoscape.__dagreRegistered) {
+    try {
+      cytoscape.use(window.cytoscapeDagre);
+      cytoscape.__dagreRegistered = true;
+    } catch (e) {
+      console.warn("cytoscape-dagre registration failed:", e);
+    }
+  }
+
+  const cy = cytoscape({
+    container,
+    elements,
+    layout: cytoscape.__dagreRegistered
+      ? {name: "dagre", rankDir: "LR", spacingFactor: 1.2}
+      : {name: "breadthfirst", directed: true},
+    style: [
+      {selector: "node", style: {
+        label: "data(label)",
+        "text-wrap": "wrap",
+        "text-valign": "center",
+        "text-halign": "center",
+        "font-size": 10,
+        "padding": 6,
+        "shape": "round-rectangle",
+        "background-color": "#ECECFF",
+        "border-color": "#9370DB",
+        "border-width": 1,
+        "color": "#333",
+        "width": "label",
+        "height": "label",
+      }},
+      {selector: "node.node-turn", style: {
+        "background-color": "#ECECFF", "shape": "rectangle",
+      }},
+      {selector: "node.node-turn.errored", style: {
+        "border-color": "#dc3545", "border-width": 3,
+      }},
+      {selector: "node.cid-preserved", style: {
+        "background-color": "#d4edda", "border-color": "#28a745",
+        "border-width": 2, "shape": "round-rectangle", "color": "#155724",
+      }},
+      {selector: "node.cid-single", style: {
+        "background-color": "#fff3cd", "border-color": "#ffc107",
+        "border-width": 2, "shape": "round-rectangle", "color": "#856404",
+      }},
+      {selector: "node.cid-auditonly", style: {
+        "background-color": "#f8d7da", "border-color": "#dc3545",
+        "border-width": 2, "shape": "round-rectangle", "color": "#721c24",
+      }},
+      {selector: "node.node-audit", style: {
+        "background-color": "#f0f0f0", "border-color": "#999", "color": "#333",
+      }},
+      {selector: "node.node-ss", style: {
+        "background-color": "#e9d8fd", "border-color": "#6f42c1",
+        "border-width": 2, "shape": "tag", "color": "#3d1a78",
+      }},
+      {selector: "node.ss-snapshotorphan", style: {
+        "background-color": "#f5f0ff", "border-color": "#a78bda",
+        "border-style": "dashed", "color": "#6c5ba0",
+      }},
+      {selector: "edge", style: {
+        "width": 1.5, "line-color": "#999",
+        "target-arrow-shape": "triangle", "target-arrow-color": "#999",
+        "curve-style": "bezier",
+      }},
+      {selector: "edge.dotted", style: {"line-style": "dotted"}},
+      {selector: "edge.thick", style: {
+        "width": 3.5, "line-color": "#6f42c1", "target-arrow-color": "#6f42c1",
+      }},
+    ],
+  });
+
+  // Toolbar wiring. Use closest()-rooted lookups so we don't depend on
+  // the toolbar living anywhere specific in the DOM tree.
+  const toolbarRoot = container.parentElement;
+  const layoutSel = toolbarRoot && toolbarRoot.querySelector("#cy-layout");
+  const fitBtn    = toolbarRoot && toolbarRoot.querySelector("#cy-fit");
+  const resetBtn  = toolbarRoot && toolbarRoot.querySelector("#cy-reset");
+  if (layoutSel) {
+    layoutSel.addEventListener("change", e => {
+      const name = e.target.value;
+      let opts;
+      if (name === "dagre") {
+        opts = cytoscape.__dagreRegistered
+          ? {name: "dagre", rankDir: "LR", spacingFactor: 1.2}
+          : {name: "breadthfirst", directed: true};
+      } else {
+        opts = {name};
+      }
+      cy.layout(opts).run();
+    });
+  }
+  if (fitBtn)   fitBtn.addEventListener("click", () => cy.fit(undefined, 30));
+  if (resetBtn) resetBtn.addEventListener("click", () => {
+    const opts = cytoscape.__dagreRegistered
+      ? {name: "dagre", rankDir: "LR", spacingFactor: 1.2}
+      : {name: "breadthfirst", directed: true};
+    cy.layout(opts).run();
+  });
+  return cy;
 }
 
 // ── Services topology tab ──
