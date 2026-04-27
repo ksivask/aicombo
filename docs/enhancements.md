@@ -1765,6 +1765,222 @@ If a future need emerges (e.g., direct-mcp adapter tests where there's no LLM an
 
 ---
 
+## E38 — AGW config-validate warning for missing explicit `channels:` block
+
+**Status: future. AGW change. ~30 LOC + 1 test.**
+
+### The gap
+
+Post-CHG-247 (uniform default-false flip for all 3 channel boolean toggles), an operator who configures `governance.kind: cid_gar` on a route WITHOUT an explicit `channels:` block silently gets ZERO governance markers — no Channel-1 `_ib_cid` injection, no Channel-2 text marker, no Channel-3 resource block, no E20 `_ib_ss`. The route LOOKS governed (cidgar pipeline runs) but produces no observable signals, leaving operators puzzled when "AGW is configured but I'm not seeing CIDs anywhere".
+
+This is a real foot-gun introduced as the cost of CHG-247's uniform opt-in pattern.
+
+### The proposal
+
+At AGW startup OR via a new `agentgateway-app validate-config` subcommand, scan the route configuration for governed routes lacking explicit channels:
+
+```rust
+for route in routes_with_governance(&config) {
+    let ch = route.governance.channels;
+    let all_default_false = !ch.text_marker
+        && !ch.resource_block
+        && !ch.snapshot_correlation;
+    if all_default_false {
+        tracing::warn!(
+            route = %route.name,
+            "governance.kind=cid_gar configured but channels: block is missing OR all flags are false. \
+             No Channel-1/2/3 markers will be emitted on this route. Per CHG-247, channel toggles \
+             default to false post-flip — add an explicit channels: block to opt in. See spec §14.x."
+        );
+    }
+}
+```
+
+**Distinction**: the warning fires when ALL THREE booleans are false (whether explicit or implicit). Operators who deliberately set all to false (e.g., for a measure-only baseline route) get a noisy warning they have to silence. Two ways to handle:
+- Add a `channels.silence_no_op_warning: true` opt-out flag (clutter for an edge case)
+- Trust operators to read the warning and ignore it (simpler; matches Rust's lint culture)
+
+### Tests
+
+- Unit: `governance::config::tests::test_warn_on_governed_route_with_no_channels` — construct `RouteConfig` with cidgar but default channels, run validation, assert warn fired
+- Unit: `..._test_no_warn_with_explicit_channels` — same with explicit text_marker:true → no warning
+
+### Effort
+
+**S** (~30 LOC + 2 tests). Could land as either inline-warn-on-startup or a separate `validate-config` CLI subcommand.
+
+### Cross-references
+
+- CHG-246 / CHG-247 — these created the silent-default-false trap this enhancement mitigates
+- E37 — same family of "make implicit defaults loud" UX
+
+---
+
+## E39 — AGW `BREAKING_CHANGES.md` / `UPGRADE_NOTES.md`
+
+**Status: future. Docs. ~50-100 lines.**
+
+### The gap
+
+`docs/plans/change-ledger.md` is dev-internal (CHG-NNN entries with code-level detail). Operators upgrading AGW have no ops-facing changelog. The change-ledger is structured for "what got committed" not "what should I worry about when I bump the AGW image".
+
+CHG-247 specifically — the channel toggle default flip — is a silent breaking change for any deployment that relied on the implicit defaults. Currently documented in spec §14.x with a migration paragraph, but spec sections aren't where ops-folks look first.
+
+### The proposal
+
+Create `docs/BREAKING_CHANGES.md` (or `UPGRADE_NOTES.md`) with one stanza per breaking change in reverse chronological order:
+
+```markdown
+# AGW Breaking Changes
+
+## CHG-247 — channel toggle defaults flipped to false
+
+**When**: shipped 2026-04-27 on `ibfork/feat/cidgar`
+**What**: `channels.text_marker`, `channels.resource_block`, and `channels.snapshot_correlation`
+all now default to `false`. Previously text_marker + resource_block defaulted to true;
+snapshot_correlation defaulted false (CHG-246).
+
+**Impact on you**:
+- Routes that had `governance.kind: cid_gar` WITHOUT an explicit `channels:` block silently
+  emit zero governance markers post-upgrade.
+- Routes with explicit `channels.text_marker: true` etc. are unaffected.
+
+**Migration**:
+1. Audit your config for `governance:` blocks without `channels:` blocks
+2. Add explicit channels for each route that should retain governance:
+    ```yaml
+    channels:
+      text_marker: true
+      resource_block: true
+      snapshot_correlation: true   # E20 opt-in
+    ```
+3. Restart AGW
+
+**Why**: uniform opt-in pattern (all 3 channels behave the same way w.r.t. defaults)
+matches the safer-rollout philosophy used by E25's snapshot_correlation. Lets operators
+dark-launch governance per-route.
+```
+
+Plus stanzas for any earlier breaking changes (likely there's nothing else session-impacting; the InputCompat change in CHG-241 was strictly relaxing, not breaking).
+
+### Cross-references
+
+- CHG-247 source of the immediate need
+- E38 paired enhancement — config-validate warning catches missed migrations at AGW startup
+
+---
+
+## E40 — clone-baseline test coverage for ALL `with_*` flags
+
+**Status: future. Aiplay test. ~30 LOC.**
+
+### The gap
+
+The session shipped 4 `with_*` row flags (with_compact, with_force_state_ref, with_reset, with_e20_verification). `harness/api.py::clone-baseline` carries them to the cloned baseline-row so A/B latency comparison runs the same plan on both governed + direct twins.
+
+**Bug surfaced by code review (B2)**: clone-baseline silently dropped `with_e20_verification` (only carried 3 of 4 flags). Caught only by manual code-walkthrough; no test asserted "all with_* flags propagate".
+
+A future 5th `with_*` flag would have the same regression risk.
+
+### The proposal
+
+`tests/test_api.py` — add a parametrized test:
+
+```python
+@pytest.mark.parametrize("flag", [
+    "with_compact",
+    "with_force_state_ref",
+    "with_reset",
+    "with_e20_verification",
+])
+def test_clone_baseline_carries_all_with_flags(client, flag):
+    """Regression for the B2 class: clone-baseline must propagate every
+    with_* flag set on the source row. Add new flags to the parametrize
+    list when introducing them."""
+    src = client.post("/matrix/row", json={
+        "framework": "langchain", "api": "chat", "stream": False, "state": False,
+        "llm": "ollama", "mcp": "weather" if flag != "with_e20_verification" else "mutable",
+        "routing": "via_agw",
+        flag: True,
+    }).json()
+    row_id = src["row_id"]
+    resp = client.post(f"/matrix/row/{row_id}/clone-baseline").json()
+    cloned_id = resp["row_id"]
+    cloned = client.get(f"/matrix/row/{cloned_id}").json()
+    assert cloned[flag] is True, f"clone-baseline dropped {flag}"
+```
+
+OR (more durable to schema growth): walk `RowConfig.model_fields` for every field starting with `with_`, set each, clone, assert each survives. Auto-extends as new flags land.
+
+### Effort
+
+**XS** (~30 LOC test file + parametrize).
+
+### Cross-references
+
+- B2 (code review finding) — would have caught the with_e20_verification omission
+- E37 — same family of with_*-flag UX; ensuring data flow integrity
+
+---
+
+## E41 — plan-flag mutex enforcement at validator level
+
+**Status: future. Aiplay validator + frontend warning. ~50 LOC.**
+
+### The gap
+
+`templates.py::default_turn_plan` evaluates with_* flags in priority order and silently picks the highest-precedence one when ≥2 are set. Lower-precedence flags are silently ignored at runtime — operator gets the wrong plan with no warning.
+
+E37 (drawer plan-flag UI) added an inline warning when ≥2 flags are ticked, but:
+- The warning depends on the drawer being open
+- If user PATCHes the row via API with multiple flags, NO warning fires
+- The validator (`POST /validate` + per-cell client validation) doesn't surface the conflict
+
+### The proposal
+
+`harness/validator.py` — add a rule:
+
+```python
+# E41: mutex warning for multiple with_* plan flags
+plan_flags = [f for f in (
+    "with_compact", "with_force_state_ref", "with_reset", "with_e20_verification"
+) if row.get(f)]
+if len(plan_flags) >= 2:
+    # Per templates.py precedence — the FIRST checked wins.
+    # Order here MUST match templates.py::default_turn_plan check order.
+    PRECEDENCE = ["with_force_state_ref", "with_reset",
+                  "with_e20_verification", "with_compact"]
+    winner = next(f for f in PRECEDENCE if f in plan_flags)
+    warnings.append(
+        f"multiple plan flags set ({', '.join(plan_flags)}); only "
+        f"'{winner}' will execute (templates.py precedence). "
+        f"Other flags are ignored at runtime — uncheck them or rely on the winner."
+    )
+```
+
+This warning surfaces in:
+- The matrix grid's row-runnability tooltip (`invalidReason` in app.js)
+- The `/validate` endpoint response
+- The drawer's existing E37 warning (already shows)
+
+So operators see the conflict regardless of how they set flags (UI checkbox / curl PATCH / drawer JSON edit / Add Bulk script).
+
+### Tests
+
+- Unit: `tests/test_validator.py::test_warn_on_multiple_plan_flags` — set 2+ flags, assert warning fires + names the winner
+
+### Effort
+
+**S** (~30 LOC validator + 2 tests).
+
+### Cross-references
+
+- B1 (code review finding, parked) — drawer hint vs templates.py precedence inconsistency. Once B1 is resolved, the PRECEDENCE constant in this enhancement should mirror the resolved order.
+- E37 — drawer-side surface; this adds the validator-level surface
+- B2 / E40 — same class of "make plan-flag handling robust against silent failures"
+
+---
+
 ## Cross-references
 
 - E1 builds on the per-turn header-injection pattern already in every adapter (mutable dict in `httpx.AsyncClient`).
