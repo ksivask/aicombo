@@ -30,53 +30,31 @@ const TURN_TEMPLATES = {
 };
 
 // Insert a copy of TURN_TEMPLATES[key] into plan.turns[] at the cursor's
-// current position. Walks the formatted JSON to map cursor.line → turn
-// index: cursor at/before turn N's opening brace inserts BEFORE turn N
-// (so the new turn becomes N and the rest shift down). Cursor past the
-// last turn appends. Cursor outside the turns array → append (sane
-// fallback). Empty editor / invalid JSON → fresh {turns: [picked]}.
+// current position. Walks the editor's live text to find each turn-object's
+// "naked" opening-brace line and maps cursor.line → turn index. Cursor at/
+// before turn N's opener inserts BEFORE turn N (so the new turn becomes N
+// and the rest shift down). Cursor past the last opener appends. Cursor
+// outside the turns array → append (sane fallback). Empty editor / invalid
+// JSON / no openers → append.
+//
+// The opener regex `/^\s*\{\s*$/` is whole-line so it only matches "naked"
+// turn-opener lines (the opening brace on its own line, as JSON.stringify
+// formats it with `null, 2` indent). Inline braces inside string literals
+// or single-line objects don't match — sufficient for the formatted shape
+// the editor produces.
 function _cursorToTurnIndex(plan) {
   if (!cmInstance || !plan.turns || plan.turns.length === 0) return 0;
   const cursor = cmInstance.getCursor();
   const lines = cmInstance.getValue().split("\n");
-  // Re-stringify so we can compute the same indentation the editor uses
-  // (JSON.stringify(_, null, 2) is deterministic).
-  const formatted = JSON.stringify(plan, null, 2).split("\n");
-  // Find line indexes of each turn's opening brace inside the turns array.
-  // Each turn-object opener at depth=2 looks like "    {" (4-space indent).
-  let inArray = false, depth = 0;
-  const turnOpenerLines = [];
-  for (let i = 0; i < formatted.length; i++) {
-    const ln = formatted[i];
-    if (!inArray) {
-      if (/"turns":\s*\[/.test(ln)) inArray = true;
-      continue;
-    }
-    // Track nesting depth from { and } characters
-    if (depth === 0 && /^\s{4}\{\s*$/.test(ln)) turnOpenerLines.push(i);
-    for (const c of ln) {
-      if (c === "{") depth++;
-      else if (c === "}") depth--;
-    }
-    if (depth < 0) break;   // closing ] of turns array
-  }
-  // The actual editor content may differ from `formatted` if the user
-  // edited freely. Use the editor's text for cursor mapping by re-walking
-  // it the same way (so cursor lines match what the user sees).
   const liveOpenerLines = [];
-  inArray = false; depth = 0;
+  let inArray = false;
   for (let i = 0; i < lines.length; i++) {
     const ln = lines[i];
     if (!inArray) {
       if (/"turns":\s*\[/.test(ln)) inArray = true;
       continue;
     }
-    if (depth === 0 && /^\s*\{\s*$/.test(ln)) liveOpenerLines.push(i);
-    for (const c of ln) {
-      if (c === "{") depth++;
-      else if (c === "}") depth--;
-    }
-    if (depth < 0) break;
+    if (/^\s*\{\s*$/.test(ln)) liveOpenerLines.push(i);
   }
   // Cursor is BEFORE the first turn's opener → insert at 0.
   // Cursor is AT or PAST the last opener → append.
@@ -117,6 +95,29 @@ function addTurn(templateKey) {
 
 function escapeHtml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
+// E37 — surface which plan flags are currently set. The drawer-paragraph
+// hint below the checkboxes lists a precedence order that is intentionally
+// wrong (per code-review B1, awaiting user decision); the warning here
+// reports the ACTUAL templates.py order so the message is accurate even
+// while the hint is stale.
+function _activePlanFlags(row) {
+  return [
+    row.with_force_state_ref && "with_force_state_ref",
+    row.with_reset            && "with_reset",
+    row.with_e20_verification && "with_e20_verification",
+    row.with_compact          && "with_compact",
+  ].filter(Boolean);
+}
+
+function _renderFlagWarning(row) {
+  const active = _activePlanFlags(row);
+  if (active.length < 2) return "";
+  // Precedence per templates.py — reset BEFORE e20_verification.
+  const order = ["with_force_state_ref", "with_reset", "with_e20_verification", "with_compact"];
+  const winner = order.find(f => active.includes(f));
+  return `<div class="drawer-flag-warning">⚠ Multiple plan flags set (${escapeHtml(active.join(", "))}). Only <code>${escapeHtml(winner)}</code> will execute (per templates.py precedence). Other flags ignored at runtime.</div>`;
 }
 
 function getOrCreateModal() {
@@ -245,6 +246,7 @@ export async function openTurnPlanDrawer(row) {
         <div id="drawer-flags-status" class="tp-status"></div>
       </div>
       <div class="drawer-flags-row">${flagsRow}</div>
+      <div id="drawer-flag-warning-slot">${_renderFlagWarning(row)}</div>
       <p class="plan-note">
         Each flag swaps the default turn plan to a verdict-purposed
         template. If multiple are set, precedence wins:
@@ -358,6 +360,11 @@ export async function openTurnPlanDrawer(row) {
         status.textContent = `✗ ${flag}: ${e.message}`;
         status.className = "tp-status tp-status-error";
       }
+      // Re-render the multi-flag mutex warning so it reflects the new
+      // active-flag set every toggle (regardless of PATCH outcome — local
+      // row[flag] was reverted on failure).
+      const slot = document.getElementById("drawer-flag-warning-slot");
+      if (slot) slot.innerHTML = _renderFlagWarning(row);
       setTimeout(() => { status.textContent = ""; }, 4000);
     };
   });

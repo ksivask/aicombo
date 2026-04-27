@@ -103,6 +103,14 @@ function runMermaidIfVisible(tabKey) {
   }
 }
 
+// Mermaid + cytoscape node id helpers — both renderers use the same
+// scheme so hover/debug feel symmetric across the two tabs. CID nodes
+// strip the "ib_" prefix for compactness; snapshot nodes keep the full
+// hash. Lifted to module scope to dedup the two render paths
+// (renderCidFlowTab + _buildAndMountCytoscape).
+const cidNodeId = cid => `C_${cid.slice(3)}`;
+const ssNodeId = ss => `SS_${ss}`;
+
 // Tiny non-cryptographic string hash (djb2-ish, sufficient for change-
 // detection on rendered HTML — collisions only manifest as a missed
 // re-render which the next change correct).
@@ -716,8 +724,11 @@ function _collectIdentifiers(trial) {
 
 function renderIdentifiersBanner(trial) {
   const {cids, snapshots} = _collectIdentifiers(trial);
-  const cidList = cids.length ? cids.join(", ") : "<em>(none observed)</em>";
-  const ssList = snapshots.length ? snapshots.join(", ") : "<em>(none observed)</em>";
+  // CIDs and snapshot hashes are pure-hex by construction (XSS-safe
+  // today), but defensive escapeHtml is cheap and survives any future
+  // identifier-format change.
+  const cidList = cids.length ? escapeHtml(cids.join(", ")) : "<em>(none observed)</em>";
+  const ssList = snapshots.length ? escapeHtml(snapshots.join(", ")) : "<em>(none observed)</em>";
   return `
     <div class="identifiers-banner">
       <div><strong>CIDs (${cids.length}):</strong> <code>${cidList}</code></div>
@@ -1261,11 +1272,8 @@ function renderCidFlowTab(trial) {
     `;
   }
 
-  // Mermaid node id helpers — CIDs/SS ids match the cytoscape ones so
-  // hover/debug feel symmetric across the two tabs. Output below is
-  // intentionally byte-identical to the pre-refactor version.
-  const cidNodeId = cid => `C_${cid.slice(3)}`;
-  const ssNodeId = ss => `SS_${ss}`;
+  // cidNodeId / ssNodeId are defined at module scope — the cytoscape
+  // builder uses the same helpers so the two graphs share node ids.
 
   let mer = "graph LR\n";
 
@@ -1488,12 +1496,13 @@ function mountCytoscapeIfVisible(trial) {
   if (!trial) return false;
   const tab = tabContents["cidflow-interactive"];
   if (!tab || !tab.classList.contains("active")) return false;
-  if (typeof cytoscape === "undefined") {
-    console.warn("cytoscape lib not loaded; interactive CID flow tab will be empty");
-    return false;
-  }
   const container = tab.querySelector("#cy-container");
   if (!container) return false;
+  if (typeof cytoscape === "undefined") {
+    console.warn("cytoscape lib not loaded; interactive CID flow tab will be empty");
+    container.innerHTML = `<div class="cy-offline">⚠ Cytoscape library unavailable (CDN blocked or offline). Use the static CID flow tab instead.</div>`;
+    return false;
+  }
   if (__cidFlowInteractiveCy) {
     // Tear down prior instance so we don't leak listeners + canvas.
     try { __cidFlowInteractiveCy.destroy(); } catch {}
@@ -1505,8 +1514,7 @@ function mountCytoscapeIfVisible(trial) {
 
 function _buildAndMountCytoscape(trial, container) {
   const topo = _buildCidFlowTopology(trial);
-  const cidNodeId = cid => `C_${cid.slice(3)}`;
-  const ssNodeId = ss => `SS_${ss}`;
+  // cidNodeId / ssNodeId — module-scope helpers.
 
   const elements = [];
   // Turn nodes

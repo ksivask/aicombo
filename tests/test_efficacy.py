@@ -1015,7 +1015,7 @@ def test_verdict_k_distinguishes_route_with_no_cid():
     assert "MARKER_RE" not in v["k"].reason
 
 
-def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
+def test_verdict_k_distinguishes_extraction_failure_from_isolation_breach():
     """Failure mode C — every route HAS a CID (so mode A doesn't
     apply), CIDs don't overlap (so it would default to mode B), BUT
     request bodies on multiple routes contain marker-shaped text.
@@ -1027,7 +1027,9 @@ def test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach():
       * an adapter dropped the marker during shape translation between
         LLM switches,
       * cidgar `channels` config inconsistent across the routes.
-    Reason must enumerate those causes — NOT blame model paraphrase.
+    Reason must enumerate those AGW-extraction-failure / adapter-drop /
+    config-skew causes — NOT blame model paraphrase (the model never
+    emits the marker; this isn't a paraphrase scenario).
     """
     cfg = TrialConfig(framework="combo", api="chat", stream=False, state=False,
                       llm=["chatgpt", "claude"], mcp="NONE", routing="via_agw")

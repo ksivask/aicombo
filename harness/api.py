@@ -318,6 +318,7 @@ def matrix_clone_baseline(row_id: str):
         "with_compact": src.get("with_compact", False),
         "with_force_state_ref": src.get("with_force_state_ref", False),
         "with_reset": src.get("with_reset", False),
+        "with_e20_verification": src.get("with_e20_verification", False),
         # Carry the same turn_plan_override so the comparison runs the
         # same exact prompts on both rows.
         "turn_plan_override": src.get("turn_plan_override"),

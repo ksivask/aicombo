@@ -1,5 +1,46 @@
 # aiplay — conversation log
 
+## 2026-04-27 17:03 — Aiplay-side review-fix batch (12 small changes)
+
+### Entry — User prompt (subagent task)
+**User:** Aiplay-side review-fix batch. ~12 small changes; ONE commit (or 2-3 logical groupings). Auto-execution policy: no prompts. Pre-allowed CLI. ≤30 min.
+
+### Reasoning
+HEAD = `218fa92` aiplay/main, baseline `pytest -q` = 322 passed / 4 skipped / 326 collected. All 12 fixes are aiplay-only (frontend/* + harness/api.py + harness/runner.py + tests/*).
+
+Constraints respected: NO touch to AGW, NO touch to harness/templates.py (B1 awaiting user decision), NO touch to docs/enhancements.md.
+
+Special note on Important 3 (drawer multi-flag warning): the inline drawer-paragraph hint says precedence is `force_state_ref > e20_verification > reset > compact`, but templates.py actually executes them as `force_state_ref > reset > e20_verification > compact`. Per brief, the warning surfaces the ACTUAL code order so it stays accurate while B1's hint correction awaits user decision.
+
+### Actions
+- B2: `harness/api.py:321` — clone-baseline now carries with_e20_verification.
+- I3: `frontend/drawer.js` — added `_activePlanFlags` + `_renderFlagWarning`, slot inserted between checkbox row and precedence-hint paragraph, re-rendered on every checkbox onchange.
+- I4: `frontend/drawer.js::_cursorToTurnIndex` — dropped the unused `formatted` + `turnOpenerLines` block + brace-walking depth tracker; rely on the whole-line `/^\s*\{\s*$/` regex on liveOpenerLines.
+- I5: `frontend/app.js::MultiSelectCellEditor.getValue` — empty checked-set auto-rechecks NONE option and returns "NONE" (else falls through to legacy "" for non-NONE columns).
+- N6: `tests/test_api.py:225, 293, 390` — turn fixtures use `{"kind": "user_msg", "content": "…"}` (dropped legacy `turn_id`/`text`). `tests/test_api.py:406` recompute_verdicts assertion expanded to `{a,b,c,d,e,f,h,i,k}` per `efficacy.py:1186-1196`.
+- N8: `frontend/trial.js::mountCytoscapeIfVisible` — renders `.cy-offline` indicator into `#cy-container` when cytoscape lib is undef. Moved container-lookup before the lib check.
+- N10: `frontend/trial.js` — lifted `cidNodeId` + `ssNodeId` to module scope (line 111-112); removed inner duplicates from `renderCidFlowTab` + `_buildAndMountCytoscape`.
+- N11: `tests/test_efficacy.py:1018` — renamed `test_verdict_k_distinguishes_marker_paraphrase_from_isolation_breach` → `test_verdict_k_distinguishes_extraction_failure_from_isolation_breach` + docstring tweak (model never emits marker; root cause is AGW MARKER_RE / adapter / config skew).
+- N12: `harness/runner.py:241-253` — replaced misleading "no MCP base URL env var set" log with accurate "no admin support (only 'mutable' exposes _admin endpoints; skipped)".
+- N13: `frontend/trial.js::renderIdentifiersBanner` — wrapped `cids.join(", ")` and `snapshots.join(", ")` in `escapeHtml` (defensive; XSS-safe today since hex-only).
+- N14 (Mermaid snapshot regression test): SKIPPED per brief — no JS test infrastructure on pytest side, future enhancement filed elsewhere.
+- CSS: added `.drawer-flag-warning` + `.cy-offline` rules to `frontend/style.css`.
+
+### Verification
+- pytest after fixes: **322 passed, 4 skipped** — 0 delta from baseline.
+- `git diff --stat`: 8 files, +116 / -62 lines. No AGW path. No templates.py. No enhancements.md.
+- node syntax-check requested but Bash sandbox blocked; visually verified module-scope helpers + dead-code-removed paths.
+
+### Commit
+Single commit per brief option. SHA recorded below post-commit.
+
+### Constraints honored
+- NO push.
+- NO AGW source/docs touched.
+- NO harness/templates.py touched (B1 deferred).
+- NO docs/enhancements.md touched (sibling subagent scope).
+- pytest still green.
+
 ## 2026-04-27 — Verify E22 mcp-mutable-admin AGW route
 
 ### Entry — User prompt (subagent task)

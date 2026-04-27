@@ -239,12 +239,16 @@ async def run_trial(
                         "reason": "mcp_admin: missing required field 'op'",
                     }
                 elif base is None:
-                    # No env var configured for this MCP — likely a
-                    # non-mutable MCP that has no admin endpoint at all.
-                    # Log + skip rather than fail the trial.
+                    # pick_mcp_admin_base returns None for MCPs with no
+                    # admin surface (only `mutable` exposes /_admin/*
+                    # endpoints; weather/news/library/fetch don't read an
+                    # env var at all in that branch). Log + skip rather
+                    # than fail the trial so plans can call mcp_admin
+                    # defensively without per-MCP guards.
                     _log.info(
-                        "mcp_admin called for mcp=%s which has no MCP base "
-                        "URL env var set; skipped (turn=%s)",
+                        "mcp_admin called for mcp=%s which has no admin "
+                        "support (only 'mutable' exposes _admin endpoints; "
+                        "skipped) (turn=%s)",
                         mcp_name, turn_id,
                     )
                     turn.response = {"skipped": True, "reason": "no_base_url"}

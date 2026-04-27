@@ -239,8 +239,18 @@ class MultiSelectCellEditor {
     if (first) first.focus();
   }
   getValue() {
-    const checked = Array.from(this.eGui.querySelectorAll("input:checked")).map(i => i.value);
-    if (checked.length === 0) return "";
+    let checked = Array.from(this.eGui.querySelectorAll("input:checked")).map(i => i.value);
+    if (checked.length === 0) {
+      // Empty state would leak as "" into validator → confusing
+      // "incompatible with api=X" error for required mcp/llm columns.
+      // Auto-recover by selecting NONE if it's an option in this column.
+      const noneBox = this.eGui.querySelector('input[value="NONE"]');
+      if (noneBox) {
+        noneBox.checked = true;
+        return "NONE";
+      }
+      return "";
+    }
     if (checked.length === 1) return checked[0];   // legacy single-value
     return checked;
   }

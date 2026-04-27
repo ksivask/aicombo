@@ -222,7 +222,7 @@ def test_matrix_row_turn_plan_override_roundtrip(tmp_data_dir, reset_api_state):
         row_id = r.json()["row_id"]
 
         override = {"turns": [
-            {"turn_id": "t0", "kind": "user_msg", "text": "override hi"},
+            {"kind": "user_msg", "content": "override hi"},
         ]}
         r = client.patch(f"/matrix/row/{row_id}",
                          json={"turn_plan_override": override})
@@ -290,7 +290,7 @@ def test_clone_baseline_carries_turn_plan_override(tmp_data_dir, reset_api_state
         src_id = r1.json()["row_id"]
 
         custom_plan = {"turns": [
-            {"turn_id": "t0", "kind": "user_msg", "text": "custom prompt"},
+            {"kind": "user_msg", "content": "custom prompt"},
         ]}
         pr = client.patch(f"/matrix/row/{src_id}",
                           json={"turn_plan_override": custom_plan})
@@ -387,7 +387,7 @@ def test_recompute_verdicts_updates_persisted_trial(tmp_data_dir, reset_api_stat
         llm="ollama", mcp="NONE", routing="via_agw",
     )
     plan = TurnPlan(turns=[
-        {"turn_id": "t0", "turn_idx": 0, "kind": "user_msg", "text": "hi"},
+        {"kind": "user_msg", "content": "hi"},
     ])
     trial = Trial(
         trial_id="recomp-test", config=cfg, turn_plan=plan, status="pass",
@@ -401,9 +401,12 @@ def test_recompute_verdicts_updates_persisted_trial(tmp_data_dir, reset_api_stat
         body = r.json()
         assert body["trial_id"] == "recomp-test"
         assert "verdicts" in body
-        # compute_verdicts should produce the full a-f+h keyset for a
-        # via_agw trial, not just the stub 'a' we seeded.
-        assert set(body["verdicts"].keys()) >= {"a", "b", "c", "d", "e", "f", "h"}
+        # compute_verdicts should produce the full keyset for a via_agw
+        # trial (a-f, h, i, k per efficacy.py:1186-1196), not just the
+        # stub 'a' we seeded.
+        assert set(body["verdicts"].keys()) >= {
+            "a", "b", "c", "d", "e", "f", "h", "i", "k",
+        }
 
     # Reload and confirm persistence
     reloaded = api_mod.STORE.load("recomp-test")

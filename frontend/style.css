@@ -780,3 +780,22 @@ table.support-matrix td.cell-na     { color: #999; }
 .drawer-flag label:hover { background: #f0f4f8; border-color: #b8c6d3; }
 .drawer-flag input[type="checkbox"] { margin: 0; cursor: pointer; }
 .drawer-flag small { color: #888; font-size: 11px; }
+
+/* E37 — multi-flag mutex warning rendered when ≥2 plan flags are set;
+ * surfaces which flag actually wins per templates.py precedence. */
+.drawer-flag-warning {
+  background: #fff8e1; border-left: 3px solid #ffc107;
+  padding: 6px 10px; font-size: 12px; color: #856404;
+  margin: 6px 0; border-radius: 0 3px 3px 0;
+}
+.drawer-flag-warning code {
+  background: white; padding: 1px 4px; border-radius: 2px;
+}
+
+/* Cytoscape offline indicator — rendered into the cy-container when the
+ * cytoscape CDN script failed to load. Static CID flow tab still works. */
+.cy-offline {
+  padding: 24px; text-align: center; color: #b00;
+  background: #fee; border: 1px dashed #b00; border-radius: 4px;
+  font-size: 13px;
+}
