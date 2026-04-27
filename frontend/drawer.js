@@ -25,6 +25,8 @@ const TURN_TEMPLATES = {
   compact_drop_tool_calls: {kind: "compact", strategy: "drop_tool_calls"},
   compact_summarize:       {kind: "compact", strategy: "summarize"},
   force_state_ref:         {kind: "force_state_ref", lookback: 2, text: "Refer back to earlier."},
+  reset_context:           {kind: "reset_context"},                              // E21
+  refresh_tools:           {kind: "refresh_tools"},                              // E21
 };
 
 // Append a copy of TURN_TEMPLATES[key] to plan.turns[] in the editor. If the
@@ -170,6 +172,10 @@ export async function openTurnPlanDrawer(row) {
           title='append {"kind":"compact","strategy":"summarize"}'>compact (summarize)</button>
         <button type="button" data-tpl="force_state_ref" class="tp-add-turn-btn"
           title='append {"kind":"force_state_ref","lookback":2,"text":"…"}'>force_state_ref (lookback=2)</button>
+        <button type="button" data-tpl="reset_context" class="tp-add-turn-btn"
+          title='append {"kind":"reset_context"} — E21: wipe agent-side LLM history; AGW mints fresh CID on next turn'>reset_context</button>
+        <button type="button" data-tpl="refresh_tools" class="tp-add-turn-btn"
+          title='append {"kind":"refresh_tools"} — E21: force MCP tools/list re-fetch (no-op for adapters that re-fetch per call)'>refresh_tools</button>
       </div>
       <textarea id="tp-editor"></textarea>
       <p class="plan-note">
