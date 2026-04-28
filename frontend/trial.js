@@ -1471,20 +1471,22 @@ function renderCidFlowInteractiveTab(trial) {
         <span class="cy-hint">Drag nodes to rearrange · scroll to zoom · drag background to pan</span>
       </div>
       <div id="cy-container" class="cy-container"></div>
-      <details class="cid-flow-help">
-        <summary>Legend + interactions</summary>
-        <div class="cid-flow-help-body">
-          <p>Same color coding as the static <strong>CID flow</strong> tab. Drag any node to rearrange; scroll-wheel to zoom; drag the background to pan. Use the <strong>Layout</strong> selector to try different auto-arrangements; <strong>Reset positions</strong> reapplies the dagre LR layout (discards your drag).</p>
-          <ul>
-            <li><span class="legend-color preserved">●</span> green CID — preserved (≥2 turns)</li>
-            <li><span class="legend-color single">●</span> yellow CID — single-use (1 turn)</li>
-            <li><span class="legend-color auditonly">●</span> red CID — audit-only (channels broke)</li>
-            <li><span class="legend-color snapshotconsumed">●</span> solid purple SS — snapshot consumed by a tool_call</li>
-            <li><span class="legend-color snapshotorphan">●</span> dashed purple SS — snapshot orphan (no consuming tool_call)</li>
-          </ul>
-          <p>Edges: thin solid for turn→CID and audit→CID; dotted for turn→audit correlation; thick purple for SS→tool_call (E20 correlation).</p>
-        </div>
-      </details>
+      <div class="cid-flow-legend">
+        <details class="cid-flow-help">
+          <summary>Legend + interactions</summary>
+          <div class="cid-flow-help-body">
+            <p>Same color coding as the static <strong>CID flow</strong> tab. Drag any node to rearrange; scroll-wheel to zoom; drag the background to pan. Use the <strong>Layout</strong> selector to try different auto-arrangements; <strong>Reset positions</strong> reapplies the dagre LR layout (discards your drag).</p>
+            <ul>
+              <li><span class="legend-color preserved">●</span> green CID — preserved (≥2 turns)</li>
+              <li><span class="legend-color single">●</span> yellow CID — single-use (1 turn)</li>
+              <li><span class="legend-color auditonly">●</span> red CID — audit-only (channels broke)</li>
+              <li><span class="legend-color snapshotconsumed">●</span> solid purple SS — snapshot consumed by a tool_call</li>
+              <li><span class="legend-color snapshotorphan">●</span> dashed purple SS — snapshot orphan (no consuming tool_call)</li>
+            </ul>
+            <p>Edges: thin solid for turn→CID and audit→CID; dotted for turn→audit correlation; thick purple for SS→tool_call (E20 correlation).</p>
+          </div>
+        </details>
+      </div>
     </div>
   `;
 }
