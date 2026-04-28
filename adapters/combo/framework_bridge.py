@@ -766,16 +766,56 @@ class Trial:
                     },
                 })
             self._mcp_connect_failures_emitted = True
-        framework_events.extend(
-            {
-                "t": f"llm_dispatch_{i}",
-                "llm_for_turn": llm,
-                "model": model_for_turn,
-                "request": copy.deepcopy(ex.get("req")),
-                "response": copy.deepcopy(ex.get("resp")),
-            }
-            for i, ex in enumerate(turn_exchanges)
-        )
+        # Phase-tag each captured exchange by URL + JSON-RPC method so the
+        # Trial-detail page renders LLM hops vs MCP calls distinctly. Earlier
+        # version blanket-tagged everything as llm_dispatch_<N> which made
+        # multi-MCP combo trials' framework_events visually wrong (every MCP
+        # call appeared as "llm_dispatch_X to MCP weather"). Now matches the
+        # phase taxonomy other adapters use (mcp_initialize / mcp_tools_list /
+        # mcp_tools_call / llm_hop_N).
+        llm_hop_idx = 0
+        for ex in turn_exchanges:
+            req = ex.get("req") or {}
+            resp = ex.get("resp") or {}
+            url = req.get("url", "")
+            phase = "exchange"     # fallback
+            event_extras: dict = {}
+            if "/llm/" in url:
+                phase = f"llm_hop_{llm_hop_idx}"
+                llm_hop_idx += 1
+                event_extras = {"llm_for_turn": llm, "model": model_for_turn}
+            elif "/mcp/" in url:
+                # Parse JSON-RPC method from body to distinguish initialize /
+                # tools/list / tools/call. Body may be a dict (parsed) or a
+                # str (SSE-text not yet parsed).
+                body = req.get("body")
+                method = None
+                if isinstance(body, dict):
+                    method = body.get("method")
+                elif isinstance(body, str):
+                    try:
+                        method = json.loads(body).get("method")
+                    except (ValueError, AttributeError):
+                        pass
+                if method == "initialize":
+                    phase = "mcp_initialize"
+                elif method == "notifications/initialized":
+                    phase = "mcp_notif_initialized"
+                elif method == "tools/list":
+                    phase = "mcp_tools_list"
+                elif method == "tools/call":
+                    phase = "mcp_tools_call"
+                    tname = (body.get("params", {}) if isinstance(body, dict) else {}).get("name")
+                    if tname:
+                        event_extras["tool_name"] = tname
+                else:
+                    phase = "mcp_other"
+            framework_events.append({
+                "t": phase,
+                "request": copy.deepcopy(req),
+                "response": copy.deepcopy(resp),
+                **event_extras,
+            })
 
         return {
             "turn_id": turn_id,
