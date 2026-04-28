@@ -659,6 +659,13 @@ class Trial:
         to E24a tool-call rounds, which append additional assistant + tool
         messages without bumping the user count.
         """
+        # Mark the slice of self._exchanges this turn produces. Set BEFORE
+        # the eager MCP connect so turn 0's framework_events include the
+        # mcp_initialize / mcp_notif_initialized / mcp_tools_list discovery
+        # exchanges (otherwise the connect's ~12 exchanges land in
+        # self._exchanges before the mark and turn 0 only shows the LLM hop).
+        mark_idx = len(self._exchanges)
+
         # E24a — eager-once MCP pool connect (no-op if already connected
         # or if no MCPs configured).
         await self._connect_mcps_if_needed()
@@ -684,9 +691,6 @@ class Trial:
         # If we previously captured X-IB-CID, replay it (defense-in-depth).
         if self._observed_cid_header:
             self._http_client.headers["X-IB-CID"] = self._observed_cid_header
-
-        # Mark the slice of self._exchanges this turn produces.
-        mark_idx = len(self._exchanges)
 
         shape = _LLM_SHAPE[llm]
         emitted_tool_calls: list[dict] = []
