@@ -785,31 +785,45 @@ class Trial:
                 llm_hop_idx += 1
                 event_extras = {"llm_for_turn": llm, "model": model_for_turn}
             elif "/mcp/" in url:
-                # Parse JSON-RPC method from body to distinguish initialize /
-                # tools/list / tools/call. Body may be a dict (parsed) or a
-                # str (SSE-text not yet parsed).
+                # Mirror the kind taxonomy used by langchain/langgraph/
+                # autogen adapters so the Trial-detail view + topology
+                # extractors render combo trials identically. Three signals:
+                # HTTP method, accept header (for SSE GETs), and JSON-RPC
+                # method body (for POSTs).
+                http_method = (req.get("method") or "").upper()
+                accept = ""
+                headers = req.get("headers") or {}
+                if isinstance(headers, dict):
+                    accept = str(headers.get("accept") or headers.get("Accept") or "")
+                rpc_method = None
                 body = req.get("body")
-                method = None
                 if isinstance(body, dict):
-                    method = body.get("method")
+                    rpc_method = body.get("method")
                 elif isinstance(body, str):
                     try:
-                        method = json.loads(body).get("method")
+                        rpc_method = json.loads(body).get("method")
                     except (ValueError, AttributeError):
                         pass
-                if method == "initialize":
+                if http_method == "DELETE":
+                    phase = "mcp_session_close"
+                elif http_method == "GET" and "text/event-stream" in accept:
+                    phase = "mcp_sse_open"
+                elif rpc_method == "initialize":
                     phase = "mcp_initialize"
-                elif method == "notifications/initialized":
+                elif rpc_method == "notifications/initialized":
                     phase = "mcp_notif_initialized"
-                elif method == "tools/list":
+                elif rpc_method == "tools/list":
                     phase = "mcp_tools_list"
-                elif method == "tools/call":
+                elif rpc_method == "tools/call":
                     phase = "mcp_tools_call"
                     tname = (body.get("params", {}) if isinstance(body, dict) else {}).get("name")
                     if tname:
                         event_extras["tool_name"] = tname
+                elif rpc_method:
+                    phase = f"mcp_rpc_{rpc_method.replace('/', '_')}"
                 else:
-                    phase = "mcp_other"
+                    phase = "mcp_http"
+                event_extras["rpc_method"] = rpc_method
             framework_events.append({
                 "t": phase,
                 "request": copy.deepcopy(req),
