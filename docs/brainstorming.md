@@ -650,3 +650,29 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 - Surface in turn-level metadata field instead of framework_events (rejected: brief specifies framework_events as the surface; existing UI/tests already iterate it).
 - Bonus suggestion (note registry surface) skipped per "likely overkill for first cut".
 
+
+## 2026-04-28 — combo turn-0 framework_events bug + interactive CID legend colors + topology wire-observability
+
+### Combo turn-0 missing MCP discovery — root cause + fix tradeoffs
+- Symptom: combo trial f445f59c showed turn 0 with only 1 framework_event (`llm_hop_0`); no `mcp_initialize` / `mcp_notif_initialized` / `mcp_tools_list` events even though the adapter clearly performed those calls (4 `tools_list` audits visible in turn 0's time window in audit_entries).
+- Root cause: `mark_idx = len(self._exchanges)` was set AFTER `await self._connect_mcps_if_needed()` in `Trial.turn`. The eager connect pushes ~12 discovery exchanges into `self._exchanges` before mark, so `turn_exchanges = self._exchanges[mark_idx:]` skipped them.
+- Fix considered: (a) move mark_idx BEFORE connect [chosen — minimal, surfaces real wire data via existing phase classifier]; (b) capture connect-time exchanges separately and prepend to turn 0's events explicitly [rejected — duplicates classification logic]; (c) add a `_connect_exchanges` list parallel to `_exchanges` [rejected — extra state].
+- Side effects considered: turns 1+ unaffected because connect is idempotent and adds zero exchanges on subsequent calls. Tests checked: `tests/test_adapter_combo.py::test_connect_failure_surfaces_in_turn_zero_framework_events` mocks `_build_mcp_client` to raise, so no httpx exchanges are added during the failed connect — synthetic mcp_connect_failure events still get prepended as before. Test should still pass.
+
+### Interactive CID legend colors — CSS scoping bug
+- Symptom: bullets in interactive CID tab's "Legend + interactions" details rendered as default text color, not the green/yellow/red/purple defined in style.css.
+- Root cause: CSS at `style.css:585-589` scopes `.legend-color.{preserved|single|...}` under a `.cid-flow-legend` parent. Static CID tab wraps its legend `<details>` in `<div class="cid-flow-legend">` (`trial.js:1378`); interactive tab had `<details class="cid-flow-help">` directly without the wrapper.
+- Fix: wrap the interactive tab's legend `<details>` in `<div class="cid-flow-legend">`. Pure CSS scoping fix — no behavior change beyond colored bullets.
+- Alternative considered: add unscoped `.legend-color` rules in CSS [rejected — would over-broaden the selector and risk affecting anything else that ever uses that class].
+
+### Wire-observability constraint for topology tabs (saved to memory)
+- Both CID flow tabs and Services tab render client-side from `framework_events` (adapter-level data) but the consumed fields must remain a strict subset of what AGW could observe on the wire. Documented in feedback memory `feedback_aiplay_topology_wire_only.md` and indexed in MEMORY.md.
+- Why: tabs are positioned in their own help text as "what AGW could also see / what governance could in principle reconstruct". If a future change pulls adapter-internal-only data (framework version from `/info`, internal SDK state, decisions that never crossed the wire), the help text claim breaks and the tab becomes adapter-implementation-coupled rather than wire-observable.
+- Apply: when reviewing changes to `extractServicesTopology` / `_buildCidFlowTopology` (and equivalents), check every new field against "is this present in a request/response body, header, or URL that passes through AGW?" Call out violations.
+
+### Open follow-up items (this session — not done, listed for visibility)
+- Update `tests/test_adapter_combo.py:709,725` to use the current `llm_hop_*` phase taxonomy. The current `e["t"].startswith("llm_dispatch_")` predicate never matches post-c245d3e and the ordering assertion at L728-732 vacuously passes.
+- Update `tests/test_efficacy.py:1044,1056` synthetic fixtures from `llm_dispatch_0` to `llm_hop_0` for consistency (still functionally valid — verdict_k extracts route from URL substring not phase name).
+- Optional: add detection for llama3.1-style "tool call as text" pattern (assistant `content` starts with `{"name": ... "parameters":` while `tool_calls is None`) in combo. Either parse it back into a real tool call OR emit a synthetic `llm_text_toolcall_dropped` framework_event so the trial page surfaces "model attempted a tool call but dropped it as text".
+- Run `pytest tests/test_adapter_combo.py -v` before committing the framework_bridge.py mark_idx change.
+- Rebuild + redeploy adapter-combo container to pick up the framework_bridge.py change before re-running diagnosis trials.

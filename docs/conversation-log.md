@@ -693,3 +693,68 @@ f81a5fe — single commit, 6 files (4 source + 2 docs), +235/-22.
 - NO templates.py / runner.py touched.
 - pytest still green (+1 new test).
 
+
+---
+
+## 2026-04-28 — diagnose trial f445f59c, fix combo turn-0 missing discovery, fix interactive CID legend colors
+
+### User prompts
+1. "diagnose http://192.168.64.4:8000/trial.html?id=f445f59c-1e7b-4e16-a30d-c48e409731e9 - the steps are missing ?"
+2. "show this legend on the interactiveCID tab proper colors: …"
+3. "the turn0 steps says only 1 event, where are the tools/list fetching steps here?"
+4. "similarly, check/diagnose turn4 step and audit entries listing"
+5. "clarify using what data the services diagram is built?"
+6. "the help text says ‘derived from AGW-observable wire data … no data here would be unavailable to AGW itself.’ — does this mean this graph can also be constructed by AGW itself?"
+7. "ok note/remember this constraint that both CID flow and services, although the rendering is done at client using adapter level details, all of that data used is potentially available at AGW too. callout if this is not honored."
+8. "code review, update docs. list our pending items"
+
+### Reasoning + actions
+
+**(1) f445f59c "steps missing":**
+- Verified JSON has correct framework_events (turn 0: 1 event llm_hop_0; turns 1,2,3,5: 8 events each with full mcp_initialize/notif_initialized/sse_open/tools_call/tools_list/session_close/llm_hop_1; turn 4: 1 event).
+- API endpoint `/trials/{id}` returns the events (verified via curl).
+- Renderer at `frontend/trial.js:484` correctly emits a `<details>` Steps block when events.length > 0.
+- Root cause: Steps `<details>` is collapsed by default since commit `c0705dc` (April 25). User needs to click summary to expand. Communicated as such.
+
+**(2) Interactive CID tab legend colors not rendering:**
+- Found CSS in `frontend/style.css:585-589` scopes `.legend-color.{preserved|single|auditonly|snapshotconsumed|snapshotorphan}` to a `.cid-flow-legend` parent.
+- Static CID tab has `<div class="cid-flow-legend">` wrapper (`trial.js:1378`); interactive tab had `<details class="cid-flow-help">` directly without the wrapper, so colors didn't apply.
+- Fix: wrapped the interactive tab's legend in `<div class="cid-flow-legend">` at `trial.js:1474-1488`.
+
+**(3) Turn 0 missing tools/list discovery steps — combo bug:**
+- Read `adapters/combo/framework_bridge.py::Trial.turn`. Found `mark_idx = len(self._exchanges)` was set AFTER `await self._connect_mcps_if_needed()`. The eager connect adds ~12 MCP discovery exchanges (4 MCPs × {initialize, notif_initialized, tools/list}) to `self._exchanges` BEFORE the mark, so `turn_exchanges = self._exchanges[mark_idx:]` skips them entirely.
+- Fix: moved `mark_idx = len(self._exchanges)` to BEFORE the connect call. Turn 0 framework_events will now include the discovery exchanges (already correctly classified by the post-c245d3e/8bd0cbc phase classifier). Turns 1+ unaffected (connect is idempotent — no new exchanges).
+- Requires `docker compose build adapter-combo && docker compose up -d adapter-combo` + re-run trial to take effect.
+
+**(4) Turn 4 only 1 step + 2 audits — model behavior, not bug:**
+- Inspected the LLM response: ollama (llama3.1:latest) for "What's the weather in Seattle?" returned `finish_reason=stop` with `tool_calls=None` but stuffed the intended tool call into `content` as plain-text JSON: `'{"name": "weather_get_weather", "parameters": {...}, "city": "Se...`.
+- Combo's openai loop checks `tool_calls is None` and exits (no MCP follow-up). 1 framework_event (the LLM hop), 2 audits (llm_request + terminal via `llm-ollama/backend0`) — accurate to wire reality.
+- Optional follow-up suggested (not implemented): detect the text-JSON-toolcall pattern and either parse it or emit a synthetic `llm_text_toolcall_dropped` framework_event so the trial page surfaces "model attempted a tool call but dropped it as text".
+
+**(5) Services diagram data sources clarified:**
+- Walked through `extractServicesTopology()` at `trial.js:1796`. Answered: built entirely client-side from `trial.turns[*].framework_events`, NOT audit_entries. Only 4 phases contribute (mcp_initialize, mcp_tools_list, mcp_tools_call, llm_hop_*). Listed each consumed field.
+
+**(6) Could AGW construct the same diagram?**
+- Yes in principle — every field is wire-observable to AGW (clientInfo/serverInfo in MCP bodies, model + token counts in LLM bodies, URLs, User-Agent header). Today AGW would need three things it doesn't currently do: extract more structured audit fields, parse SSE response bodies, and roll up per-trial topology snapshots. Existing X-Harness-Trial-ID header already provides the grouping key.
+
+**(7) Wire-observability constraint saved to memory:**
+- Wrote `feedback_aiplay_topology_wire_only.md` to `/home/linusr/.claude/projects/-mnt-share-ws-agw-gh/memory/` and indexed in MEMORY.md. Future sessions: any new field added to `extractServicesTopology` / `_buildCidFlowTopology` (or any equivalent topology extractor) must be a strict subset of wire-observable data; flag adapter-internal-only fields.
+
+### Files changed (uncommitted as of this entry)
+- `adapters/combo/framework_bridge.py` — moved mark_idx before connect (+7/-3, including comment block).
+- `frontend/trial.js` — wrapped interactive CID legend in `cid-flow-legend` div (+15/-13).
+- `docs/conversation-log.md`, `docs/brainstorming.md`, `docs/memory-log.md` — this entry + corresponding entries.
+- Memory: `feedback_aiplay_topology_wire_only.md` added; `MEMORY.md` updated.
+
+### Code-review notes (this session's diff)
+- Both code changes correct, minimal, low-risk. mark_idx move is a one-line semantic fix; legend wrapper is pure CSS scoping.
+- ⚠️ Stale references to the deprecated `llm_dispatch_*` phase taxonomy still exist in:
+  - `tests/test_adapter_combo.py:709` (comment) and `:725` (predicate `e["t"].startswith("llm_dispatch_")` — now never matches, makes the ordering-assertion at L728-732 vacuously pass instead of actually testing anything).
+  - `tests/test_efficacy.py:1044,1056` (synthetic fixtures for verdict_k tests; still functionally valid because verdict_k extracts route from URL substring not phase name, but inconsistent).
+  - `adapters/combo/framework_bridge.py:775,777` (historical-context comments — keep, they explain the prior blanket-tagging bug).
+
+### Verification
+- `python3 -c "import ast; ast.parse(open('adapters/combo/framework_bridge.py').read())"` OK.
+- node simulation of renderTurnCard against the trial JSON renders Steps blocks for all 6 turns.
+- curl `http://192.168.64.4:8000/trial.js` confirms uvicorn is serving the updated file.
+- pytest NOT yet run on combo bridge change (mark_idx move is logically simple but should run `pytest tests/test_adapter_combo.py -v` before commit).
