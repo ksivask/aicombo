@@ -103,6 +103,10 @@ _API_KEY_ENV_BY_LLM = {
 def _pick_api_key(llm: str) -> str:
     env_var = _API_KEY_ENV_BY_LLM.get(llm)
     if env_var is None:
+        if llm == "ollama":
+            # Ollama Cloud opt-in: bearer comes from OLLAMA_API_KEY when set.
+            # Local/keyless Ollama still works (placeholder bypasses validation).
+            return os.environ.get("OLLAMA_API_KEY") or "placeholder"
         return "placeholder"
     key = os.environ.get(env_var, "")
     if not key:
