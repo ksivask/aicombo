@@ -1656,10 +1656,17 @@ function _buildAndMountCytoscape(trial, container) {
       classes: `node-cid cid-${c.klass}`,
     });
   }
-  // Audit nodes
+  // Audit nodes — when the audit corresponds to an MCP call we joined to
+  // a framework_event, append the mcp-session-id alias on a second line
+  // and stash the full id on data.sidFull for the hover-tooltip handler.
   for (const a of topo.audits) {
+    const label = a.sid ? `${a.phase}\n${a.sid}` : a.phase;
     elements.push({
-      data: {id: `A${a.idx}`, label: a.phase},
+      data: {
+        id: `A${a.idx}`,
+        label,
+        sidFull: a.sidFull || null,
+      },
       classes: "node-audit",
     });
   }
@@ -1805,6 +1812,18 @@ function _buildAndMountCytoscape(trial, container) {
       : {name: "breadthfirst", directed: true};
     cy.layout(opts).run();
   });
+
+  // Native-browser tooltip for audits that carry a session id. Set the
+  // container's `title` attr on hover; clear on mouseout. Browser shows
+  // its default tooltip after the usual hover delay. No vendor lib needed.
+  cy.on("mouseover", "node[sidFull]", evt => {
+    const sf = evt.target.data("sidFull");
+    if (sf) container.setAttribute("title", `mcp-session-id: ${sf}`);
+  });
+  cy.on("mouseout", "node[sidFull]", () => {
+    container.removeAttribute("title");
+  });
+
   return cy;
 }
 
