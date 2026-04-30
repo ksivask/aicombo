@@ -758,3 +758,29 @@ f81a5fe — single commit, 6 files (4 source + 2 docs), +235/-22.
 - node simulation of renderTurnCard against the trial JSON renders Steps blocks for all 6 turns.
 - curl `http://192.168.64.4:8000/trial.js` confirms uvicorn is serving the updated file.
 - pytest NOT yet run on combo bridge change (mark_idx move is logically simple but should run `pytest tests/test_adapter_combo.py -v` before commit).
+
+## 2026-04-30 — README refresh against current code + docs
+
+### User prompt
+"using the various docs/ files and the code, ensure the readme.md is up2date and accurate"
+
+### Reasoning
+README claimed 7 adapters / 4 MCP / 117 tests / drawer-based trial detail / external AGW build. Verified current state from `adapters/`, `mcp/`, `docker-compose.yaml`, `harness/validator.py::ADAPTER_CAPABILITIES`, `harness/api.py`, `harness/runner.py`, `frontend/trial.html`, `.env.example`, `docs/findings-plan-b.md`, `docs/enhancements.md`. Drift since last update: combo adapter (port 5008, multi-LLM/MCP, E23/E24/E24a) added; mutable MCP added; AGW image pulled from `ghcr.io/agentgateway/agentgateway:v1.0.1-cidgar` instead of built externally; trial detail moved to `/trial.html` tab with 8 tabs (added Note, CID flow, CID flow interactive, Services); new turn kinds `mcp_admin` / `reset_context` / `refresh_tools`; new endpoints `/pairs`, `/pairs/{id}/diff`, `/trials/{id}/abort`, `/trials/{id}/recompute_verdicts`, `/providers/{id}/models`; Ollama Cloud bearer (`OLLAMA_API_KEY`); langchain + langgraph capability promoted to all 4 APIs (E5a/E5b); test count up to ~307 across 34 modules; default ollama model `qwen2.5:7b` (not `:7b-instruct`).
+
+### Response/actions
+- Edited `README.md` surgically (no structural rewrite):
+  - Top blurb + bullet list: 8 adapters / 5 MCP / pre-built ghcr image.
+  - Prereqs + Quickstart: removed external AGW build steps, added `OLLAMA_API_KEY` note, default model `qwen2.5:7b`.
+  - Adapter matrix: added `combo` row, promoted langchain/langgraph to ✓ for messages/responses/responses+conv per validator.py.
+  - UI workflow: rewrote drawer language → `/trial.html` new-tab + drawer-only-for-Turn-Plan; updated tab list to current 8 tabs; added pairs.html link.
+  - API examples: added abort, recompute_verdicts, /pairs, /pairs/diff, /providers/{id}/models.
+  - Turn kinds: added `mcp_admin`, `reset_context`, `refresh_tools`.
+  - Replaced "Building AGW image" section with ghcr pull instructions + note that Makefile's check-agw is stale.
+  - API keys table: added Ollama Cloud row + pointer to `.env.example` for model overrides.
+  - Troubleshooting: replaced "agentgateway:cidgar missing" with ghcr pull failure; service count 13 → 16; added rotate-keys hint.
+  - Layout: 8 adapters incl. combo at 5008; 5 MCP; harness file list expanded; tests count updated; added code-review-plan-a-and-b.md and trial.html / pairs.html mentions.
+
+### Verification
+- Re-read README end-to-end after edits — internally consistent.
+- Cross-checked claims against `harness/validator.py::ADAPTER_CAPABILITIES`, `harness/api.py` route grep, `frontend/trial.html`, `.env.example`, `docker-compose.yaml` service list.
+- No code changes — docs only.
