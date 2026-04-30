@@ -63,7 +63,7 @@ _decodeMcpSessionAlias("eyJ0IjoibWNwIiwicyI6W3sidCI6Im11dGFibGUiLCJzIjoiZGE1YzA3
 
 _decodeMcpSessionAlias(null)            // → null
 _decodeMcpSessionAlias("")              // → null
-_decodeMcpSessionAlias("not-base64!!")  // → {alias: "ase64!!", full: "not-base64!!"}  (fallback path; the raw last-6 chars include any non-hex)
+_decodeMcpSessionAlias("not-base64!!")  // → {alias: "se64!!", full: "not-base64!!"}  (fallback path; the raw last-6 chars include any non-hex)
 ```
 
 Verify the alias is `"ac967c"` for the sample. (Decoded JSON: `{"t":"mcp","s":[{"t":"mutable","s":"da5c078c4bdc4a71887c5dfc3bac967c"}]}` → last 6 of the inner hash.)

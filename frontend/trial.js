@@ -1124,9 +1124,11 @@ function collectNotes(c) {
 // Decode an mcp-session-id header value into a short alias + full id pair.
 // Header format observed in framework_events: base64url-encoded JSON of shape
 //   {"t":"mcp","s":[{"t":"mutable","s":"<hex>"}]}
-// Returns {alias: <last-6-hex>, full: <raw>} on success; on decode failure
-// falls back to {alias: <last-6-of-raw>, full: <raw>}. Returns null when
-// the input is empty/null.
+// `raw` is expected to be base64url (no `=` padding); the fallback alias
+// path assumes that, so a real header never produces padding chars in the
+// alias. Returns {alias: <last-6-hex>, full: <raw>} on success; falls back
+// to {alias: <last-6-of-raw>, full: <raw>} on decode/parse failure or
+// unexpected JSON shape. Returns null when the input is empty/null.
 function _decodeMcpSessionAlias(raw) {
   if (!raw || typeof raw !== "string") return null;
   // base64url → base64 → atob; pad to multiple of 4.
@@ -1139,9 +1141,9 @@ function _decodeMcpSessionAlias(raw) {
     if (typeof inner === "string" && inner.length >= 6) {
       return {alias: inner.slice(-6), full: raw};
     }
-  } catch (_e) {
-    // fall through to fallback
-  }
+  } catch (_e) { /* ignore — handled by the shape-check fallback below */ }
+  // Reached on decode/parse failure OR when the JSON shape lacks s[0].s
+  // OR when the inner hash is shorter than 6 chars.
   return {alias: raw.slice(-6), full: raw};
 }
 
