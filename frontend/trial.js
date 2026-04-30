@@ -44,7 +44,8 @@ let __servicesNeedsMermaid = false;
 // Mermaid `click <node> callback "<tooltip>"` requires a callback function.
 // We don't need any actual click behavior here — the tooltip text is what
 // we're after. One global no-op satisfies Mermaid's syntax check.
-if (typeof window !== "undefined" && !window.__cidFlowNoop) {
+// (Matches the existing module-scope-on-window pattern at __copyBtnInstalled.)
+if (!window.__cidFlowNoop) {
   window.__cidFlowNoop = function () {};
 }
 
@@ -1413,10 +1414,13 @@ function renderCidFlowTab(trial) {
     mer += `  A${a.idx}["${label}"]\n`;
     mer += `  class A${a.idx} auditNode\n`;
     if (a.sidFull) {
-      // Escape any double-quotes in the tooltip; they'd break Mermaid's
-      // string parser. Real session-id values are base64url so this is
-      // mostly defensive.
-      const tip = a.sidFull.replace(/"/g, '\\"');
+      // Mermaid's tooltip-string lexer (`[^"]*`) has no backslash-escape
+      // support, so any embedded `"` would terminate the string early and
+      // break the directive. Strip them outright. Real session-id values
+      // are base64url (no `"`) — this is defensive only.
+      const tip = a.sidFull.replace(/"/g, "");
+      // __cidFlowNoop is registered on window at module scope (top of file);
+      // Mermaid loose-mode resolves unqualified callback names against window.
       mer += `  click A${a.idx} __cidFlowNoop "mcp-session-id: ${tip}"\n`;
     }
   }
