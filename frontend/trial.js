@@ -740,6 +740,10 @@ function renderPlanTab(plan, executedCount) {
 // the verdicts-tab banner. Source of truth is trial.audit_entries (live
 // AGW log) — not the wire bodies, since channels can be disabled and the
 // audit stream is the authoritative record of what AGW saw.
+//
+// MCP session ids live trial-side only (in turns[*].framework_events
+// headers — AGW audits don't carry them; verified across 103 trials),
+// so we walk a different source for those.
 function _collectIdentifiers(trial) {
   const cids = new Set();
   const snapshots = new Set();
@@ -748,20 +752,42 @@ function _collectIdentifiers(trial) {
     const ss = _auditSnapshotHash(a);
     if (ss) snapshots.add(ss);
   }
-  return {cids: [...cids].sort(), snapshots: [...snapshots].sort()};
+  // Sessions: dedupe by full header value; carry the alias for compact
+  // display (full id available on hover via the banner).
+  const sessionsByFull = new Map();  // full → alias
+  for (const t of (trial.turns || [])) {
+    for (const fe of (t.framework_events || [])) {
+      const reqH = (fe.request  && fe.request.headers)  || {};
+      const resH = (fe.response && fe.response.headers) || {};
+      const raw = reqH["mcp-session-id"] || resH["mcp-session-id"] || null;
+      const dec = _decodeMcpSessionAlias(raw);
+      if (dec && !sessionsByFull.has(dec.full)) sessionsByFull.set(dec.full, dec.alias);
+    }
+  }
+  const sessions = [...sessionsByFull].map(([full, alias]) => ({full, alias}))
+    .sort((a, b) => a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0);
+  return {cids: [...cids].sort(), snapshots: [...snapshots].sort(), sessions};
 }
 
 function renderIdentifiersBanner(trial) {
-  const {cids, snapshots} = _collectIdentifiers(trial);
+  const {cids, snapshots, sessions} = _collectIdentifiers(trial);
   // CIDs and snapshot hashes are pure-hex by construction (XSS-safe
   // today), but defensive escapeHtml is cheap and survives any future
   // identifier-format change.
   const cidList = cids.length ? escapeHtml(cids.join(", ")) : "<em>(none observed)</em>";
   const ssList = snapshots.length ? escapeHtml(snapshots.join(", ")) : "<em>(none observed)</em>";
+  // Sessions: render each alias as its own <code> with the full id in a
+  // title attr — same hover-for-full UX as the CID flow tabs.
+  const sessList = sessions.length
+    ? sessions.map(s =>
+        `<code title="mcp-session-id: ${escapeHtml(s.full)}">${escapeHtml(s.alias)}</code>`
+      ).join(", ")
+    : "<em>(none observed)</em>";
   return `
     <div class="identifiers-banner">
       <div><strong>CIDs (${cids.length}):</strong> <code>${cidList}</code></div>
       <div><strong>Snapshots (${snapshots.length}):</strong> <code>${ssList}</code></div>
+      <div><strong>Sessions (${sessions.length}):</strong> ${sessList}</div>
     </div>
   `;
 }
