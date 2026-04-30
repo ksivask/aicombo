@@ -41,14 +41,6 @@ let __servicesLastSourceHash = null;
 let __cidFlowNeedsMermaid = false;
 let __servicesNeedsMermaid = false;
 
-// Mermaid `click <node> callback "<tooltip>"` requires a callback function.
-// We don't need any actual click behavior here — the tooltip text is what
-// we're after. One global no-op satisfies Mermaid's syntax check.
-// (Matches the existing module-scope-on-window pattern at __copyBtnInstalled.)
-if (!window.__cidFlowNoop) {
-  window.__cidFlowNoop = function () {};
-}
-
 // I-NEW-1: framework-capability cache. The NOTE-tab's framework rules
 // (e.g. "crewai doesn't implement responses") used to hardcode the
 // supported_apis sets, mirroring `harness/validator.py::ADAPTER_CAPABILITIES`.
@@ -104,10 +96,39 @@ function runMermaidIfVisible(tabKey) {
         console.warn(`${tabKey}: pre.mermaid has no SVG child after init; source:`, n.textContent.slice(0, 200));
       }
     }
+    // CID flow tab: inject SVG <title> children on MCP audit nodes so
+    // `mcp-session-id` shows as a native browser tooltip on hover.
+    // (Mermaid's own `click ... "tooltip"` directive depends on a
+    // `div.mermaidTooltip` overlay that doesn't reliably surface under
+    // our htmlLabels:false render config + app stylesheet.)
+    if (tabKey === "cidflow" && __lastTrialForCy) {
+      _injectMcpSessionTitles(el, __lastTrialForCy);
+    }
     return true;
   } catch (e) {
     console.warn(`${tabKey} Mermaid render failed:`, e);
     return false;
+  }
+}
+
+// Walk the rendered Mermaid SVG and prepend a <title> child to each MCP
+// audit node group. Browsers render SVG <title> as a native tooltip on
+// hover (same behavior as <abbr title="...">). Idempotent — re-running
+// after a re-render is safe (existing <title> children are skipped).
+function _injectMcpSessionTitles(tabEl, trial) {
+  const svg = tabEl.querySelector("pre.mermaid svg, .mermaid svg");
+  if (!svg) return;
+  const topo = _buildCidFlowTopology(trial);
+  for (const a of topo.audits) {
+    if (!a.sidFull) continue;
+    // Mermaid prefixes node group ids with `flowchart-` and may suffix
+    // with `-N`. Match by id starting with the audit's `A<idx>-`.
+    const node = svg.querySelector(`g.node[id^="flowchart-A${a.idx}-"]`);
+    if (!node) continue;
+    if (node.querySelector(":scope > title")) continue;  // already injected
+    const title = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    title.textContent = `mcp-session-id: ${a.sidFull}`;
+    node.insertBefore(title, node.firstChild);
   }
 }
 
@@ -1406,23 +1427,15 @@ function renderCidFlowTab(trial) {
 
   // Audit entry nodes — phase is the most useful label; fall back to "audit".
   // When the audit corresponds to an MCP call we joined to a framework_event,
-  // append the mcp-session-id alias on a second line and emit a Mermaid
-  // `click` directive so hover shows the full id.
+  // append the mcp-session-id alias on a second line. The full id is
+  // surfaced as an SVG <title> tooltip injected by _injectMcpSessionTitles
+  // post-render (Mermaid's own click-directive tooltip overlay isn't
+  // reliable under our htmlLabels:false config).
   for (const a of tAudits) {
     const phase = a.phase.replace(/[\[\]"]/g, "");
     const label = a.sid ? `${phase}\n${a.sid}` : phase;
     mer += `  A${a.idx}["${label}"]\n`;
     mer += `  class A${a.idx} auditNode\n`;
-    if (a.sidFull) {
-      // Mermaid's tooltip-string lexer (`[^"]*`) has no backslash-escape
-      // support, so any embedded `"` would terminate the string early and
-      // break the directive. Strip them outright. Real session-id values
-      // are base64url (no `"`) — this is defensive only.
-      const tip = a.sidFull.replace(/"/g, "");
-      // __cidFlowNoop is registered on window at module scope (top of file);
-      // Mermaid loose-mode resolves unqualified callback names against window.
-      mer += `  click A${a.idx} __cidFlowNoop "mcp-session-id: ${tip}"\n`;
-    }
   }
 
   // E20 — snapshot (ib_ss) nodes.
