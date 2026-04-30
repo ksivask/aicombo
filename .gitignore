@@ -22,11 +22,7 @@ __pycache__/
 *.log
 
 # AgentDiff
-.agentdiff/sessions/
-.agentdiff/daemon.sock
-.agentdiff/daemon.pid
-.agentdiff/daemon.log
-.agentdiff/errors.log
+.agentdiff/
 
 # Claude Code per-project state
 .claude/
