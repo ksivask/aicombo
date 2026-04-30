@@ -1121,6 +1121,30 @@ function collectNotes(c) {
   return notes;
 }
 
+// Decode an mcp-session-id header value into a short alias + full id pair.
+// Header format observed in framework_events: base64url-encoded JSON of shape
+//   {"t":"mcp","s":[{"t":"mutable","s":"<hex>"}]}
+// Returns {alias: <last-6-hex>, full: <raw>} on success; on decode failure
+// falls back to {alias: <last-6-of-raw>, full: <raw>}. Returns null when
+// the input is empty/null.
+function _decodeMcpSessionAlias(raw) {
+  if (!raw || typeof raw !== "string") return null;
+  // base64url → base64 → atob; pad to multiple of 4.
+  let b64 = raw.replace(/-/g, "+").replace(/_/g, "/");
+  while (b64.length % 4) b64 += "=";
+  try {
+    const decoded = atob(b64);
+    const parsed = JSON.parse(decoded);
+    const inner = parsed && parsed.s && parsed.s[0] && parsed.s[0].s;
+    if (typeof inner === "string" && inner.length >= 6) {
+      return {alias: inner.slice(-6), full: raw};
+    }
+  } catch (_e) {
+    // fall through to fallback
+  }
+  return {alias: raw.slice(-6), full: raw};
+}
+
 // ── CID flow tab ──
 //
 // Renders a Mermaid `graph LR` diagram showing the relationship between
