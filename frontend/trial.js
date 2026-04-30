@@ -1500,6 +1500,7 @@ function renderCidFlowTab(trial) {
       <div class="cid-flow-legend">
         <div><span class="legend-glyph solid">━</span> <strong>Solid</strong> — CID was OBSERVED on the wire (turn body) or in the governance log (audit entry).</div>
         <div><span class="legend-glyph dotted">┄</span> <strong>Dotted</strong> — turn↔audit correlation only (which audits belong to which turn). No CID claim.</div>
+        <div><span class="legend-glyph">↪</span> <strong>Audit node second line</strong> (e.g. <code>c967c</code> under <code>tool_call</code>) — last 6 chars of the <code>mcp-session-id</code> for that MCP call. Hover for the full id.</div>
         <details class="cid-flow-help">
           <summary>What each edge means in practice</summary>
           <div class="cid-flow-help-body">
@@ -1605,6 +1606,7 @@ function renderCidFlowInteractiveTab(trial) {
               <li><span class="legend-color snapshotconsumed">●</span> solid purple SS — snapshot consumed by a tool_call</li>
               <li><span class="legend-color snapshotorphan">●</span> dashed purple SS — snapshot orphan (no consuming tool_call)</li>
             </ul>
+            <p><strong>Audit node second line</strong> (e.g. <code>c967c</code> under <code>tool_call</code>) — last 6 chars of the <code>mcp-session-id</code> for that MCP call. Hover for the full id.</p>
             <p>Edges: thin solid for turn→CID and audit→CID; dotted for turn→audit correlation; thick purple for SS→tool_call (E20 correlation).</p>
           </div>
         </details>
