@@ -1184,17 +1184,24 @@ function _correlateTurnAuditSessions(turn, auditIndexedPairs) {
   const counters = {tools_list: 0, tool_call: 0};
 
   for (const [globalIdx, audit] of auditIndexedPairs) {
-    const phase = audit && audit.phase;
+    const phase = audit && audit.phase;   // null entries are tolerated (silent skip below)
     const feType = phaseToType[phase];
     if (!feType) continue;
-    const k = counters[phase]++;
-    const fe = eventsByType[feType][k];
+    // Look up before incrementing — a missing event must NOT advance the
+    // counter, otherwise a mid-sequence gap would corrupt every later
+    // audit's ordinal binding for this phase.
+    const fe = eventsByType[feType][counters[phase]];
     if (!fe) continue;
-    // Try request headers first, then response headers, for the session id.
+    counters[phase]++;
+    // For mcp_tools_list / mcp_tools_call the session id is always on the
+    // request; the response fallback is future-proofing for additional
+    // MCP types that might set the header on the response (e.g. mcp_initialize).
     const reqH = (fe.request  && fe.request.headers)  || {};
     const resH = (fe.response && fe.response.headers) || {};
     const raw = reqH["mcp-session-id"] || resH["mcp-session-id"] || null;
     const decoded = _decodeMcpSessionAlias(raw);
+    // Silent skip when there's no header — no chip, no console noise; an
+    // absent session id is normal for some adapter/MCP combinations.
     if (decoded) out.set(globalIdx, decoded);
   }
   return out;
