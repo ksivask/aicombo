@@ -41,6 +41,13 @@ let __servicesLastSourceHash = null;
 let __cidFlowNeedsMermaid = false;
 let __servicesNeedsMermaid = false;
 
+// Mermaid `click <node> callback "<tooltip>"` requires a callback function.
+// We don't need any actual click behavior here — the tooltip text is what
+// we're after. One global no-op satisfies Mermaid's syntax check.
+if (typeof window !== "undefined" && !window.__cidFlowNoop) {
+  window.__cidFlowNoop = function () {};
+}
+
 // I-NEW-1: framework-capability cache. The NOTE-tab's framework rules
 // (e.g. "crewai doesn't implement responses") used to hardcode the
 // supported_apis sets, mirroring `harness/validator.py::ADAPTER_CAPABILITIES`.
@@ -1397,10 +1404,21 @@ function renderCidFlowTab(trial) {
   }
 
   // Audit entry nodes — phase is the most useful label; fall back to "audit".
+  // When the audit corresponds to an MCP call we joined to a framework_event,
+  // append the mcp-session-id alias on a second line and emit a Mermaid
+  // `click` directive so hover shows the full id.
   for (const a of tAudits) {
     const phase = a.phase.replace(/[\[\]"]/g, "");
-    mer += `  A${a.idx}["${phase}"]\n`;
+    const label = a.sid ? `${phase}\n${a.sid}` : phase;
+    mer += `  A${a.idx}["${label}"]\n`;
     mer += `  class A${a.idx} auditNode\n`;
+    if (a.sidFull) {
+      // Escape any double-quotes in the tooltip; they'd break Mermaid's
+      // string parser. Real session-id values are base64url so this is
+      // mostly defensive.
+      const tip = a.sidFull.replace(/"/g, '\\"');
+      mer += `  click A${a.idx} __cidFlowNoop "mcp-session-id: ${tip}"\n`;
+    }
   }
 
   // E20 — snapshot (ib_ss) nodes.
