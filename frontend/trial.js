@@ -1818,13 +1818,14 @@ function _buildAndMountCytoscape(trial, container) {
   // Native-browser tooltip for audits that carry a session id. Set the
   // container's `title` attr on hover; clear on mouseout. Browser shows
   // its default tooltip after the usual hover delay. No vendor lib needed.
-  // Selector `node[sidFull != null]` is the explicit "data is not null"
-  // form (more precise than `node[sidFull]` which relies on cytoscape's
-  // implicit truthiness rule for null values).
-  cy.on("mouseover", "node[sidFull != null]", evt => {
+  // Selector `node[sidFull]` is cytoscape's "data attr is truthy" form;
+  // `null` (audits with no session match) and `undefined` are filtered.
+  // The comparison form `node[sidFull != null]` is NOT valid cytoscape
+  // selector syntax — `null` isn't a recognized literal there.
+  cy.on("mouseover", "node[sidFull]", evt => {
     container.setAttribute("title", `mcp-session-id: ${evt.target.data("sidFull")}`);
   });
-  cy.on("mouseout", "node[sidFull != null]", () => {
+  cy.on("mouseout", "node[sidFull]", () => {
     container.removeAttribute("title");
   });
 
