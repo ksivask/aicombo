@@ -1147,6 +1147,59 @@ function _decodeMcpSessionAlias(raw) {
   return {alias: raw.slice(-6), full: raw};
 }
 
+// Build a map from trial-global audit index → {alias, full} for the given
+// turn's audits. Correlation: for each audit phase we care about
+// (tools_list, tool_call) walk that turn's framework_events of the
+// corresponding `t` value in order; the kth audit binds to the kth event.
+// Audits with no matching event get no entry in the result. Read the
+// session id from event.request.headers["mcp-session-id"] first, then
+// event.response.headers["mcp-session-id"].
+//
+// Args:
+//   turn: trial.turns[i] — must have .framework_events array
+//   auditIndexedPairs: array of [globalAuditIdx, auditEntry] for audits
+//     belonging to this turn (caller filters by header-demux or time-window;
+//     same picker the rest of the CID flow uses)
+// Returns: Map<number, {alias: string, full: string}>
+function _correlateTurnAuditSessions(turn, auditIndexedPairs) {
+  const out = new Map();
+  const fes = (turn && turn.framework_events) || [];
+
+  // Build ordered framework_event lists per MCP type we map.
+  const eventsByType = {
+    mcp_tools_list: [],
+    mcp_tools_call: [],
+  };
+  for (const fe of fes) {
+    if (eventsByType[fe.t] !== undefined) eventsByType[fe.t].push(fe);
+  }
+
+  // Audit-phase → framework_event-type binding.
+  const phaseToType = {
+    tools_list: "mcp_tools_list",
+    tool_call:  "mcp_tools_call",
+  };
+
+  // Per-phase ordinal counters as we walk the audits.
+  const counters = {tools_list: 0, tool_call: 0};
+
+  for (const [globalIdx, audit] of auditIndexedPairs) {
+    const phase = audit && audit.phase;
+    const feType = phaseToType[phase];
+    if (!feType) continue;
+    const k = counters[phase]++;
+    const fe = eventsByType[feType][k];
+    if (!fe) continue;
+    // Try request headers first, then response headers, for the session id.
+    const reqH = (fe.request  && fe.request.headers)  || {};
+    const resH = (fe.response && fe.response.headers) || {};
+    const raw = reqH["mcp-session-id"] || resH["mcp-session-id"] || null;
+    const decoded = _decodeMcpSessionAlias(raw);
+    if (decoded) out.set(globalIdx, decoded);
+  }
+  return out;
+}
+
 // ── CID flow tab ──
 //
 // Renders a Mermaid `graph LR` diagram showing the relationship between
