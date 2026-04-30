@@ -786,7 +786,7 @@ function renderIdentifiersBanner(trial) {
   return `
     <div class="identifiers-banner">
       <div><strong>CIDs (${cids.length}):</strong> <code>${cidList}</code></div>
-      <div><strong>Snapshots (${snapshots.length}):</strong> <code>${ssList}</code></div>
+      <div><strong>mcp-tools/list-snapshots (${snapshots.length}):</strong> <code>${ssList}</code></div>
       <div><strong>mcp-sessions (${sessions.length}):</strong> ${sessList}</div>
     </div>
   `;
