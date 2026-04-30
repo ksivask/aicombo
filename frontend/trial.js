@@ -1282,9 +1282,13 @@ function _buildCidFlowTopology(trial) {
   }
 
   // Header-demux vs time-window correlation for turn↔audit edges.
+  // Per-turn we also build the audit-index → session-id map (used to label
+  // tools_list / tool_call audit nodes with their mcp-session-id).
   const headerDemux = audits.some(a => a.turn_id);
   const turnToAudit = [];
+  const auditSessions = new Map();  // global auditIdx → {alias, full}
   turns.forEach((t, i) => {
+    const turnAuditPairs = [];
     audits.forEach((a, j) => {
       let match = false;
       if (headerDemux) {
@@ -1295,8 +1299,13 @@ function _buildCidFlowTopology(trial) {
         const end = t.finished_at || "9999";
         match = (ts >= start && ts <= end);
       }
-      if (match) turnToAudit.push({turnIdx: i, auditIdx: j});
+      if (match) {
+        turnToAudit.push({turnIdx: i, auditIdx: j});
+        turnAuditPairs.push([j, a]);
+      }
     });
+    const perTurnSessions = _correlateTurnAuditSessions(t, turnAuditPairs);
+    for (const [k, v] of perTurnSessions) auditSessions.set(k, v);
   });
 
   // turn → CID edges (one per (turn, cid) pair).
@@ -1314,10 +1323,15 @@ function _buildCidFlowTopology(trial) {
     turns: turns.map((t, i) => ({
       idx: i, kind: (t.kind || "?"), errored: !!t.error,
     })),
-    audits: audits.map((a, i) => ({
-      idx: i, phase: a.phase || "audit", cid: a.cid || null,
-      ss: _auditSnapshotHash(a),
-    })),
+    audits: audits.map((a, i) => {
+      const s = auditSessions.get(i) || null;
+      return {
+        idx: i, phase: a.phase || "audit", cid: a.cid || null,
+        ss: _auditSnapshotHash(a),
+        sid:     s ? s.alias : null,
+        sidFull: s ? s.full  : null,
+      };
+    }),
     cids: [...allCids].map(cid => ({
       cid, klass: cidClass[cid],
     })),
