@@ -37,7 +37,7 @@ services:
 
   # ── AGW (cidgar branch, externally-built) ──
   agentgateway:
-    image: ghcr.io/agentgateway/agentgateway:v1.0.1-ib.cidgar
+    image: ghcr.io/agentgateway/agentgateway:v1.0.1-ib.mcp.cidgar
     command: ["-f", "/config/gateway-config.yaml"]
     ports:
       - "8080:8080"
