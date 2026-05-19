@@ -816,7 +816,7 @@ Total: **M-L** (~half-day to day).
 
 ## E20 — tools/list snapshot correlation via `_ib_ss` param injection
 
-**Status: future. AGW change. ~50 LOC + tests in `crates/agentgateway/src/governance/cidgar.rs`.**
+**Status: shipped.** Landed on `ibfork/feat/cidgar` as CHG-244/244a/244b (base mechanism: `compute_snapshot`, `inject_ib_ss_into_schema`, `pop_ib_ss_from_value`, audit fields `snapshot_hash` / `snapshot_body` / `original_tool_name` / `correlation_lost`), plus E25 = CHG-245/245a-c (`channels.snapshot_correlation` gate, default `true` → CHG-246 flipped to `false`). Aiplay routes opt in explicitly via `channels.snapshot_correlation: true` on every governance route in `agw/config.yaml`. Aiplay's downstream measurement is verdict (i) `tools_list_correlation` in `harness/efficacy.py`, wired end-to-end after E26.
 
 ### The gap
 
@@ -928,7 +928,7 @@ Total: **S** (~half-day).
 
 ## E21 — `reset_context` + `refresh_tools` turn kinds (multi-conversation in one trial)
 
-**Status: future. Aiplay-only. ~100 LOC + tests across runner + 7 adapters + verdict (c).**
+**Status: shipped.** `reset_context` + `refresh_tools` turn kinds implemented in `harness/runner.py`; per-adapter wipe semantics threaded through all 8 adapters. Default template `with_reset` in `defaults.yaml` exercises the bracket-aware multi-segment shape verdict (c) needs. Verdict (c) treats `reset_context` as a segment boundary and fails on cross-segment CID overlap.
 
 ### The gap
 
@@ -1063,7 +1063,7 @@ Total: **S-M** (~half-day).
 
 ## E22 — `mcp/mutable/` test MCP server + `mcp_admin` turn kind (E20 verification harness)
 
-**Status: future. Test infrastructure. Build alongside E20 implementation, not before. ~200 LOC + tests + docker-compose entry.**
+**Status: shipped.** `mcp/mutable/` server with `/_admin/{set_tools,add_tool,remove_tool,rename_tool,reset}` endpoints; docker-compose service `mcp-mutable:8000`; `mcp_admin` turn kind in `harness/runner.py` dispatches directly to the mutable container (not via AGW — admin endpoints are test-harness concern only). Canonical E20 verification flow lives in `defaults.yaml::with_e20_verification` (user_msg → user_msg → mcp_admin → refresh_tools → user_msg).
 
 ### The gap
 
@@ -1226,7 +1226,7 @@ Building E22 standalone is wasted effort — it has no measurable signal without
 
 ## E23 — multi-LLM per row schema (parallel to E19's multi-MCP)
 
-**Status: future. Schema-impacting; touches RowConfig + validator + UI. Bundle with E19 to share the list-form plumbing.**
+**Status: shipped (schema half).** `RowConfig` carries `llm: str | list[str]` + `mcp: str | list[str]`; validator + frontend handle list-form. Adapter wiring shipped for combo only (`MULTI_LLM_FRAMEWORKS` / `MULTI_MCP_FRAMEWORKS` in `harness/validator.py`); broad-rollout to the other 7 adapters tracked separately as E19 (still open).
 
 ### The gap
 
@@ -1309,7 +1309,7 @@ Both E19 and E23 extend RowConfig with `str | list[str]` for different fields. D
 
 ## E24 — `adapters/combo/` adapter (multi-LLM-same-CID)
 
-**Status: future. Aiplay-only. ~600-800 LOC + ~10 tests. Depends on E23 (schema). Optionally bundles with E19 for multi-MCP day-one support.**
+**Status: shipped.** `adapters/combo/` at port 5008, registered as `framework=combo`. Round-robins across the configured `llm: list[str]` per turn through a shared hooked `httpx.AsyncClient`. Anthropic + tools intentionally skipped (E24b territory). New verdict (k) `cross_api_continuity` in `harness/efficacy.py` measures marker survival across LLM switches.
 
 ### The gap
 
@@ -1458,7 +1458,7 @@ Total: **M** (~day to day-and-a-half).
 
 ## E26 — persist `body` on AuditEntry so verdict (i) works in production
 
-**Status: future. Aiplay-only. ~10 LOC + 1 test.**
+**Status: shipped.** `AuditEntry.body: dict | None` field added in `harness/trials.py`; both construction sites in `harness/api.py::audit_provider` (header-demux path + time-window path) pass `body=entry.get("body")`; `harness/efficacy.py::_audit_correlation_lost` prefers `entry.body` first, walks `raw` only as legacy fallback. Coverage: `tests/test_audit_tail.py` (both shape A + B parsed events surface body) + `tests/test_efficacy.py` regression with `body=None` legacy path. Verdict (i) `tools_list_correlation` now works against production (shape B) audit lines.
 
 ### The gap
 
@@ -1498,7 +1498,7 @@ E20 verdict (i) is a no-op in production until this lands. Without it, the whole
 
 ## E24a — combo adapter intra-turn multi-MCP fan-out
 
-**Status: future. Aiplay combo adapter + validator + tests. ~150-200 LOC.**
+**Status: shipped.** Combo's `_connect_mcps_if_needed` connects to every MCP in the row's `mcp: list[str]` once per trial (idempotent), builds a merged tool catalog with last-wins collision resolution + WARN log, and dispatches each LLM-requested tool call to its source server via the routing table. MCP connect failures surface as `mcp_connect_failure` synthetic events in turn-0's `framework_events`.
 
 ### The gap
 
@@ -2154,7 +2154,7 @@ If a future need emerges (e.g., direct-mcp adapter tests where there's no LLM an
 
 ## E38 — AGW config-validate warning for missing explicit `channels:` block
 
-**Status: future. AGW change. ~30 LOC + 1 test.**
+**Status: shipped via CHG-25G (Design A, 2026-05-18).** New `crates/agentgateway/src/governance/validate.rs` emits `tracing::warn!` on config-load for asymmetric channel-toggle patterns on governed routes. Lives on `ibfork/feat/cidgar`. See `docs/superpowers/specs/2026-05-15-cidgar-config-cleanup-design.md` (Change 7 / CHG-25G).
 
 ### The gap
 
