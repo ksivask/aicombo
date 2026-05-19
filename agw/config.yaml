@@ -18,14 +18,18 @@ binds:
         routes:
 
           # NOTE — every governed route below carries an IDENTICAL
-          # `channels:` block:
+          # `channels:` block (post-CHG-25 cleanup field names):
           #     channels:
-          #       text_marker: true
-          #       resource_block: true
-          #       snapshot_correlation: true
-          # Post-CHG-247 these channel defaults are `false` upstream, so each
-          # route must opt in EXPLICITLY (no implicit on). The mcp-fetch route
-          # additionally sets `mcp_marker_kind: both` (E7 demo).
+          #       schema_cid: true            # C1 — schema CID injection
+          #       text_marker_cid: true       # C2 — text marker
+          #       resource_block_cid: true    # C3 — MCP resource block
+          #       snapshot_correlation: true  # E20 _ib_ss session correlation
+          # Post-CHG-247 + CHG-25 the channel defaults are `false`/`none`
+          # upstream, so each route must opt in EXPLICITLY (no implicit on).
+          # The mcp-fetch route additionally sets `mcp_marker_kind: both`
+          # (E7 demo). Each `governance:` block also pins `id_algorithm`
+          # and `hash_algorithm` at the top (promoted from `cid.generator`
+          # by CHG-25C, and newly required by CHG-25D respectively).
           #
           # YAML anchors (`<<: *defaults`) were considered to deduplicate but
           # NOT used: AGW loads this file via crates/agentgateway/src/serdes.rs
@@ -51,15 +55,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
                   header_passthrough: true
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: ollama
@@ -83,15 +89,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
                   header_passthrough: true
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: mock-openai
@@ -133,15 +141,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
                   header_passthrough: true
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: openai
@@ -173,15 +183,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
                   header_passthrough: true
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: anthropic
@@ -207,15 +219,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
                   header_passthrough: true
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
                   name: gemini
@@ -237,14 +251,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
+                  header_passthrough: true      # CHG-25E: explicit (matches default, mirrors LLM routes)
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -265,10 +282,15 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
+                gar:
+                  mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -289,10 +311,15 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
+                gar:
+                  mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -321,14 +348,17 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
-                  generator: uuid4_12
+                  header_passthrough: true      # CHG-25E: explicit (matches default, mirrors LLM routes)
                 gar:
-                  schema_required: true
+                  mode: required                # CHG-25E: was schema_required: true
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
                   prefixMode: always
@@ -358,10 +388,15 @@ binds:
               governance:
                 kind: cid_gar
                 log_level: debug
+                id_algorithm: uuid4_12          # CHG-25C: promoted from cid.generator
+                hash_algorithm: sha256          # CHG-25D: new required field
+                gar:
+                  mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
-                  text_marker: true
-                  resource_block: true
-                  snapshot_correlation: true   # E25 (CHG-246): explicit opt-in to E20 _ib_ss
+                  schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  text_marker_cid: true         # CHG-25F: was text_marker
+                  resource_block_cid: true      # CHG-25F: was resource_block
+                  snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
                   mcp_marker_kind: both  # E7 — emit resource AND text markers.
                   # Requires AGW image built from ibfork/feat/cidgar
                   # commit 5c96003a or later. Older binaries reject this field.
