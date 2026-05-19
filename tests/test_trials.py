@@ -63,14 +63,14 @@ def test_trial_append_audit(tmp_data_dir: Path):
 
     entry = AuditEntry(
         trial_id="t3", turn_id="turn-001",
-        phase="llm_request", cid="ib_abc123def456",
+        phase="llm_request", cid="ibc_abc123def456",
         backend="ollama", raw={"body": {}},
     )
     store.append_audit("t3", entry)
 
     loaded = store.load("t3")
     assert len(loaded.audit_entries) == 1
-    assert loaded.audit_entries[0].cid == "ib_abc123def456"
+    assert loaded.audit_entries[0].cid == "ibc_abc123def456"
 
 
 def test_trial_list(tmp_data_dir: Path):

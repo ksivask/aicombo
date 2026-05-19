@@ -120,9 +120,9 @@ def test_pairs_returns_both_trials_and_summary(tmp_data_dir, reset_api_state):
     )]
     g_audit = [
         AuditEntry(trial_id="t-g", turn_id="g-t0", phase="llm_request",
-                   cid="ib_aaa", backend="ollama", raw={}),
+                   cid="ibc_aaa", backend="ollama", raw={}),
         AuditEntry(trial_id="t-g", turn_id="g-t0", phase="terminal",
-                   cid="ib_aaa", backend="ollama", raw={}),
+                   cid="ibc_aaa", backend="ollama", raw={}),
     ]
     g_verdicts = {"a": {"verdict": "pass", "reason": "ok"}}
     _save_trial(
@@ -241,7 +241,7 @@ def test_pairs_classification_marks_audit_leak_as_unexpected(
         api_mod, trial_id="t-g", routing="via_agw",
         audit_entries=[AuditEntry(
             trial_id="t-g", turn_id=None, phase="llm_request",
-            cid="ib_abc", backend="ollama", raw={},
+            cid="ibc_abc", backend="ollama", raw={},
         )],
     )
     # Baseline with a stray audit entry — should trigger unexpected classification
@@ -249,7 +249,7 @@ def test_pairs_classification_marks_audit_leak_as_unexpected(
         api_mod, trial_id="t-b", routing="direct",
         audit_entries=[AuditEntry(
             trial_id="t-b", turn_id=None, phase="llm_request",
-            cid="ib_xyz", backend="ollama", raw={},
+            cid="ibc_xyz", backend="ollama", raw={},
         )],
     )
 
@@ -278,7 +278,7 @@ def test_pairs_classification_marks_governance_marker_as_expected(
     # classifier is a pure function.
     governed_body = {
         "choices": [{"message": {
-            "content": "hi <!-- ib:cid=ib_abc123def456 -->",
+            "content": "hi <!-- ib:cid=ibc_abc123def456 -->",
         }}]
     }
     baseline_body = {
@@ -310,7 +310,7 @@ def test_classify_diff_rejects_ib_substring_false_positive():
 def test_classify_diff_accepts_real_cidgar_marker():
     """Positive case: full 12-hex cidgar signature must be classified."""
     from api import _classify_diff
-    g_val = {"text": "<!-- _ib_cid=ib_abc123def456 -->Hello"}
+    g_val = {"text": "<!-- _ib_cid=ibc_abc123def456 -->Hello"}
     b_val = {"text": "Hello"}
     assert _classify_diff("turns.0.response.body", g_val, b_val) == "expected_governance_marker"
 
@@ -318,6 +318,6 @@ def test_classify_diff_accepts_real_cidgar_marker():
 def test_classify_diff_rejects_short_ib_hex():
     """Must require the full 12-hex signature, not partial."""
     from api import _classify_diff
-    g_val = {"text": "something ib_abc"}  # Only 3 hex chars after ib_
+    g_val = {"text": "something ibc_abc"}  # Only 3 hex chars after ibc_
     b_val = {"text": "other"}
     assert _classify_diff("turns.0.response.body", g_val, b_val) == "unexpected_diff"

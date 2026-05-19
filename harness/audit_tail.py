@@ -8,7 +8,7 @@ AGW's tracing subscriber emits governance events in one of two shapes:
   (B) Structured-text (AGW's default fmt layer; what we actually see in
       practice for this cidgar build):
       2026-04-22T06:06:09.533010Z  info  governance
-      timestamp=… phase="llm_request" cid=Some("ib_…")
+      timestamp=… phase="llm_request" cid=Some("ibc_…")
       backend=…  trace_id=None  body={…json…}
 
 Correlation: cidgar's governance log does NOT include HTTP headers, so

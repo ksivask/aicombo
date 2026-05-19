@@ -28,9 +28,9 @@ def test_verdict_a_pass_when_cid_present_each_turn():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={}),
+                   cid="ibc_abc", backend="ollama", raw={}),
         AuditEntry(trial_id="t", turn_id="t1", phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={}),
+                   cid="ibc_abc", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -52,14 +52,14 @@ def test_verdict_b_pass_when_c2_marker_in_text_response():
         response={
             "body": {
                 "choices": [
-                    {"message": {"content": "Here's info.<!-- ib:cid=ib_abc123def456 -->"}}
+                    {"message": {"content": "Here's info.<!-- ib:cid=ibc_abc123def456 -->"}}
                 ]
             }
         },
     )]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="terminal",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -73,7 +73,7 @@ def test_verdict_b_fail_when_text_response_missing_marker():
     )]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="terminal",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -91,7 +91,7 @@ def test_verdict_b_pass_when_c1_in_tool_calls_args():
                         "tool_calls": [{
                             "function": {
                                 "name": "get_weather",
-                                "arguments": '{"city":"Paris","_ib_cid":"ib_abc123def456"}',
+                                "arguments": '{"city":"Paris","_ib_cid":"ibc_abc123def456"}',
                             }
                         }]
                     }
@@ -101,7 +101,7 @@ def test_verdict_b_pass_when_c1_in_tool_calls_args():
     )]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="tool_planned",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -129,7 +129,7 @@ def test_plan_b_verdicts_cd_return_na_no_special_turns():
     turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
     audit = [
         AuditEntry(trial_id="t", turn_id="t0", phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={}),
+                   cid="ibc_abc", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -156,7 +156,7 @@ def test_verdict_f_pass_when_gar_populated_with_all_5_keys():
         "dspm": "none",
         "alt": "web search",
     })
-    args_inner = _json.dumps({"city": "Paris", "_ib_cid": "ib_abc", "_ib_gar": gar})
+    args_inner = _json.dumps({"city": "Paris", "_ib_cid": "ibc_abc", "_ib_gar": gar})
     turns = [Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",
         response={"body": {"choices": [{"message": {"tool_calls": [{
@@ -174,7 +174,7 @@ def test_verdict_f_na_when_gar_omitted_spec_92_compliant():
         turn_id="t0", turn_idx=0, kind="user_msg",
         response={"body": {"choices": [{"message": {"tool_calls": [{
             "function": {"name": "get_weather",
-                         "arguments": '{"city":"Paris","_ib_cid":"ib_abc"}'}
+                         "arguments": '{"city":"Paris","_ib_cid":"ibc_abc"}'}
         }]}}]}},
     )]
     trial = _trial_with(turns, [])
@@ -189,7 +189,7 @@ def test_verdict_f_fail_when_gar_malformed():
         turn_id="t0", turn_idx=0, kind="user_msg",
         response={"body": {"choices": [{"message": {"tool_calls": [{
             "function": {"name": "get_weather",
-                         "arguments": '{"city":"Paris","_ib_cid":"ib_abc","_ib_gar":"{\\"goal\\":\\"x\\"}"}'}
+                         "arguments": '{"city":"Paris","_ib_cid":"ibc_abc","_ib_gar":"{\\"goal\\":\\"x\\"}"}'}
         }]}}]}},
     )]
     trial = _trial_with(turns, [])
@@ -202,7 +202,7 @@ def test_verdict_f_na_when_no_tool_calls():
     turns = [Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",
         response={"body": {"choices": [{
-            "message": {"content": "hi!<!-- ib:cid=ib_abc123def456 -->"}
+            "message": {"content": "hi!<!-- ib:cid=ibc_abc123def456 -->"}
         }]}},
     )]
     trial = _trial_with(turns, [])
@@ -225,13 +225,13 @@ def test_verdict_c_pass_when_cid_preserved_across_3_turns():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc123def456", backend="ollama", raw={},
+                   cid="ibc_abc123def456", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc123def456", backend="ollama", raw={},
+                   cid="ibc_abc123def456", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:12"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc123def456", backend="ollama", raw={},
+                   cid="ibc_abc123def456", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:22"),
     ]
     trial = _trial_with(turns, audit)
@@ -249,10 +249,10 @@ def test_verdict_c_fail_when_cid_changes_between_turns():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   cid="ibc_aaaaaaaaaaaa", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   cid="ibc_bbbbbbbbbbbb", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:12"),
     ]
     trial = _trial_with(turns, audit)
@@ -278,7 +278,7 @@ def test_verdict_c_error_when_audit_missing_for_some_turns():
     # only one audit entry covers turn 0; turn 1 has nothing in window
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaa", backend="ollama", raw={},
+                   cid="ibc_aaa", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:02"),
     ]
     trial = _trial_with(turns, audit)
@@ -294,9 +294,9 @@ def test_verdict_c_pass_with_header_demux():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id="turn-A", phase="llm_request",
-                   cid="ib_xyz", backend="ollama", raw={}),
+                   cid="ibc_xyz", backend="ollama", raw={}),
         AuditEntry(trial_id="t", turn_id="turn-B", phase="llm_request",
-                   cid="ib_xyz", backend="ollama", raw={}),
+                   cid="ibc_xyz", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
@@ -321,19 +321,19 @@ def test_verdict_c_segments_at_reset_context_no_leak_passes():
              started_at="2026-04-26T10:00:40", finished_at="2026-04-26T10:00:45"),
     ]
     audit = [
-        # Segment 0: ib_aaa across both turns
+        # Segment 0: ibc_aaa… across both turns
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   cid="ibc_aaaaaaaaaaaa", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaaaaaaaaaaa", backend="ollama", raw={},
+                   cid="ibc_aaaaaaaaaaaa", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:12"),
-        # Segment 1: ib_bbb across both turns (distinct from segment 0)
+        # Segment 1: ibc_bbb… across both turns (distinct from segment 0)
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   cid="ibc_bbbbbbbbbbbb", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:32"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_bbbbbbbbbbbb", backend="ollama", raw={},
+                   cid="ibc_bbbbbbbbbbbb", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:42"),
     ]
     trial = _trial_with(turns, audit)
@@ -359,21 +359,21 @@ def test_verdict_c_detects_cross_segment_leak_fails():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   cid="ibc_leakedcid12", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   cid="ibc_leakedcid12", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:12"),
         # CRITICAL: same cid appears AFTER the reset boundary.
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_leakedcid12", backend="ollama", raw={},
+                   cid="ibc_leakedcid12", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:32"),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)
     assert v["c"].verdict == "fail", v["c"].reason
     assert "leak" in v["c"].reason.lower()
-    assert "ib_leakedcid12" in v["c"].reason
+    assert "ibc_leakedcid12" in v["c"].reason
 
 
 def test_verdict_c_handles_no_resets_unchanged_behavior():
@@ -387,10 +387,10 @@ def test_verdict_c_handles_no_resets_unchanged_behavior():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_singlecid01", backend="ollama", raw={},
+                   cid="ibc_singlecid01", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_singlecid01", backend="ollama", raw={},
+                   cid="ibc_singlecid01", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:12"),
     ]
     trial = _trial_with(turns, audit)
@@ -413,10 +413,10 @@ def test_verdict_c_refresh_tools_does_not_split_segments():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_continuous1", backend="ollama", raw={},
+                   cid="ibc_continuous1", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_continuous1", backend="ollama", raw={},
+                   cid="ibc_continuous1", backend="ollama", raw={},
                    captured_at="2026-04-26T10:00:22"),
     ]
     trial = _trial_with(turns, audit)
@@ -439,10 +439,10 @@ def test_verdict_d_pass_when_cid_survives_compact():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={},
+                   cid="ibc_abc", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={},
+                   cid="ibc_abc", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:12"),
     ]
     trial = _trial_with(turns, audit)
@@ -461,10 +461,10 @@ def test_verdict_d_fail_when_cid_lost_post_compact():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaa", backend="ollama", raw={},
+                   cid="ibc_aaa", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_bbb", backend="ollama", raw={},
+                   cid="ibc_bbb", backend="ollama", raw={},
                    captured_at="2026-04-23T10:00:12"),
     ]
     trial = _trial_with(turns, audit)
@@ -514,10 +514,10 @@ def test_verdict_e_pass_when_cid_survives_state_ref():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc", backend="chatgpt", raw={},
+                   cid="ibc_abc", backend="chatgpt", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc", backend="chatgpt", raw={},
+                   cid="ibc_abc", backend="chatgpt", raw={},
                    captured_at="2026-04-23T10:00:12"),
     ]
     trial = _trial_with(turns, audit, cfg=cfg)
@@ -536,10 +536,10 @@ def test_verdict_e_fail_when_cid_lost_on_state_ref():
     ]
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_aaa", backend="chatgpt", raw={},
+                   cid="ibc_aaa", backend="chatgpt", raw={},
                    captured_at="2026-04-23T10:00:02"),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_bbb", backend="chatgpt", raw={},
+                   cid="ibc_bbb", backend="chatgpt", raw={},
                    captured_at="2026-04-23T10:00:12"),
     ]
     trial = _trial_with(turns, audit, cfg=cfg)
@@ -674,7 +674,7 @@ def test_verdict_f_pass_anthropic_messages_tool_use_with_full_gar():
             "name": "fetch_fetch",
             "input": {
                 "url": "https://example.com",
-                "_ib_cid": "ib_test12345abc",
+                "_ib_cid": "ibc_test12345abc",
                 "_ib_gar": '{"goal":"x","need":"y","impact":"z","dspm":"a","alt":"b"}',
             },
         }],
@@ -719,7 +719,7 @@ def test_verdict_b_anthropic_messages_validates_channel_1_not_just_text():
     body = {
         "content": [{
             "type": "tool_use", "id": "toolu_1", "name": "weather",
-            "input": {"location": "SF", "_ib_cid": "ib_test12345abc"},
+            "input": {"location": "SF", "_ib_cid": "ibc_test12345abc"},
         }],
         # No text content block — only tool_use
     }
@@ -729,7 +729,7 @@ def test_verdict_b_anthropic_messages_validates_channel_1_not_just_text():
                 finished_at="2026-04-25T10:00:05")
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_test12345abc", backend="claude", raw={},
+                   cid="ibc_test12345abc", backend="claude", raw={},
                    captured_at="2026-04-25T10:00:02"),
     ]
     trial = _trial_with([turn], audit, cfg=cfg)
@@ -768,7 +768,7 @@ def _tool_call_audit(correlation_lost: bool, *, hash_val: str = "deadbeef",
         trial_id="t",
         turn_id=None,
         phase="tool_call",
-        cid="ib_abcdef012345",
+        cid="ibc_abcdef012345",
         backend="weather-mcp",
         raw={
             "correlation_lost": correlation_lost,
@@ -812,9 +812,9 @@ def test_verdict_i_na_when_no_tool_call_audits():
         AuditEntry(trial_id="t", turn_id=None, phase="tools_list",
                    cid=None, backend="weather-mcp", raw={}),
         AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
-                   cid="ib_abc", backend="ollama", raw={}),
+                   cid="ibc_abc", backend="ollama", raw={}),
         AuditEntry(trial_id="t", turn_id=None, phase="terminal",
-                   cid="ib_abc", backend="ollama", raw={}),
+                   cid="ibc_abc", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
@@ -832,7 +832,7 @@ def test_verdict_i_reads_body_from_top_level_field():
     audits = [
         AuditEntry(
             trial_id="t", turn_id=None, phase="tool_call",
-            cid="ib_abcdef012345", backend="weather-mcp",
+            cid="ibc_abcdef012345", backend="weather-mcp",
             raw={"line": "shape-B governance text"},  # no body in raw
             body={
                 "correlation_lost": False,
@@ -843,7 +843,7 @@ def test_verdict_i_reads_body_from_top_level_field():
         ),
         AuditEntry(
             trial_id="t", turn_id=None, phase="tool_call",
-            cid="ib_abcdef012345", backend="weather-mcp",
+            cid="ibc_abcdef012345", backend="weather-mcp",
             raw={"line": "shape-B governance text"},
             body={
                 "correlation_lost": False,
@@ -869,7 +869,7 @@ def test_verdict_i_legacy_raw_body_fallback_still_works():
         # only available under raw["body"].
         AuditEntry(
             trial_id="t", turn_id=None, phase="tool_call",
-            cid="ib_abcdef012345", backend="weather-mcp",
+            cid="ibc_abcdef012345", backend="weather-mcp",
             raw={"body": {"correlation_lost": False, "snapshot_hash": "abc"}},
             body=None,
             captured_at="2026-04-26T00:00:00+00:00",
@@ -899,27 +899,27 @@ def _llm_audit(backend: str, cid: str | None) -> AuditEntry:
 
 
 def test_verdict_k_pass_when_cid_common_across_routes():
-    """Two routes (llm-chatgpt, llm-claude) both carry CID ib_aaa →
+    """Two routes (llm-chatgpt, llm-claude) both carry CID ibc_aaa… →
     intersection non-empty → pass. The "design promise" of E24."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
-        _llm_audit("llm-claude",  "ib_aaaaaaaaaaaa"),
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  "ibc_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
     assert v["k"].verdict == "pass", f"got {v['k']}"
-    assert "ib_aaaaaaaaaaaa" in v["k"].reason
+    assert "ibc_aaaaaaaaaaaa" in v["k"].reason
 
 
 def test_verdict_k_fail_when_no_common_cid_across_routes():
-    """Two routes, distinct CIDs (chatgpt has ib_aaa, claude has ib_bbb,
+    """Two routes, distinct CIDs (chatgpt has ibc_aaa…, claude has ibc_bbb…,
     no overlap) → fail. With no marker-shaped text in any request body
     (no turns/framework_events here), this is failure mode B: AGW minted
     distinct CIDs — possible isolation breach."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
-        _llm_audit("llm-claude",  "ib_bbbbbbbbbbbb"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
+        _llm_audit("llm-claude",  "ibc_bbbbbbbbbbbb"),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
@@ -936,7 +936,7 @@ def test_verdict_k_fail_when_route_lacks_any_cid():
     failure of CID propagation (failure mode A: agent-side gap), not a
     "verdict not applicable"."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
         _llm_audit("llm-claude",  None),  # no CID on this route's entry
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
@@ -952,8 +952,8 @@ def test_verdict_k_na_for_single_route():
     """Single LLM route → not a multi-LLM trial → verdict (k) doesn't
     apply (it's the sibling of verdict (c) for cross-API specifically)."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
@@ -974,19 +974,19 @@ def test_verdict_k_na_for_no_llm_audits():
 
 
 def test_verdict_k_pass_three_routes_all_share_one_cid():
-    """3 routes (chatgpt, claude, ollama) all carry the same CID ib_xxx →
-    intersection {ib_xxx} → pass. Validates the set.intersection semantics
+    """3 routes (chatgpt, claude, ollama) all carry the same CID ibc_xxx… →
+    intersection {ibc_xxx…} → pass. Validates the set.intersection semantics
     when more than 2 routes are involved."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_xxxxxxxxxxxx"),
-        _llm_audit("llm-chatgpt", "ib_unique_chat"),  # extra CID on one route
-        _llm_audit("llm-claude",  "ib_xxxxxxxxxxxx"),
-        _llm_audit("llm-ollama",  "ib_xxxxxxxxxxxx"),
+        _llm_audit("llm-chatgpt", "ibc_xxxxxxxxxxxx"),
+        _llm_audit("llm-chatgpt", "ibc_unique_chat"),  # extra CID on one route
+        _llm_audit("llm-claude",  "ibc_xxxxxxxxxxxx"),
+        _llm_audit("llm-ollama",  "ibc_xxxxxxxxxxxx"),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
     v = compute_verdicts(trial)
     assert v["k"].verdict == "pass", f"got {v['k']}"
-    assert "ib_xxxxxxxxxxxx" in v["k"].reason
+    assert "ibc_xxxxxxxxxxxx" in v["k"].reason
     # Must report all 3 routes in the reason (sanity check).
     assert "3 routes" in v["k"].reason
 
@@ -998,7 +998,7 @@ def test_verdict_k_distinguishes_route_with_no_cid():
     test_verdict_k_fail_when_route_lacks_any_cid but pinning the
     operator-facing language — easy to silently regress otherwise."""
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),
         _llm_audit("llm-claude",  None),
     ]
     trial = _trial_with(turns=[], audit_entries=audits)
@@ -1034,10 +1034,10 @@ def test_verdict_k_distinguishes_extraction_failure_from_isolation_breach():
     cfg = TrialConfig(framework="combo", api="chat", stream=False, state=False,
                       llm=["chatgpt", "claude"], mcp="NONE", routing="via_agw")
     # Each turn carries a framework_event whose request body contains a
-    # marker-shaped string (MARKER_RE matches `<!-- ib:cid=ib_xxxxxxxxxxxx -->`).
+    # marker-shaped string (MARKER_RE matches `<!-- ib:cid=ibc_xxxxxxxxxxxx -->`).
     # The marker text is present on BOTH routes, but each route's
     # AGW-extracted CID differs (no overlap). That's mode C.
-    marker_str = "user said: <!-- ib:cid=ib_aaaaaaaaaaaa --> hi"
+    marker_str = "user said: <!-- ib:cid=ibc_aaaaaaaaaaaa --> hi"
     turn0 = Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",
         framework_events=[{
@@ -1063,8 +1063,8 @@ def test_verdict_k_distinguishes_extraction_failure_from_isolation_breach():
         }],
     )
     audits = [
-        _llm_audit("llm-chatgpt", "ib_aaaaaaaaaaaa"),  # AGW saw a CID here…
-        _llm_audit("llm-claude",  "ib_bbbbbbbbbbbb"),  # …and a different CID here
+        _llm_audit("llm-chatgpt", "ibc_aaaaaaaaaaaa"),  # AGW saw a CID here…
+        _llm_audit("llm-claude",  "ibc_bbbbbbbbbbbb"),  # …and a different CID here
     ]
     trial = _trial_with(turns=[turn0, turn1], audit_entries=audits, cfg=cfg)
     v = compute_verdicts(trial)
@@ -1138,11 +1138,11 @@ def test_verdict_b_pass_message_mentions_skipped():
         # Turn 1 + 2: clean text response with C2 marker matching audit cid.
         Turn(turn_id="t1", turn_idx=1, kind="user_msg",
              response={"body": {"choices": [
-                 {"message": {"content": "ok<!-- ib:cid=ib_abc123def456 -->"}}
+                 {"message": {"content": "ok<!-- ib:cid=ibc_abc123def456 -->"}}
              ]}}),
         Turn(turn_id="t2", turn_idx=2, kind="user_msg",
              response={"body": {"choices": [
-                 {"message": {"content": "ok2<!-- ib:cid=ib_abc123def456 -->"}}
+                 {"message": {"content": "ok2<!-- ib:cid=ibc_abc123def456 -->"}}
              ]}}),
     ]
     # Use turn_id=None on audit entries to force time-window mode so the
@@ -1150,9 +1150,9 @@ def test_verdict_b_pass_message_mentions_skipped():
     # purpose of THIS test is the skipped-turn message, not header-demux).
     audit = [
         AuditEntry(trial_id="t", turn_id=None, phase="terminal",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
         AuditEntry(trial_id="t", turn_id=None, phase="terminal",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
     ]
     trial = _trial_with(turns, audit)
     v = compute_verdicts(trial)

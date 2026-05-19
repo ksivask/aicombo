@@ -13,7 +13,7 @@ def test_parse_json_log_line():
         "target": "agentgateway::governance",
         "fields": {
             "phase": "llm_request",
-            "cid": "ib_abc123def456",
+            "cid": "ibc_abc123def456",
             "backend": "ollama",
             "trace_id": "abc",
             "body": '{"headers": {"X-Harness-Trial-ID": "trial-1", "X-Harness-Turn-ID": "turn-1"}}'
@@ -22,7 +22,7 @@ def test_parse_json_log_line():
     entry = parse_log_line(line)
     assert entry is not None
     assert entry["phase"] == "llm_request"
-    assert entry["cid"] == "ib_abc123def456"
+    assert entry["cid"] == "ibc_abc123def456"
     assert entry["trial_id"] == "trial-1"
     assert entry["turn_id"] == "turn-1"
 
@@ -67,7 +67,7 @@ def test_e26_body_carries_through_both_shapes_into_audit_entry():
         "target": "agentgateway::governance",
         "fields": {
             "phase": "tool_call",
-            "cid": "ib_abc123def456",
+            "cid": "ibc_abc123def456",
             "backend": "weather-mcp",
             "body": json.dumps(inner_body),
         },
@@ -79,7 +79,7 @@ def test_e26_body_carries_through_both_shapes_into_audit_entry():
     # Shape B: AGW's default structured-text format.
     line_b = (
         '2026-04-22T14:23:12.000000Z  info  governance '
-        'phase="tool_call" cid=Some("ib_abc123def456") '
+        'phase="tool_call" cid=Some("ibc_abc123def456") '
         'backend=weather-mcp trace_id=None '
         f'body={json.dumps(inner_body)}'
     )

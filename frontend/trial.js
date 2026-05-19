@@ -134,10 +134,10 @@ function _injectMcpSessionTitles(tabEl, trial) {
 
 // Mermaid + cytoscape node id helpers — both renderers use the same
 // scheme so hover/debug feel symmetric across the two tabs. CID nodes
-// strip the "ib_" prefix for compactness; snapshot nodes keep the full
+// strip the "ibc_" prefix for compactness; snapshot nodes keep the full
 // hash. Lifted to module scope to dedup the two render paths
 // (renderCidFlowTab + _buildAndMountCytoscape).
-const cidNodeId = cid => `C_${cid.slice(3)}`;
+const cidNodeId = cid => `C_${cid.slice(4)}`;
 const ssNodeId = ss => `SS_${ss}`;
 
 // Tiny non-cryptographic string hash (djb2-ish, sufficient for change-
@@ -1278,7 +1278,7 @@ function _correlateTurnAuditSessions(turn, auditIndexedPairs) {
 // - Edges: solid for turn→CID and audit→CID; dotted for turn→audit
 //   (time-window or header-demux correlation).
 
-const CID_RE = /ib_[a-f0-9]{12}/g;
+const CID_RE = /ibc_[a-f0-9]{12}/g;
 
 function _scanBodyForCids(t) {
   // Mirrors the rough shape of harness/efficacy.py's CID extractors: scan

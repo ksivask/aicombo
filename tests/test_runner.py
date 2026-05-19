@@ -28,7 +28,7 @@ async def test_runner_executes_single_user_msg_turn(tmp_data_dir):
         "request_captured": {"body": {}},
         "response_captured": {
             "status": 200,
-            "body": {"choices": [{"message": {"content": "hi!<!-- ib:cid=ib_abc123def456 -->"}}]},
+            "body": {"choices": [{"message": {"content": "hi!<!-- ib:cid=ibc_abc123def456 -->"}}]},
         },
     })
     adapter.delete_trial = AsyncMock(return_value={"ok": True})
@@ -36,7 +36,7 @@ async def test_runner_executes_single_user_msg_turn(tmp_data_dir):
     # Mock audit tail — simulate one audit entry
     audit_entries = [
         AuditEntry(trial_id="trial-x", turn_id="turn-0", phase="terminal",
-                   cid="ib_abc123def456", backend="ollama", raw={}),
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
     ]
 
     await run_trial(

@@ -7,7 +7,7 @@ from typing import Any
 
 from trials import Trial, Verdict
 
-MARKER_RE = re.compile(r"<!--\s*ib:cid=(ib_[a-f0-9]{12})\s*-->")
+MARKER_RE = re.compile(r"<!--\s*ib:cid=(ibc_[a-f0-9]{12})\s*-->")
 
 
 def _user_msg_turns(trial: Trial):

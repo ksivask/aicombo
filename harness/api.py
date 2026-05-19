@@ -38,11 +38,12 @@ AUDIT_BUFFER_PER_TRIAL: dict[str, list[AuditEntry]] = defaultdict(list)
 ABORT_EVENTS: dict[str, asyncio.Event] = {}
 
 # I2 — cidgar's uuid4_12 generator produces markers of the form
-# ``ib_<12 lowercase hex>``. _classify_diff uses this to distinguish
-# governance channel markers from arbitrary content diffs. The full
-# 12-hex suffix is statistically distinctive enough to avoid collisions
-# with English/code tokens (e.g. library_id, fib_number).
-_CID_MARKER_RE = re.compile(r'ib_[a-f0-9]{12}')
+# ``ibc_<12 lowercase hex>`` (post-CHG-25A; was ``ib_<12 hex>`` pre-rename).
+# _classify_diff uses this to distinguish governance channel markers from
+# arbitrary content diffs. The full 12-hex suffix is statistically
+# distinctive enough to avoid collisions with English/code tokens
+# (e.g. library_id, fib_number).
+_CID_MARKER_RE = re.compile(r'ibc_[a-f0-9]{12}')
 
 
 # ── Matrix persistence (distinct from trial JSON) ──
@@ -685,7 +686,7 @@ def _classify_diff(path: str, g_val: Any, b_val: Any) -> str:
 
     Heuristics (per E4 brainstorm §2):
       - Identical values → 'noise' (nothing to report)
-      - Governed contains cidgar's uuid4_12 marker signature (``ib_`` + 12
+      - Governed contains cidgar's uuid4_12 marker signature (``ibc_`` + 12
         lowercase hex chars) not present in baseline →
         'expected_governance_marker'
       - Everything else → 'unexpected_diff' (worth user attention)
@@ -694,7 +695,8 @@ def _classify_diff(path: str, g_val: Any, b_val: Any) -> str:
     containing that literal fragment (e.g. ``fib_number``), producing
     false positives on LLM non-determinism. The regex below requires the
     full 12-hex suffix, which is statistically distinctive enough not to
-    collide with arbitrary English/code tokens.
+    collide with arbitrary English/code tokens. (CHG-25A renamed the
+    prefix from ``ib_`` to ``ibc_``; the suffix shape is unchanged.)
     """
     if g_val == b_val:
         return "noise"

@@ -163,13 +163,13 @@ async def test_to_shape_openai_format_round_trips_marker(combo_env):
         canonical = [
             {"role": "user", "content_text": "hello"},
             {"role": "assistant",
-             "content_text": "hi back<!-- ib:cid=ib_aaaaaaaaaaaa -->"},
+             "content_text": "hi back<!-- ib:cid=ibc_aaaaaaaaaaaa -->"},
         ]
         shape = trial._to_shape(canonical, "chatgpt")
         assert shape == [
             {"role": "user", "content": "hello"},
             {"role": "assistant",
-             "content": "hi back<!-- ib:cid=ib_aaaaaaaaaaaa -->"},
+             "content": "hi back<!-- ib:cid=ibc_aaaaaaaaaaaa -->"},
         ]
         # Same shape for ollama/mock/gemini (all openai-compat).
         for openai_shape_llm in ("ollama", "mock", "gemini"):
@@ -189,7 +189,7 @@ async def test_to_shape_anthropic_format_round_trips_marker(combo_env):
         canonical = [
             {"role": "user", "content_text": "hello"},
             {"role": "assistant",
-             "content_text": "hi<!-- ib:cid=ib_bbbbbbbbbbbb -->"},
+             "content_text": "hi<!-- ib:cid=ibc_bbbbbbbbbbbb -->"},
         ]
         shape = trial._to_shape(canonical, "claude")
         assert shape == [
@@ -197,7 +197,7 @@ async def test_to_shape_anthropic_format_round_trips_marker(combo_env):
              "content": [{"type": "text", "text": "hello"}]},
             {"role": "assistant",
              "content": [{"type": "text",
-                          "text": "hi<!-- ib:cid=ib_bbbbbbbbbbbb -->"}]},
+                          "text": "hi<!-- ib:cid=ibc_bbbbbbbbbbbb -->"}]},
         ]
     finally:
         await trial.aclose()
@@ -274,8 +274,8 @@ async def test_drive_reset_clears_canonical_history(combo_env):
             {"role": "user", "content_text": "hi"},
             {"role": "assistant", "content_text": "hello"},
         ]
-        trial._observed_cid_header = "ib_aaaaaaaaaaaa"
-        trial._http_client.headers["X-IB-CID"] = "ib_aaaaaaaaaaaa"
+        trial._observed_cid_header = "ibc_aaaaaaaaaaaa"
+        trial._http_client.headers["X-IB-CID"] = "ibc_aaaaaaaaaaaa"
 
         result = await trial._drive_reset()
         assert result["reset"] is True
@@ -306,7 +306,7 @@ async def test_drive_refresh_tools_is_noop_when_no_mcps(combo_env):
 async def test_canonical_history_preserves_marker_text_across_shapes(combo_env):
     """The whole point of the combo adapter: marker text rides through
     BOTH shape translations verbatim, so an assistant message carrying
-    `<!-- ib:cid=ib_xxx -->` from turn N (e.g. openai chat) lands in
+    `<!-- ib:cid=ibc_xxx -->` from turn N (e.g. openai chat) lands in
     turn N+1's input shape (e.g. anthropic messages) where AGW's regex
     can re-detect the same CID and reuse it."""
     from framework_bridge import Trial
@@ -314,7 +314,7 @@ async def test_canonical_history_preserves_marker_text_across_shapes(combo_env):
         trial_id="t-pres", config=_cfg(llm=["chatgpt", "claude"]),
     )
     try:
-        marker = "<!-- ib:cid=ib_abcdef012345 -->"
+        marker = "<!-- ib:cid=ibc_abcdef012345 -->"
         canonical = [
             {"role": "user", "content_text": "hello"},
             {"role": "assistant", "content_text": f"hi back {marker}"},
