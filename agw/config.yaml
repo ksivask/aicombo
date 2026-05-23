@@ -21,8 +21,11 @@ binds:
           # `channels:` block (post-CHG-25 cleanup field names):
           #     channels:
           #       schema_cid: true            # C1 — schema CID injection
+          #       schema_rid: true            # CHG-26B (default false)
           #       text_marker_cid: true       # C2 — text marker
+          #       text_marker_rid: true       # CHG-26B (default false)
           #       resource_block_cid: true    # C3 — MCP resource block
+          #       resource_block_rid: true    # CHG-26B (default false)
           #       snapshot_correlation: true  # E20 _ib_ss session correlation
           # Post-CHG-247 + CHG-25 the channel defaults are `false`/`none`
           # upstream, so each route must opt in EXPLICITLY (no implicit on).
@@ -63,8 +66,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
@@ -97,8 +103,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
@@ -149,8 +158,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
@@ -191,8 +203,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
@@ -227,8 +242,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - ai:
@@ -259,8 +277,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
@@ -288,8 +309,11 @@ binds:
                   mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
@@ -317,8 +341,11 @@ binds:
                   mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
@@ -356,8 +383,11 @@ binds:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
             backends:
               - mcp:
@@ -394,8 +424,11 @@ binds:
                   mode: required                # CHG-25E: explicit opt-in (was implicit pre-flip via schema_required default)
                 channels:
                   schema_cid: true              # CHG-25B: explicit opt-in to C1
+                  schema_rid: true              # CHG-26B (default false)
                   text_marker_cid: true         # CHG-25F: was text_marker
+                  text_marker_rid: true         # CHG-26B (default false)
                   resource_block_cid: true      # CHG-25F: was resource_block
+                  resource_block_rid: true      # CHG-26B (default false)
                   snapshot_correlation: true    # E25 (CHG-246): explicit opt-in to E20 _ib_ss
                   mcp_marker_kind: both  # E7 — emit resource AND text markers.
                   # Requires AGW image built from ibfork/feat/cidgar
