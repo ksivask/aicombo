@@ -1410,6 +1410,55 @@ function _buildCidFlowTopology(trial) {
   };
 }
 
+// Design C2 — derive the RID run-lineage overlay model from a trial's audit
+// entries, keyed to the SAME audit-node ids the CID-flow graphs use. Both
+// renderers number audit nodes `A${i}` where i is the audit_entries index
+// (see `idx: i` in _buildCidFlowTopology and `A${a.idx}` in the renderers), so
+// reading audit_entries directly here keeps the ids aligned with no coupling.
+//
+// Returns:
+//   ridToNode:    Map<rid, "A${i}">          — each run's node id
+//   parentEdges:  Array<["A${p}","A${c}"]>   — resolvable parent_rid links
+//   anomalyNodes: Set<"A${i}">               — nodes with parent_rid_anomaly
+//   labels:       Map<"A${i}", shortRid>     — short rid label per run node
+//
+// Robust to null parent_rid (genesis / truncation / pre-CHG-26F): such links
+// are simply omitted (the run node stands rooted).
+function buildRunLineage(trial) {
+  const audits = trial.audit_entries || [];
+  const ridToNode = new Map();
+  const labels = new Map();
+  const anomalyNodes = new Set();
+  const rows = [];  // {node, rid, parentRid}
+
+  audits.forEach((e, i) => {
+    if ((e.phase || "") !== "llm_request") return;
+    const body = e.body || {};
+    const rid = body.rid;
+    if (!rid) return;
+    const node = `A${i}`;
+    ridToNode.set(rid, node);
+    labels.set(node, _shortRid(rid));
+    if (body.parent_rid_anomaly === true) anomalyNodes.add(node);
+    rows.push({node, rid, parentRid: body.parent_rid || null});
+  });
+
+  const parentEdges = [];
+  for (const r of rows) {
+    if (!r.parentRid) continue;            // genesis / truncation / null
+    const parentNode = ridToNode.get(r.parentRid);
+    if (!parentNode) continue;             // parent not in this trial — skip
+    parentEdges.push([parentNode, r.node]);
+  }
+
+  return {ridToNode, parentEdges, anomalyNodes, labels};
+}
+
+function _shortRid(rid) {
+  // "ibr_4a3590f66ec9" -> "ibr_…0f66ec9": compact for node labels.
+  return rid.length > 11 ? `${rid.slice(0, 4)}…${rid.slice(-6)}` : rid;
+}
+
 function renderCidFlowTab(trial) {
   const topo = _buildCidFlowTopology(trial);
   const {turns: tTurns, audits: tAudits, cids: tCids, snapshots: tSnaps,
