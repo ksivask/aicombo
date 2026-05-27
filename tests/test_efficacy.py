@@ -1425,6 +1425,25 @@ def test_verdict_m_na_no_user_turns():
     assert _verdict_m(turns, audit).verdict == "na"
 
 
+def test_verdict_m_fail_count_mismatch_when_a_turn_window_empty():
+    # Two user turns. Turn 0 resolves to a correctly-flagged run; turn 1 has a
+    # valid timestamp window but NO llm_request entries fall in it. flag_present
+    # is true (turn 0 has the flag), turn 0 passes, but boundary_count (1) !=
+    # user-turn count (2) → fail (a turn window had no runs).
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-01-01T00:00:10Z", finished_at="2026-01-01T00:00:19Z"),
+    ]
+    audit = [
+        _boundary_run("ibr_0", True, "2026-01-01T00:00:01Z"),  # falls in turn 0 only
+    ]
+    v = _verdict_m(turns, audit)
+    assert v.verdict == "fail"
+    assert "count" in v.reason
+
+
 # ── Design C1 — registration in compute_verdicts ──
 
 def test_compute_verdicts_includes_l_and_m():
