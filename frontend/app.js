@@ -442,9 +442,10 @@ function buildColumnDefs() {
       headerName: "Verdicts", field: "verdicts", width: 240,
       cellRenderer: params => {
         const v = params.value || {};
-        // 9 verdicts: original 6 + h (latency) + i (snapshot correlation, E20)
-        // + k (cross-API continuity, E24). g and j are reserved/unassigned.
-        const pills = ["a", "b", "c", "d", "e", "f", "h", "i", "k"].map(lvl => {
+        // 11 verdicts: original 6 + h (latency) + i (snapshot correlation, E20)
+        // + k (cross-API continuity, E24) + l (run lineage) + m (turn boundary).
+        // g and j are reserved/unassigned.
+        const pills = ["a", "b", "c", "d", "e", "f", "h", "i", "k", "l", "m"].map(lvl => {
           const cls = (v[lvl]?.verdict) || "na";
           const glyph = cls === "pass" ? "✓" : cls === "fail" ? "✗" : "—";
           return `<span class="verdict-pill ${cls}" title="${v[lvl]?.reason || ""}">${glyph}</span>`;

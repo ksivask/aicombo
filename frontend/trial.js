@@ -799,6 +799,8 @@ function renderVerdictsTab(verdicts, trial) {
     h: "Latency overhead",                                  // governance per-turn cost
     i: "Snapshot correlation",                              // E20 _ib_ss rate
     k: "Cross-API continuity",                              // E24 combo across LLM routes
+    l: "Run lineage",                                       // parent_rid chain integrity
+    m: "Turn boundary",                                     // is_turn_boundary correctness
   };
   // Hover help (title attr) explaining what each verdict actually checks.
   // Pairs with the explanations in docs/agw-governance-spec.md §4.2 + §13.
@@ -857,7 +859,9 @@ function renderVerdictsTab(verdicts, trial) {
        "breach), (C) marker text present in bodies on multiple routes but " +
        "AGW didn't extract — MARKER_RE format mismatch / adapter dropped " +
        "marker / cidgar config inconsistent across routes. NA for " +
-       "single-route trials."
+       "single-route trials.",
+    l: "Run-lineage integrity — parent_rid chain reconstructs across runs.",
+    m: "Turn-boundary correctness — is_turn_boundary lands on each turn's first run."
   };
   // T14 — render the `_aborted` marker at the top if present so the user
   // immediately sees that the verdicts below are partial.
@@ -881,7 +885,7 @@ function renderVerdictsTab(verdicts, trial) {
       </div>
     `;
   }
-  return renderIdentifiersBanner(trial) + abortedBanner + ["a","b","c","d","e","f","h","i","k"].map(lvl => {
+  return renderIdentifiersBanner(trial) + abortedBanner + ["a","b","c","d","e","f","h","i","k","l","m"].map(lvl => {
     const v = verdicts[lvl] || {verdict: "na", reason: "not computed"};
     const tip = tips[lvl] || "";
     return `
