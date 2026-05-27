@@ -1081,6 +1081,99 @@ def verdict_l_run_lineage_integrity(trial, strict: bool = False) -> Verdict:
     return Verdict("pass", reason)
 
 
+def _llm_requests_in_window(trial, turn) -> list:
+    """Design C1 — rid/flag-bearing llm_request entries for a turn, ordered.
+
+    Mirrors _cids_for_turn_window's correlation strategy: prefer header-demux
+    (entries tagged with this turn_id) when available; else fall back to the
+    turn's [started_at, finished_at] timestamp envelope. Returns [] when
+    neither channel resolves (caller treats trial as unassessable → na).
+    """
+    direct = [e for e in trial.audit_entries
+              if e.turn_id == turn.turn_id and _audit_kind(e) == "llm_request"]
+    if direct:
+        runs = direct
+    else:
+        if not turn.started_at or not turn.finished_at:
+            return []
+        runs = [e for e in trial.audit_entries
+                if _audit_kind(e) == "llm_request"
+                and e.captured_at
+                and turn.started_at <= e.captured_at <= turn.finished_at]
+    runs.sort(key=lambda e: e.captured_at or "")
+    return runs
+
+
+def verdict_m_turn_boundary_correctness(trial) -> Verdict:
+    """(m) turn-boundary correctness — AGW's is_turn_boundary lands right.
+
+    For each user_msg turn, the first llm_request in the turn's window must
+    have is_turn_boundary=true and every continuation (tool-loop hop) must be
+    false. Validates AGW's body-shape heuristic; orthogonal to verdict_l's
+    parent chain.
+
+      pass — every turn's first run is a boundary, all continuations are not.
+      fail — a turn-start run isn't flagged, a continuation is flagged, or
+             the boundary count != user-turn count.
+      na   — no user turns, is_turn_boundary absent on all llm_requests, or
+             turn windows are unresolvable (no timestamps + no demux).
+
+    See design C1 spec. Positional (not count-only): a misplaced boundary
+    with the right total still fails.
+    """
+    user_turns = _user_msg_turns(trial)
+    if not user_turns:
+        return Verdict("na", "no user_msg turns")
+
+    flag_present = any(
+        _is_turn_boundary(e) is not None
+        for e in trial.audit_entries if _audit_kind(e) == "llm_request"
+    )
+    if not flag_present:
+        return Verdict(
+            "na",
+            "no is_turn_boundary flag on any llm_request "
+            "(no-governance / streaming / pre-Design-B)",
+        )
+
+    boundary_count = 0
+    resolved_turns = 0
+    for turn in user_turns:
+        runs = _llm_requests_in_window(trial, turn)
+        if not runs:
+            continue
+        resolved_turns += 1
+        first, rest = runs[0], runs[1:]
+        if _is_turn_boundary(first) is not True:
+            return Verdict(
+                "fail",
+                f"turn {turn.turn_idx}: first run (rid {_rid(first)}) is not "
+                f"is_turn_boundary=true",
+            )
+        for r in rest:
+            if _is_turn_boundary(r) is True:
+                return Verdict(
+                    "fail",
+                    f"turn {turn.turn_idx}: a continuation run (rid {_rid(r)}) "
+                    f"is is_turn_boundary=true (should be false)",
+                )
+        boundary_count += 1
+
+    if resolved_turns == 0:
+        return Verdict(
+            "na",
+            "turn windows unresolvable (turns lack timestamps and no "
+            "turn_id demux)",
+        )
+    if boundary_count != len(user_turns):
+        return Verdict(
+            "fail",
+            f"turn-boundary count {boundary_count} != user-turn count "
+            f"{len(user_turns)} (a turn window had no llm_request runs)",
+        )
+    return Verdict("pass", f"{boundary_count} turn boundaries correctly placed")
+
+
 def verdict_i_tools_list_correlation(trial: Trial) -> Verdict:
     """(i) tools_list_correlation — E20 reliability rollup.
 

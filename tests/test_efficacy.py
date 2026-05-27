@@ -1041,7 +1041,7 @@ def test_verdict_k_distinguishes_extraction_failure_from_isolation_breach():
     turn0 = Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",
         framework_events=[{
-            "t": "llm_dispatch_0",
+            "t": "llm_hop_0",
             "llm_for_turn": "chatgpt",
             "request": {
                 "url": "http://agentgateway:8080/llm/chatgpt/v1/chat/completions",
@@ -1053,7 +1053,7 @@ def test_verdict_k_distinguishes_extraction_failure_from_isolation_breach():
     turn1 = Turn(
         turn_id="t1", turn_idx=1, kind="user_msg",
         framework_events=[{
-            "t": "llm_dispatch_0",
+            "t": "llm_hop_0",
             "llm_for_turn": "claude",
             "request": {
                 "url": "http://agentgateway:8080/llm/claude/v1/messages",
@@ -1348,3 +1348,78 @@ def test_verdict_l_anomaly_surfaced_not_failed():
     v = _verdict_l(audit)
     assert v.verdict == "pass"
     assert "anomaly" in v.reason
+
+
+# ── Design C1 — verdict_m turn-boundary correctness ──
+
+def _boundary_run(rid, is_boundary, ts):
+    return AuditEntry(
+        trial_id="t", turn_id=None, phase="llm_request",
+        cid="ibc_a", backend="ollama", raw={}, captured_at=ts,
+        body={"rid": rid, "is_turn_boundary": is_boundary},
+    )
+
+
+def _verdict_m(turns, audit):
+    from efficacy import verdict_m_turn_boundary_correctness
+    trial = _trial_with(turns, audit)
+    return verdict_m_turn_boundary_correctness(trial)
+
+
+def test_verdict_m_pass_correct_boundaries():
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z"),
+        Turn(turn_id="t1", turn_idx=1, kind="user_msg",
+             started_at="2026-01-01T00:00:10Z", finished_at="2026-01-01T00:00:19Z"),
+    ]
+    audit = [
+        _boundary_run("ibr_0", True, "2026-01-01T00:00:01Z"),
+        _boundary_run("ibr_1", True, "2026-01-01T00:00:11Z"),
+        _boundary_run("ibr_2", False, "2026-01-01T00:00:12Z"),
+    ]
+    assert _verdict_m(turns, audit).verdict == "pass"
+
+
+def test_verdict_m_fail_turn_start_not_flagged():
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z"),
+    ]
+    audit = [_boundary_run("ibr_0", False, "2026-01-01T00:00:01Z")]
+    assert _verdict_m(turns, audit).verdict == "fail"
+
+
+def test_verdict_m_fail_midturn_hop_flagged():
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z"),
+    ]
+    audit = [
+        _boundary_run("ibr_0", True, "2026-01-01T00:00:01Z"),
+        _boundary_run("ibr_1", True, "2026-01-01T00:00:02Z"),
+    ]
+    assert _verdict_m(turns, audit).verdict == "fail"
+
+
+def test_verdict_m_na_when_flag_absent():
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+                  started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z")]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:01Z",
+                   body={"rid": "ibr_0"}),
+    ]
+    assert _verdict_m(turns, audit).verdict == "na"
+
+
+def test_verdict_m_na_when_no_turn_windows():
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    audit = [_boundary_run("ibr_0", True, "2026-01-01T00:00:01Z")]
+    assert _verdict_m(turns, audit).verdict == "na"
+
+
+def test_verdict_m_na_no_user_turns():
+    turns = []
+    audit = [_boundary_run("ibr_0", True, "2026-01-01T00:00:01Z")]
+    assert _verdict_m(turns, audit).verdict == "na"
