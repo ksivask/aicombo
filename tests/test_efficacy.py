@@ -1241,3 +1241,110 @@ def test_llm_runs_ordered_filters_and_sorts():
     trial = _trial_with(turns, audit)
     runs = _llm_runs_ordered(trial)
     assert [_rid(r) for r in runs] == ["ibr_1", "ibr_2"]
+
+
+# ── Design C1 — verdict_l run-lineage integrity ──
+
+def _run(rid, parent_rid, ts, *, anomaly=False):
+    """A single llm_request run audit entry for verdict_l tests."""
+    body = {"rid": rid}
+    if parent_rid is not None:
+        body["parent_rid"] = parent_rid
+    if anomaly:
+        body["parent_rid_anomaly"] = True
+    return AuditEntry(
+        trial_id="t", turn_id=None, phase="llm_request",
+        cid="ibc_a", backend="ollama", raw={}, captured_at=ts, body=body,
+    )
+
+
+def _verdict_l(audit, strict=False):
+    from efficacy import verdict_l_run_lineage_integrity
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, audit)
+    return verdict_l_run_lineage_integrity(trial, strict=strict)
+
+
+def test_verdict_l_pass_clean_chain():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", "ibr_0", "2026-01-01T00:00:02Z"),
+        _run("ibr_2", "ibr_1", "2026-01-01T00:00:03Z"),
+    ]
+    assert _verdict_l(audit).verdict == "pass"
+    assert _verdict_l(audit, strict=True).verdict == "pass"
+
+
+def test_verdict_l_skip_to_ancestor_pass_lenient_fail_strict():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", "ibr_0", "2026-01-01T00:00:02Z"),
+        _run("ibr_2", "ibr_0", "2026-01-01T00:00:03Z"),
+    ]
+    lenient = _verdict_l(audit)
+    assert lenient.verdict == "pass"
+    assert "skip" in lenient.reason
+    assert _verdict_l(audit, strict=True).verdict == "fail"
+
+
+def test_verdict_l_null_parent_gap_pass_lenient_fail_strict():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", None, "2026-01-01T00:00:02Z"),
+        _run("ibr_2", "ibr_1", "2026-01-01T00:00:03Z"),
+    ]
+    lenient = _verdict_l(audit)
+    assert lenient.verdict == "pass"
+    assert "gap" in lenient.reason
+    assert _verdict_l(audit, strict=True).verdict == "fail"
+
+
+def test_verdict_l_orphan_fail_both_modes():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", "ibr_999", "2026-01-01T00:00:02Z"),
+    ]
+    assert _verdict_l(audit).verdict == "fail"
+    assert _verdict_l(audit, strict=True).verdict == "fail"
+
+
+def test_verdict_l_forward_reference_fail():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", "ibr_2", "2026-01-01T00:00:02Z"),
+        _run("ibr_2", "ibr_1", "2026-01-01T00:00:03Z"),
+    ]
+    assert _verdict_l(audit).verdict == "fail"
+
+
+def test_verdict_l_genesis_only_na():
+    audit = [_run("ibr_0", None, "2026-01-01T00:00:01Z")]
+    assert _verdict_l(audit).verdict == "na"
+
+
+def test_verdict_l_no_rid_data_na():
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:01Z",
+                   body={}),
+    ]
+    assert _verdict_l(audit).verdict == "na"
+
+
+def test_verdict_l_all_null_parents_na():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", None, "2026-01-01T00:00:02Z"),
+        _run("ibr_2", None, "2026-01-01T00:00:03Z"),
+    ]
+    assert _verdict_l(audit).verdict == "na"
+
+
+def test_verdict_l_anomaly_surfaced_not_failed():
+    audit = [
+        _run("ibr_0", None, "2026-01-01T00:00:01Z"),
+        _run("ibr_1", "ibr_0", "2026-01-01T00:00:02Z", anomaly=True),
+    ]
+    v = _verdict_l(audit)
+    assert v.verdict == "pass"
+    assert "anomaly" in v.reason

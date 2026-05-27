@@ -995,6 +995,92 @@ def _llm_runs_ordered(trial) -> list:
     return runs
 
 
+def verdict_l_run_lineage_integrity(trial, strict: bool = False) -> Verdict:
+    """(l) run-lineage integrity — Design B parent_rid chain reconstructs.
+
+    The rid-bearing llm_request entries, in capture order, are the runs
+    [r0..rk]; each run's parent_rid should point backward to an earlier run.
+
+    Lenient default (truncation-tolerant):
+      pass — every non-genesis run links backward to a real earlier run.
+             Skip-to-ancestor (parent = grandparent, from truncation) and
+             null-parent gaps are tolerated and counted in the reason.
+      fail — orphan (parent_rid never seen in the trial) or forward-reference
+             (parent_rid is a later/self run).
+      na   — no rid data, single run, or every non-genesis run null-parent.
+
+    strict=True (full-history-replay assumption): additionally require
+    immediate-predecessor linkage; any skip OR null-parent gap fails.
+
+    parent_rid_anomaly is surfaced in the reason but never changes the
+    verdict (AGW spec §9.17 — free signal). See design C1 spec.
+    """
+    runs = _llm_runs_ordered(trial)
+    if not runs:
+        return Verdict("na", "no llm_request audits carry a rid")
+    if len(runs) < 2:
+        return Verdict("na", "single run — no lineage to assess")
+
+    rids = [_rid(r) for r in runs]
+    anomaly_rids = [rids[i] for i, r in enumerate(runs) if _rid_anomaly(r)]
+    seen = {rids[0]}  # r0 genesis — null parent expected
+    skips = 0
+    gaps = 0
+
+    for k in range(1, len(runs)):
+        prid = _parent_rid(runs[k])
+        if prid is None:
+            if strict:
+                return Verdict(
+                    "fail",
+                    f"run {k} (rid {rids[k]}) has null parent_rid "
+                    f"(strict mode expects full replay)",
+                )
+            gaps += 1
+            seen.add(rids[k])
+            continue
+        if prid not in seen:
+            if prid in rids[k:]:
+                return Verdict(
+                    "fail",
+                    f"run {k} (rid {rids[k]}) parent_rid {prid} is a "
+                    f"forward reference",
+                )
+            return Verdict(
+                "fail",
+                f"run {k} (rid {rids[k]}) parent_rid {prid} references a "
+                f"run never seen in the trial (orphan)",
+            )
+        if prid != rids[k - 1]:
+            if strict:
+                return Verdict(
+                    "fail",
+                    f"run {k} (rid {rids[k]}) parent_rid {prid} != immediate "
+                    f"predecessor {rids[k - 1]} (strict mode)",
+                )
+            skips += 1
+        seen.add(rids[k])
+
+    if gaps == len(runs) - 1:
+        return Verdict(
+            "na",
+            "no lineage recoverable — every non-genesis run has a null "
+            "parent_rid (truncating agent or RID propagation off)",
+        )
+
+    notes = []
+    if skips:
+        notes.append(f"{skips} skip(s) — truncation")
+    if gaps:
+        notes.append(f"{gaps} null-parent gap(s)")
+    if anomaly_rids:
+        notes.append(f"anomaly on {len(anomaly_rids)} run(s): {anomaly_rids}")
+    reason = "lineage valid"
+    if notes:
+        reason += "; " + ", ".join(notes)
+    return Verdict("pass", reason)
+
+
 def verdict_i_tools_list_correlation(trial: Trial) -> Verdict:
     """(i) tools_list_correlation — E20 reliability rollup.
 
