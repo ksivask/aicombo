@@ -1789,6 +1789,9 @@ function _buildAndMountCytoscape(trial, container) {
   const topo = _buildCidFlowTopology(trial);
   // cidNodeId / ssNodeId — module-scope helpers.
 
+  // Design C2 — RID run-lineage overlay model (null when the toggle is off).
+  const lineage = showRunLineage ? buildRunLineage(trial) : null;
+
   const elements = [];
   // Turn nodes
   for (const t of topo.turns) {
@@ -1809,14 +1812,19 @@ function _buildAndMountCytoscape(trial, container) {
   // a framework_event, append the mcp-session-id alias on a second line
   // and stash the full id on data.sidFull for the hover-tooltip handler.
   for (const a of topo.audits) {
-    const label = a.sid ? `${a.phase}\n${a.sid}` : a.phase;
+    let label = a.sid ? `${a.phase}\n${a.sid}` : a.phase;
+    if (lineage && lineage.labels.has(`A${a.idx}`)) {
+      label += `\n${lineage.labels.get(`A${a.idx}`)}`;   // C2 — rid line
+    }
+    const cls = (lineage && lineage.anomalyNodes.has(`A${a.idx}`))
+      ? "node-audit rid-anomaly" : "node-audit";
     elements.push({
       data: {
         id: `A${a.idx}`,
         label,
         sidFull: a.sidFull,
       },
-      classes: "node-audit",
+      classes: cls,
     });
   }
   // Snapshot nodes
@@ -1855,6 +1863,16 @@ function _buildAndMountCytoscape(trial, container) {
       elements.push({
         data: {source: ssNodeId(x.ss), target: `A${x.i}`},
         classes: "edge-ss-call thick",
+      });
+    }
+  }
+
+  // Design C2 — run-chain (parent_rid) edges when the overlay is on.
+  if (lineage) {
+    for (const [parent, child] of lineage.parentEdges) {
+      elements.push({
+        data: {source: parent, target: child},
+        classes: "edge-run",
       });
     }
   }
@@ -1930,6 +1948,14 @@ function _buildAndMountCytoscape(trial, container) {
       {selector: "edge.dotted", style: {"line-style": "dotted"}},
       {selector: "edge.thick", style: {
         "width": 3.5, "line-color": "#6f42c1", "target-arrow-color": "#6f42c1",
+      }},
+      // Design C2 — run-chain (parent_rid) edges + anomaly run nodes.
+      {selector: "edge.edge-run", style: {
+        "line-style": "dashed", "line-color": "#fd7e14",
+        "target-arrow-color": "#fd7e14", "width": 2,
+      }},
+      {selector: "node.rid-anomaly", style: {
+        "border-color": "#dc3545", "border-width": 3, "border-style": "dashed",
       }},
     ],
   });
