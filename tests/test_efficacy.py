@@ -1423,3 +1423,30 @@ def test_verdict_m_na_no_user_turns():
     turns = []
     audit = [_boundary_run("ibr_0", True, "2026-01-01T00:00:01Z")]
     assert _verdict_m(turns, audit).verdict == "na"
+
+
+# ── Design C1 — registration in compute_verdicts ──
+
+def test_compute_verdicts_includes_l_and_m():
+    turns = [
+        Turn(turn_id="t0", turn_idx=0, kind="user_msg",
+             started_at="2026-01-01T00:00:00Z", finished_at="2026-01-01T00:00:09Z"),
+    ]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:01Z",
+                   body={"rid": "ibr_0", "is_turn_boundary": True}),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert "l" in v and "m" in v
+    assert v["l"].verdict == "na"    # single run → no lineage to assess
+    assert v["m"].verdict == "pass"  # single correctly-flagged turn
+
+
+def test_compute_verdicts_l_m_na_for_direct_routing():
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    trial = _trial_with(turns, [], routing="direct")
+    v = compute_verdicts(trial)
+    assert v["l"].verdict == "na"
+    assert v["m"].verdict == "na"

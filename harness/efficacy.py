@@ -1402,12 +1402,13 @@ def _routes_with_marker_text_in_request_bodies(
 
 
 def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
-    """Return {a, b, c, d, e, f, h, i, k} verdicts.
+    """Return {a, b, c, d, e, f, h, i, k, l, m} verdicts.
 
     Plan A computed a+b+f; Plan B T9 added c; T10 added d; T11 added e;
     E4 added h (latency overhead vs baseline pair); E20 added i
-    (tools_list snapshot correlation rate); E24 (this commit) adds k
-    (cross-API continuity for multi-LLM combo trials).
+    (tools_list snapshot correlation rate); E24 adds k (cross-API
+    continuity for multi-LLM combo trials); Design C1 adds l (run-lineage
+    integrity) and m (turn-boundary correctness).
 
     `pair_resolver` is injected straight through to verdict_h_overhead so
     callers (esp. tests) can avoid the disk-based matrix lookup.
@@ -1416,13 +1417,13 @@ def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
         na = Verdict("na", "baseline — cidgar not in path")
         return {
             "a": na, "b": na, "c": na, "d": na, "e": na,
-            "f": na, "h": na, "i": na, "k": na,
+            "f": na, "h": na, "i": na, "k": na, "l": na, "m": na,
         }
     if trial.status == "aborted":
         na = Verdict("na", "trial aborted before completion")
         return {
             "a": na, "b": na, "c": na, "d": na, "e": na,
-            "f": na, "h": na, "i": na, "k": na,
+            "f": na, "h": na, "i": na, "k": na, "l": na, "m": na,
         }
     return {
         "a": verdict_a_presence(trial),
@@ -1434,4 +1435,6 @@ def compute_verdicts(trial: Trial, pair_resolver=None) -> dict[str, Verdict]:
         "h": verdict_h_overhead(trial, pair_resolver=pair_resolver),
         "i": verdict_i_tools_list_correlation(trial),
         "k": verdict_k_cross_api_continuity(trial),
+        "l": verdict_l_run_lineage_integrity(trial),
+        "m": verdict_m_turn_boundary_correctness(trial),
     }
