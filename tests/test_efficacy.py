@@ -1191,3 +1191,53 @@ def test_verdict_a_fail_message_lists_audit_phases():
     assert "tools_list" in v["a"].reason, (
         f"expected reason to surface tools_list phase; got: {v['a'].reason}"
     )
+
+
+# ── Design C1 — RID accessor helpers ──
+
+def test_rid_accessors_read_from_body():
+    from efficacy import _rid, _parent_rid, _is_turn_boundary, _rid_anomaly
+    e = AuditEntry(
+        trial_id="t", turn_id=None, phase="llm_request",
+        cid="ibc_aaa", backend="ollama", raw={}, captured_at="2026-01-01T00:00:00Z",
+        body={"rid": "ibr_111", "parent_rid": "ibr_000",
+              "is_turn_boundary": True, "parent_rid_anomaly": True},
+    )
+    assert _rid(e) == "ibr_111"
+    assert _parent_rid(e) == "ibr_000"
+    assert _is_turn_boundary(e) is True
+    assert _rid_anomaly(e) is True
+
+
+def test_rid_accessors_default_when_body_absent():
+    from efficacy import _rid, _parent_rid, _is_turn_boundary, _rid_anomaly
+    e = AuditEntry(
+        trial_id="t", turn_id=None, phase="llm_request",
+        cid="ibc_aaa", backend="ollama", raw={}, captured_at="", body=None,
+    )
+    assert _rid(e) is None
+    assert _parent_rid(e) is None
+    assert _is_turn_boundary(e) is None
+    assert _rid_anomaly(e) is False
+
+
+def test_llm_runs_ordered_filters_and_sorts():
+    from efficacy import _llm_runs_ordered, _rid
+    turns = [Turn(turn_id="t0", turn_idx=0, kind="user_msg")]
+    audit = [
+        AuditEntry(trial_id="t", turn_id=None, phase="terminal",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:03Z",
+                   body={}),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:02Z",
+                   body={"rid": "ibr_2"}),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:01Z",
+                   body={"rid": "ibr_1"}),
+        AuditEntry(trial_id="t", turn_id=None, phase="llm_request",
+                   cid="ibc_a", backend="ollama", raw={}, captured_at="2026-01-01T00:00:04Z",
+                   body={}),  # llm_request without rid → excluded
+    ]
+    trial = _trial_with(turns, audit)
+    runs = _llm_runs_ordered(trial)
+    assert [_rid(r) for r in runs] == ["ibr_1", "ibr_2"]

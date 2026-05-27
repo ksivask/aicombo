@@ -948,6 +948,53 @@ def _audit_kind(entry) -> str | None:
     return None
 
 
+def _entry_body(entry) -> dict:
+    """Design C1 — the governance audit body dict for an entry, or {}.
+
+    `AuditEntry.body` (E26) holds the parsed cidgar log body, which carries
+    the Design B RID fields (rid, parent_rid, is_turn_boundary,
+    parent_rid_anomaly, ...). Synthetic test entries / dicts expose the same
+    under a "body" key. Pre-E26 / pre-Design-B entries have body=None.
+    """
+    if isinstance(entry, dict):
+        b = entry.get("body")
+    else:
+        b = getattr(entry, "body", None)
+    return b if isinstance(b, dict) else {}
+
+
+def _rid(entry) -> str | None:
+    return _entry_body(entry).get("rid")
+
+
+def _parent_rid(entry) -> str | None:
+    return _entry_body(entry).get("parent_rid")
+
+
+def _is_turn_boundary(entry):
+    """Tri-state: True / False / None (flag absent → cannot assess)."""
+    return _entry_body(entry).get("is_turn_boundary")
+
+
+def _rid_anomaly(entry) -> bool:
+    return bool(_entry_body(entry).get("parent_rid_anomaly", False))
+
+
+def _llm_runs_ordered(trial) -> list:
+    """Design C1 — the LLM runs of a trial, in capture order.
+
+    An LLM run = one `llm_request` audit entry that carries a `rid`. Their
+    `parent_rid` values form the lineage chain consumed by verdict_l. Sorted
+    by `captured_at` (ISO-8601, lexicographically orderable as Harness writes
+    it); ties keep insertion order via Python's stable sort.
+    """
+    runs = [e for e in trial.audit_entries
+            if _audit_kind(e) == "llm_request" and _rid(e)]
+    runs.sort(key=lambda e: (getattr(e, "captured_at", "") or "")
+              if not isinstance(e, dict) else (e.get("captured_at") or ""))
+    return runs
+
+
 def verdict_i_tools_list_correlation(trial: Trial) -> Verdict:
     """(i) tools_list_correlation — E20 reliability rollup.
 
