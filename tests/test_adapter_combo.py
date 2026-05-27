@@ -691,7 +691,20 @@ async def test_connect_failure_surfaces_in_turn_zero_framework_events(
 
         # Stub _run_openai_loop so we don't need a real OpenAI server —
         # we only care about framework_events shape, not the LLM dispatch.
+        # Append a synthetic /llm/ exchange so the phase classifier emits an
+        # llm_hop_* event in framework_events; the ordering assertion below
+        # anchors against it. Pre-c245d3e the predicate was llm_dispatch_*,
+        # which never matched the renamed taxonomy and made the check vacuous.
         async def fake_loop(self, client, model, tools_enabled):
+            self._exchanges.append({
+                "req": {
+                    "method": "POST",
+                    "url": "http://test/llm/fake/v1/chat/completions",
+                    "headers": {},
+                    "body": {},
+                },
+                "resp": {"status": 200, "headers": {}, "body": {}},
+            })
             return ("hello back", [])
         monkeypatch.setattr(Trial, "_run_openai_loop", fake_loop)
 
@@ -706,7 +719,7 @@ async def test_connect_failure_surfaces_in_turn_zero_framework_events(
             assert "AGW_MCP_" in fail["error"]
 
         # Turn 0 framework_events have a `mcp_connect_failure` per MCP,
-        # at the START of the list (before any llm_dispatch_* events).
+        # at the START of the list (before any llm_hop_* events).
         events = out0["framework_events"]
         fail_events = [e for e in events if e["t"] == "mcp_connect_failure"]
         assert len(fail_events) == 2
@@ -719,17 +732,23 @@ async def test_connect_failure_surfaces_in_turn_zero_framework_events(
             assert f"<MCP {ev['mcp']} connect>" == ev["request"]["url"]
             assert ev["response"]["status"] == "error"
             assert "AGW_MCP_" in ev["response"]["body"]
-        # Synthetic events emit BEFORE the llm_dispatch chain.
-        first_dispatch_idx = next(
+        # Synthetic events emit BEFORE the llm_hop chain. Predicate updated
+        # from `llm_dispatch_` (pre-c245d3e taxonomy) to `llm_hop_` so the
+        # ordering assertion actually fires; under the old predicate
+        # first_hop_idx was always None and the inner assert was vacuous.
+        first_hop_idx = next(
             (i for i, e in enumerate(events)
-             if e["t"].startswith("llm_dispatch_")),
+             if e["t"].startswith("llm_hop_")),
             None,
         )
-        if first_dispatch_idx is not None:
-            assert all(
-                events[i]["t"] == "mcp_connect_failure"
-                for i in range(first_dispatch_idx)
-            )
+        assert first_hop_idx is not None, (
+            "fake_loop guarantees one llm_hop_* event in the turn; if this "
+            "fails the test isn't exercising what it thinks it is"
+        )
+        assert all(
+            events[i]["t"] == "mcp_connect_failure"
+            for i in range(first_hop_idx)
+        )
 
         # Turn 1: the failure list is still queryable on the Trial, but
         # the synthetic events do NOT re-emit (one-shot).

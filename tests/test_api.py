@@ -502,6 +502,59 @@ def test_clone_baseline_400_on_already_direct_row(tmp_data_dir, reset_api_state)
         assert "already" in r2.json().get("detail", "").lower()
 
 
+# ── E40 — clone-baseline must propagate every `with_*` plan flag ──
+
+def test_clone_baseline_carries_all_with_flags(tmp_data_dir, reset_api_state):
+    """Regression for B2 (clone-baseline silently dropped `with_e20_verification`
+    before fix). Walks `RowConfig.model_fields` so future `with_*` additions
+    auto-extend coverage — no test-list maintenance needed when a 5th flag
+    lands.
+
+    For each `with_*` flag: create a row with the flag True, clone, assert
+    the clone carries the flag forward. `mcp` is chosen per-flag to keep
+    the row's shape coherent (`with_e20_verification` requires `mcp=mutable`;
+    validator flags any other mcp as not-runnable).
+    """
+    from api import RowConfig
+
+    with_flags = [
+        name for name in RowConfig.model_fields
+        if name.startswith("with_")
+    ]
+    assert with_flags, (
+        "no with_* flags discovered on RowConfig — has the schema drifted? "
+        "If the with_* opt-in convention is being retired, retire this test."
+    )
+
+    with TestClient(app) as client:
+        for flag in with_flags:
+            mcp = "mutable" if flag == "with_e20_verification" else "weather"
+            r1 = client.post("/matrix/row", json={
+                "framework": "langchain", "api": "chat",
+                "stream": False, "state": False,
+                "llm": "ollama", "mcp": mcp, "routing": "via_agw",
+                flag: True,
+            })
+            assert r1.status_code == 200, (
+                f"creating row with {flag}=True failed: {r1.text}"
+            )
+            src_id = r1.json()["row_id"]
+
+            r2 = client.post(f"/matrix/row/{src_id}/clone-baseline")
+            assert r2.status_code == 200, (
+                f"clone-baseline failed for {flag}=True: {r2.text}"
+            )
+            new_id = r2.json()["row_id"]
+
+            r3 = client.get(f"/matrix/row/{new_id}")
+            assert r3.status_code == 200
+            cloned = r3.json()
+            assert cloned.get(flag) is True, (
+                f"clone-baseline dropped {flag} (B2-class regression). "
+                f"Add the new flag to matrix_clone_baseline in harness/api.py."
+            )
+
+
 # ── E19 + E23 — list-form mcp/llm round-trip through the matrix API ──
 
 def test_matrix_row_accepts_list_form_mcp_and_llm_roundtrip(tmp_data_dir, reset_api_state):
