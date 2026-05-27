@@ -1512,6 +1512,10 @@ function renderCidFlowTab(trial) {
 
   let mer = "graph LR\n";
 
+  // Design C2 — RID run-lineage overlay model (null when the toggle is off,
+  // so the base diagram is byte-identical to pre-C2).
+  const lineage = showRunLineage ? buildRunLineage(trial) : null;
+
   // Turn nodes — kind is the user-visible label. Errored turns get the
   // erroredTurn class for a red border (see classDef below).
   for (const t of tTurns) {
@@ -1539,9 +1543,15 @@ function renderCidFlowTab(trial) {
   // reliable under our htmlLabels:false config).
   for (const a of tAudits) {
     const phase = a.phase.replace(/[\[\]"]/g, "");
-    const label = a.sid ? `${phase}\n${a.sid}` : phase;
+    let label = a.sid ? `${phase}\n${a.sid}` : phase;
+    if (lineage && lineage.labels.has(`A${a.idx}`)) {
+      label += `\n${lineage.labels.get(`A${a.idx}`)}`;   // C2 — rid line
+    }
     mer += `  A${a.idx}["${label}"]\n`;
     mer += `  class A${a.idx} auditNode\n`;
+    if (lineage && lineage.anomalyNodes.has(`A${a.idx}`)) {
+      mer += `  class A${a.idx} ridAnomaly\n`;
+    }
   }
 
   // E20 — snapshot (ib_ss) nodes.
@@ -1583,6 +1593,14 @@ function renderCidFlowTab(trial) {
     mer += `  T${e.turnIdx} -.-> A${e.auditIdx}\n`;
   }
 
+  // Design C2 — dashed, "run"-labelled parent_rid edges (the run chain).
+  // Distinct from the turn→audit dotted edges via the |run| edge label.
+  if (lineage) {
+    for (const [parent, child] of lineage.parentEdges) {
+      mer += `  ${parent} -.->|run| ${child}\n`;
+    }
+  }
+
   // Style classes. Mermaid classDef syntax: classDef <name> <style;style;...>
   // - cidpreserved: green fill (CID survived ≥2 turns — chain preserved)
   // - cidsingle:    yellow fill (CID seen in exactly one turn)
@@ -1598,6 +1616,8 @@ function renderCidFlowTab(trial) {
   mer += "  classDef snapshotorphan fill:#f5f0ff,stroke:#a78bda,stroke-width:1px,stroke-dasharray:3,color:#6c5ba0;\n";
   mer += "  classDef erroredTurn stroke:#dc3545,stroke-width:3px;\n";
   mer += "  classDef auditNode fill:#f0f0f0,stroke:#999,color:#333;\n";
+  // Design C2 — anomaly run nodes (parent_rid_anomaly): red dashed border.
+  mer += "  classDef ridAnomaly stroke:#dc3545,stroke-width:3px,stroke-dasharray:4;\n";
 
   // Counts banner above the graph for quick orientation.
   const preservedCount = counts.preserved;
