@@ -41,6 +41,12 @@ let __servicesLastSourceHash = null;
 let __cidFlowNeedsMermaid = false;
 let __servicesNeedsMermaid = false;
 
+// Design C2 — RID lineage overlay toggle, shared by both CID-flow tabs.
+// Off by default: the base CID flow is unchanged until the user opts in.
+// The cidflow render-cache keys on the rendered-HTML hash, so flipping this
+// changes the HTML and triggers a re-render automatically.
+let showRunLineage = false;
+
 // I-NEW-1: framework-capability cache. The NOTE-tab's framework rules
 // (e.g. "crewai doesn't implement responses") used to hardcode the
 // supported_apis sets, mirroring `harness/validator.py::ADAPTER_CAPABILITIES`.
@@ -641,6 +647,11 @@ async function renderTrial(tid) {
       if (mountCytoscapeIfVisible(trial)) __cidFlowInteractiveNeedsMount = false;
     }, 0);
   }
+
+  // Design C2 — (re)bind the run-lineage toggle on both CID-flow tabs after
+  // their (re)injection. Uses onchange (not addEventListener) so re-running
+  // this each render cycle is idempotent (no duplicate listeners).
+  _wireRunLineageToggle(trial);
 
   // Services topology tab — same render-cache + visibility-deferred init
   // as cidflow above.
@@ -1459,6 +1470,22 @@ function _shortRid(rid) {
   return rid.length > 11 ? `${rid.slice(0, 4)}…${rid.slice(-6)}` : rid;
 }
 
+// Design C2 — bind the "Show run lineage" checkbox(es) on the CID-flow tabs.
+// Both tabs render their own checkbox (#run-lineage-cb mermaid,
+// #run-lineage-cb-cy interactive); flipping either updates the shared
+// showRunLineage state and re-renders the trial so both tabs reflect it.
+// Idempotent via onchange assignment — safe to call every render cycle.
+function _wireRunLineageToggle(trial) {
+  for (const id of ["run-lineage-cb", "run-lineage-cb-cy"]) {
+    const cb = document.getElementById(id);
+    if (!cb) continue;
+    cb.onchange = () => {
+      showRunLineage = cb.checked;
+      renderTrial(trial.trial_id);
+    };
+  }
+}
+
 function renderCidFlowTab(trial) {
   const topo = _buildCidFlowTopology(trial);
   const {turns: tTurns, audits: tAudits, cids: tCids, snapshots: tSnaps,
@@ -1588,6 +1615,10 @@ function renderCidFlowTab(trial) {
         ${preservedCount ? `<span class="cid-legend-chip preserved">${preservedCount} preserved (≥2 turns)</span>` : ""}
         ${singleCount ? `<span class="cid-legend-chip single">${singleCount} single-use</span>` : ""}
         ${auditOnlyCount ? `<span class="cid-legend-chip auditonly">${auditOnlyCount} audit-only (channels broke)</span>` : ""}
+        <label class="run-lineage-toggle" title="Overlay the RID run-lineage (parent_rid chain) on this CID flow">
+          <input type="checkbox" id="run-lineage-cb" ${showRunLineage ? "checked" : ""}>
+          Show run lineage
+        </label>
       </div>
       <div class="cid-flow-legend">
         <div><span class="legend-glyph solid">━</span> <strong>Solid</strong> — CID was OBSERVED on the wire (turn body) or in the governance log (audit entry).</div>
@@ -1683,6 +1714,10 @@ function renderCidFlowInteractiveTab(trial) {
         </label>
         <button id="cy-fit">Fit</button>
         <button id="cy-reset">Reset positions</button>
+        <label class="run-lineage-toggle" title="Overlay the RID run-lineage (parent_rid chain) on this CID flow">
+          <input type="checkbox" id="run-lineage-cb-cy" ${showRunLineage ? "checked" : ""}>
+          Show run lineage
+        </label>
         <span class="cy-hint">Drag nodes to rearrange · scroll to zoom · drag background to pan</span>
       </div>
       <div id="cy-container" class="cy-container"></div>
