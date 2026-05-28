@@ -777,11 +777,20 @@ function _collectIdentifiers(trial) {
   }
   const sessions = [...sessionsByFull].map(([full, alias]) => ({full, alias}))
     .sort((a, b) => a.alias < b.alias ? -1 : a.alias > b.alias ? 1 : 0);
-  return {cids: [...cids].sort(), snapshots: [...snapshots].sort(), sessions};
+  // RIDs in RUN ORDER — one per llm_request (each is an LLM run), ordered by
+  // capture time. Design B/C: shows the run sequence the parent_rid chain
+  // links. NOT sorted alphabetically — run order is the meaningful axis.
+  const rids = (trial.audit_entries || [])
+    .filter(a => a.phase === "llm_request" && a.body && a.body.rid)
+    .slice()
+    .sort((x, y) => (x.captured_at || "") < (y.captured_at || "") ? -1
+                  : (x.captured_at || "") > (y.captured_at || "") ? 1 : 0)
+    .map(a => a.body.rid);
+  return {cids: [...cids].sort(), snapshots: [...snapshots].sort(), sessions, rids};
 }
 
 function renderIdentifiersBanner(trial) {
-  const {cids, snapshots, sessions} = _collectIdentifiers(trial);
+  const {cids, snapshots, sessions, rids} = _collectIdentifiers(trial);
   // CIDs and snapshot hashes are pure-hex by construction (XSS-safe
   // today), but defensive escapeHtml is cheap and survives any future
   // identifier-format change.
@@ -794,9 +803,14 @@ function renderIdentifiersBanner(trial) {
         `<code title="mcp-session-id: ${escapeHtml(s.full)}">${escapeHtml(s.alias)}</code>`
       ).join(", ")
     : "<em>(none observed)</em>";
+  // RIDs as an arrow chain to convey run order (run0 → run1 → …).
+  const ridList = rids.length
+    ? rids.map(r => `<code>${escapeHtml(r)}</code>`).join(" → ")
+    : "<em>(none observed)</em>";
   return `
     <div class="identifiers-banner">
       <div><strong>CIDs (${cids.length}):</strong> <code>${cidList}</code></div>
+      <div><strong>RIDs in run order (${rids.length}):</strong> ${ridList}</div>
       <div><strong>mcp-tools/list-snapshots (${snapshots.length}):</strong> <code>${ssList}</code></div>
       <div><strong>mcp-sessions (${sessions.length}):</strong> ${sessList}</div>
     </div>
