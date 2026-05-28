@@ -44,12 +44,18 @@ echo "final status: $status (after ${waited}s)"
 [ "$status" = "running" ] && { echo "❌ trial did not finish in ${POLL_S}s" >&2; exit 3; }
 [ "$status" = "error" ]   && { echo "❌ trial errored at run level" >&2; exit 3; }
 
-# Pull the finished trial once and run all assertions in python3.
-curl -fsS "$API/trials/$trial_id" | python3 - "$trial_id" <<'PY'
+# Pull the finished trial to a temp FILE (not a pipe into python — the heredoc
+# below already owns python's stdin; piping curl there too collides and python
+# sees empty input). Pass the path as argv[2].
+tmpjson="$(mktemp)"; trap 'rm -f "$tmpjson"' EXIT
+curl -fsS "$API/trials/$trial_id" -o "$tmpjson" \
+  || { echo "❌ failed to fetch finished trial $trial_id" >&2; exit 3; }
+python3 - "$trial_id" "$tmpjson" <<'PY'
 import json, re, sys
 
 trial_id = sys.argv[1]
-d = json.load(sys.stdin)
+with open(sys.argv[2]) as _f:
+    d = json.load(_f)
 audits = d.get("audit_entries", []) or []
 verdicts = d.get("verdicts", {}) or {}
 fails = []
