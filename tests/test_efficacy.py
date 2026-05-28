@@ -109,6 +109,28 @@ def test_marker_re_extracts_cid_from_combined_and_legacy():
     assert MARKER_RE.search("<!-- ib:rid=ibr_0011223344ff -->") is None
 
 
+# ── Golden fixture: cross-repo contract between AGW's marker.rs and MARKER_RE ──
+# This is the EXACT C2 combined marker AGW (image v1.0.1-ib.cidgar, CHG-26C
+# make_combined_marker) emits, captured verbatim from a real trial
+# (324728e8, 2026-05-27). It is the contract anchor that the unit fixtures
+# above cannot be: if this assertion ever fails, AGW changed the marker WIRE
+# FORMAT — do NOT just tweak the regex to pass. Update BOTH this fixture and
+# harness/efficacy.py::MARKER_RE, and reconcile with AGW
+# crates/agentgateway/src/governance/marker.rs::make_combined_marker.
+# (The earlier MARKER_RE regression — cid-only regex vs combined marker —
+# slipped through because every fixture was hand-written; this one isn't.)
+AGW_C2_COMBINED_MARKER_GOLDEN = "<!-- ib:cid=ibc_eddd0da31656,rid=ibr_5f7c7a490284 -->"
+
+
+def test_marker_re_matches_agw_golden_combined_marker():
+    from efficacy import MARKER_RE, _find_cid_in_text
+    m = MARKER_RE.search(AGW_C2_COMBINED_MARKER_GOLDEN)
+    assert m and m.group(1) == "ibc_eddd0da31656", \
+        "AGW combined-marker wire format changed — see fixture comment"
+    assert _find_cid_in_text(
+        f"final answer {AGW_C2_COMBINED_MARKER_GOLDEN}") == "ibc_eddd0da31656"
+
+
 def test_verdict_b_fail_when_text_response_missing_marker():
     turns = [Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",

@@ -1,6 +1,6 @@
 # aiplay — convenience targets
 
-.PHONY: up down logs reset check-agw up-safe rotate-keys test help
+.PHONY: up down logs reset check-agw up-safe rotate-keys test smoke-rid help
 
 help:
 	@echo "aiplay targets:"
@@ -12,6 +12,7 @@ help:
 	@echo "  up-safe      — check-agw THEN up (fails fast if image missing)"
 	@echo "  rotate-keys  — restart adapters to pick up .env changes"
 	@echo "  test         — run pytest suite (harness + adapters)"
+	@echo "  smoke-rid    — run a real RID trial; assert RID audit shape + verdict (b)"
 
 up:
 	docker compose up -d
@@ -45,3 +46,6 @@ rotate-keys:
 
 test:
 	cd harness && python3 -m pytest ../tests/ -xvs
+
+smoke-rid:
+	@AIPLAY_API=$${AIPLAY_API:-http://localhost:8000} ./scripts/smoke_rid.sh
