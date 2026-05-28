@@ -7,7 +7,13 @@ from typing import Any
 
 from trials import Trial, Verdict
 
-MARKER_RE = re.compile(r"<!--\s*ib:cid=(ibc_[a-f0-9]{12})\s*-->")
+# Matches the C2 text marker and extracts the CID. Tolerant of the CHG-26C
+# combined-carrier grammar: AGW now emits `<!-- ib:cid=X,rid=Y -->` (cid +
+# rid) when both text_marker_cid and text_marker_rid are enabled, not just the
+# legacy cid-only `<!-- ib:cid=X -->`. `[^>]*?` allows any other key=value
+# pairs (e.g. `,rid=...`) around the cid while still requiring a well-formed
+# `-->` close. Matches cid-only, cid+rid, and rid-then-cid orderings.
+MARKER_RE = re.compile(r"<!--\s*ib:[^>]*?cid=(ibc_[a-f0-9]{12})[^>]*?-->")
 
 
 def _user_msg_turns(trial: Trial):

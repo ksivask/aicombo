@@ -66,6 +66,49 @@ def test_verdict_b_pass_when_c2_marker_in_text_response():
     assert v["b"].verdict == "pass"
 
 
+def test_verdict_b_pass_with_combined_cid_rid_marker():
+    """Verdict b — CHG-26C combined marker `<!-- ib:cid=X,rid=Y -->`.
+
+    Regression: when text_marker_cid AND text_marker_rid are both enabled,
+    AGW emits the combined-carrier marker. MARKER_RE must still extract the
+    cid (the old regex required `-->` right after the cid and missed it,
+    making verdict b report 'C2 text marker absent' on real RID trials).
+    """
+    turns = [Turn(
+        turn_id="t0", turn_idx=0, kind="user_msg",
+        response={
+            "body": {
+                "choices": [
+                    {"message": {"content":
+                        "Here's info.<!-- ib:cid=ibc_abc123def456,rid=ibr_0011223344ff -->"}}
+                ]
+            }
+        },
+    )]
+    audit = [
+        AuditEntry(trial_id="t", turn_id="t0", phase="terminal",
+                   cid="ibc_abc123def456", backend="ollama", raw={}),
+    ]
+    trial = _trial_with(turns, audit)
+    v = compute_verdicts(trial)
+    assert v["b"].verdict == "pass", v["b"].reason
+
+
+def test_marker_re_extracts_cid_from_combined_and_legacy():
+    """MARKER_RE handles cid-only, cid+rid, and rid+cid orderings; cid extracted."""
+    from efficacy import MARKER_RE
+    cases = [
+        "<!-- ib:cid=ibc_abc123def456 -->",                      # legacy cid-only
+        "<!-- ib:cid=ibc_abc123def456,rid=ibr_0011223344ff -->",  # combined cid+rid
+        "<!-- ib:rid=ibr_0011223344ff,cid=ibc_abc123def456 -->",  # rid-then-cid
+    ]
+    for c in cases:
+        m = MARKER_RE.search(c)
+        assert m and m.group(1) == "ibc_abc123def456", c
+    # rid-only marker carries no cid → no match
+    assert MARKER_RE.search("<!-- ib:rid=ibr_0011223344ff -->") is None
+
+
 def test_verdict_b_fail_when_text_response_missing_marker():
     turns = [Turn(
         turn_id="t0", turn_idx=0, kind="user_msg",
