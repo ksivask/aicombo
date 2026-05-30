@@ -673,6 +673,62 @@ Each test asserts BOTH the validator dict AND the /info exposure mirror. If a co
 ### Open follow-up items (this session — not done, listed for visibility)
 - Update `tests/test_adapter_combo.py:709,725` to use the current `llm_hop_*` phase taxonomy. The current `e["t"].startswith("llm_dispatch_")` predicate never matches post-c245d3e and the ordering assertion at L728-732 vacuously passes.
 - Update `tests/test_efficacy.py:1044,1056` synthetic fixtures from `llm_dispatch_0` to `llm_hop_0` for consistency (still functionally valid — verdict_k extracts route from URL substring not phase name).
+
+## 2026-05-19 — Task 14: CID literal sweep ib_<hex> → ibc_<hex> for CHG-25A
+
+### Scope decision
+- Task said "test fixtures + production source"; explicit out-of-scope: docs (~20 historical mentions in design.md/enhancements.md left untouched — historical design notes).
+- Field names `_ib_cid` / `_ib_gar` / `_ib_ss` STAY (CHG-25A only renames VALUE prefix).
+- frontend/trial.js: `CID_RE` regex AND `cidNodeId = cid => C_${cid.slice(3)}` BOTH needed updating — `slice(3)` was stripping "ib_" (3 chars); under `ibc_` (4 chars) it'd leak the `c` into the node id. Changed to `slice(4)`.
+
+### Short literal handling
+- 4 distinct "mnemonic" shapes encountered: `ib_abc/aaa/bbb/xyz` (3 chars), `ib_continuous1` (13 chars), `ib_leakedcid12` / `ib_singlecid01` (14 chars), `ib_unique_chat` (14 chars w/ underscore).
+- Decision: just prepend `c` to ALL — preserves readable mnemonics, semantics unchanged. Aiplay code has no `Cid::parse`-equivalent; these are opaque AuditEntry data values, not regex-tested.
+- Negative test `test_classify_diff_rejects_short_ib_hex` (test_pairs.py:318) updated to use `ibc_abc` (still short on purpose; the test's stated intent is "short malformed prefix").
+
+### Production regex sites swept
+- `harness/api.py::_CID_MARKER_RE` — `ib_[a-f0-9]{12}` → `ibc_[a-f0-9]{12}`
+- `harness/efficacy.py::MARKER_RE` — same prefix swap inside `<!-- ib:cid=… -->` capture
+- `frontend/trial.js::CID_RE` — same swap + `cidNodeId` slice(3)→slice(4)
+- `harness/audit_tail.py` comment only (no regex change — `_CID_RE` is shape-agnostic, captures whatever's inside `Some("…")`)
+
+### Coordination with prior-session uncommitted work
+- Session started with uncommitted prior-session changes on test_adapter_combo / test_api / test_efficacy + docs (open follow-ups list item #1, #2 above had partial work).
+- The `git stash push --keep-index` plan didn't work — index was empty so stash captured everything. Pop'd back, then took the surgical path: `git checkout HEAD` on mixed files, re-applied ONLY CID sweep via perl, staged + committed, then manually restored the prior-session changes back into the working tree from the captured initial diff.
+- Net result: commit `3388b74` contains ONLY CID sweep (10 files, 115+/113-); prior-session changes preserved as uncommitted in working tree (test_adapter_combo, test_api, test_efficacy, docs).
+
+### Verification
+- AST parse: all 9 swept files parse OK.
+- pytest in `aiplay-harness:local` container: 120 tests pass (test_efficacy, test_trials, test_runner, test_audit_tail, test_pairs, test_api).
+- pytest in `aiplay-adapter-combo:local` container: 26 tests pass (test_adapter_combo).
+- Field name sanity: `_ib_cid`/`_ib_gar`/`_ib_ss` count = 58 references intact post-sweep.
+- Zero `ibc_cid`/`ibc_gar`/`ibc_ss` corruption (would indicate over-eager sweep on field names).
+
+### Commit
+`3388b74` test(aiplay): sweep CID literals ib_<hex> → ibc_<hex> for CHG-25A
+
 - Optional: add detection for llama3.1-style "tool call as text" pattern (assistant `content` starts with `{"name": ... "parameters":` while `tool_calls is None`) in combo. Either parse it back into a real tool call OR emit a synthetic `llm_text_toolcall_dropped` framework_event so the trial page surfaces "model attempted a tool call but dropped it as text".
 - Run `pytest tests/test_adapter_combo.py -v` before committing the framework_bridge.py mark_idx change.
 - Rebuild + redeploy adapter-combo container to pick up the framework_bridge.py change before re-running diagnosis trials.
+
+---
+
+## 2026-05-20 — Re-smoke takeaways (image `v1.0.1-ib.mcp.cidgar`, host-Ollama topology)
+
+### Key fact established
+Ollama runs on the HOST (`192.168.64.1`), not the VM (`192.168.64.2`). Bare-VM `curl localhost:11434` will always fail — that's not where Ollama lives. Container-side reachability is via `host.docker.internal:11434`, mapped through compose's `extra_hosts` from `.env`'s `HOST_DOCKER_INTERNAL_IP=192.168.64.1`. Future agents should hit `http://192.168.64.1:11434/api/tags` for pre-flight, NOT `localhost:11434`.
+
+### AGW container is distroless
+No `sh`, no `curl`. In-container probes via `docker compose exec agentgateway sh -c …` will fail. Either trust the functional trial as the reachability test, or shell into a non-distroless sibling (harness-api has python3 but no curl, and lacks `extra_hosts` for `host.docker.internal` itself).
+
+### Matrix seeding gotcha
+`/matrix` returns whatever is persisted in `data/matrix.json`. If the file exists with `{"rows": []}` (e.g. after a `DELETE /matrix`), it WILL NOT re-seed from `harness/defaults.yaml`. To re-seed: delete the file entirely + restart harness-api. Seeding only happens when the file is absent. Worth filing as a small DX bug — `DELETE /matrix` should either re-seed or expose a `POST /matrix/reseed`.
+
+### Verdict (b) on real-LLM trials
+Verdict (b) "C2 text marker present in response content" is a strict probe — it scans the LLM's reply text for the CID marker. `gpt-oss:120b-cloud` (and most production LLMs) don't echo internal markers back; they answer the user's question in natural language. This makes verdict (b) fail by default on any real-LLM trial. Two options for downstream cleanup:
+1. Loosen verdict (b): accept "marker present anywhere in the response chain" (not just text content).
+2. Make verdict (b) `na` for trials where the system prompt doesn't explicitly instruct the model to echo the marker.
+For the ship gate, (b) failure is acceptable IF (a/c/f/i) all pass — those are the governance-correctness signals.
+
+### tool_call audit body shape
+`gar` and `snapshot_hash` are TOP-LEVEL fields in the `body` dict for `phase=tool_call` audits — NOT nested under `args._ib_gar` / `args._ib_ss`. The audit-construction code lifts them out of the tool arguments and into structured top-level fields. Task scripts that probe `args._ib_gar` will report 0 — but the verdict logic reads the right place.

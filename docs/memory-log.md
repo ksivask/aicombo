@@ -79,3 +79,24 @@ Background subagent hit permission denial on Bash + Write to `/my/ws/aiplay/`. M
 - Combined with the global `deny_unknown_fields` set by the `schema!` macro alias in serdes.rs:52–56, this means YAML merge keys (`<<: *anchor`) WILL FAIL at runtime — the literal `<<` key reaches the schema and is rejected.
 - DO NOT introduce YAML anchors anywhere in `agw/config.yaml` or any other AGW-consumed YAML file until this loader changes.
 - Future fix: wire `serde_yaml::Value::apply_merge` into `yamlviajson::from_str` before the transcode (or migrate to `serde_yml`/manual `Value` round-trip). Then merge keys become safe.
+
+---
+
+## 2026-05-20 — Aiplay topology + smoke gotchas (memory)
+
+- **Ollama lives on the HOST (192.168.64.1), not in this VM (192.168.64.2).** Pre-flight from VM: `curl http://192.168.64.1:11434/api/tags`. NEVER `curl localhost:11434` from VM shell. Container-side via `host.docker.internal:11434` (mapped by compose `extra_hosts` from `.env`'s `HOST_DOCKER_INTERNAL_IP`).
+- **AGW image is distroless** — no `sh`, no `curl`. `docker compose exec agentgateway sh …` will fail. Test functionally via a trial.
+- **Matrix re-seed**: `DELETE /matrix` leaves `data/matrix.json` as `{"rows": []}` and `/matrix` will NOT re-seed. To re-seed from `harness/defaults.yaml`: `rm data/matrix.json && docker compose restart harness-api`.
+- **Verdict (b) is strict**: real LLMs don't echo CID markers in NL replies. (b) fail with (a/c/f/i) pass is acceptable; (b) is an LLM-behavior probe, not a governance check.
+- **tool_call audit body** has `gar` + `snapshot_hash` at TOP LEVEL (not nested under `args._ib_gar`). Probes that look inside `args` will undercount.
+
+---
+
+## 2026-05-27 — RID (Design B/C) findings + deploy/test gotchas (memory)
+
+- **CHG-26A follow-up (logged, deferred — Task #84):** AGW f2 resolves `parent_rid` as the LAST occurrence of the highest-priority carrier class (`prev_resp_id>c1>c3>c2`), NOT the globally-last rid. So it can SKIP the immediate predecessor when that run used a lower-priority carrier or no marker (smoke `de0d6b63`: run4→run2, because run3 was a terminal text reply with no C1 tool_use marker). Also `parent_rid_anomaly` (= any candidate ≠ winner) fires on NORMAL multi-turn replay (every older rid in replayed history "disagrees") → noisy/near-useless. FIX: resolve by GLOBAL recency (max body position, any carrier) + flag anomaly only on SAME-position carrier conflict. Tradeoff: recency-over-trust vs current trust-ordering (C1 hard to forge, C2 spoofable).
+- **`parent_run_rid` (MCP call ↔ requesting LLM run) is CORRECT and robust — different mechanism, NOT affected by the parent_rid quirk.** It's a direct f3-stamp (inject current run's rid into that tool_use.input) / f4-pop. Can only be correct or absent (if framework strips the key), never mis-attributed. This is the primary RID use case and it works.
+- **aiplay correlation should be POSITIONAL:** the `llm_request` audit entries in capture order ARE the runs in order; immediate predecessor = run k−1 positionally. verdict_l (C1) does this and treats AGW's `parent_rid` as the value-under-test — resilient to the AGW resolution quirk. Don't depend on AGW's parent_rid as ground-truth for "which run preceded."
+- **pytest is NOT on the host VM.** efficacy/api tests run in `aiplay-harness-api-1` (has pytest-asyncio). Adapter tests (`test_adapter_combo.py`, imports `framework_bridge`) run in `aiplay-adapter-combo-1`, which needs `pytest-asyncio==0.23.8` pinned (newer 1.x breaks event-loop on 3 init tests). Pattern: `docker cp harness/efficacy.py tests pytest.ini <container>:/app/ && docker exec <container> sh -c 'cd /app && python -m pytest …'`.
+- **Harness Python is NOT volume-mounted** (`/app` is baked into the `aiplay-harness:local` image; only `data`, `frontend`, `defaults.yaml` are mounts). So harness code changes (e.g. C1 verdicts l/m) need an IMAGE REBUILD to go live — and the running uvicorn caches the import at startup, so even an in-place `docker cp` needs a process restart (and a recreate reverts it). **`frontend/` IS mounted** → C2 viz changes are live immediately.
+- **AGW image for the RID arc: `ghcr.io/agentgateway/agentgateway:v1.0.1-ib.cidgar`** (CHG-26 + CHG-26F). docker-compose line ~40.
