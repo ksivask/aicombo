@@ -2949,3 +2949,74 @@ function detectTurnAnomalies(tree) {
 
   tree.findings = findings;
 }
+
+/**
+ * Build the one-line elevator pitch for the trial header (spec §8).
+ *
+ *   Pass: ✓ PASS · {N}-turn {row} · {cid summary} · {tool summary}
+ *   Warn: ⚠ {findings} of {N} turns flagged · {N}-turn {row} · {cid summary} · {anomaly summary}
+ *   Fail: ✗ FAIL · {N}-turn {row} · {cid summary} · {failure highlights}
+ *
+ * Inputs: tree (already passed through detectTurnAnomalies), trial.
+ * Returns {icon, badge: "pass"|"warn"|"fail", line: string}.
+ *
+ * Length cap: if line > 160 chars, drop the tool summary first, then the
+ * cid summary's qualifier. Never truncate icon or row label.
+ */
+function generateElevatorPitch(trial, tree) {
+  if (!tree) return {icon: "?", badge: "warn", line: "(unknown trial shape)"};
+
+  const badge = tree.header.globalBadge;
+  const icon = badge === "pass" ? "✓ PASS" : badge === "fail" ? "✗ FAIL" : `⚠ ${tree.findings.length} finding${tree.findings.length === 1 ? "" : "s"}`;
+
+  const nTurns = tree.cids.reduce((s, c) => s + c.turns.length, 0);
+  const rowLabel = tree.header.rowDescription || tree.header.rowId || "(unnamed row)";
+
+  // CID summary.
+  let cidSummary;
+  if (tree.multiCidAnomaly) {
+    cidSummary = `${tree.cids.length} distinct CIDs (drift)`;
+  } else if (tree.cids.length === 1) {
+    const c = tree.cids[0];
+    if (c.classification === "preserved") cidSummary = "1 CID stable across all turns";
+    else if (c.classification === "single") cidSummary = "1 CID — single-use";
+    else cidSummary = "1 CID — audit-only";
+  } else {
+    cidSummary = "no CID";
+  }
+
+  // Tool summary.
+  let totalTools = 0, orphanTools = 0;
+  for (const c of tree.cids) for (const t of c.turns) {
+    for (const r of t.llmRuns) totalTools += r.toolCalls.length;
+    totalTools += t.orphanToolCalls.length;
+    orphanTools += t.orphanToolCalls.length;
+  }
+  let toolSummary;
+  if (totalTools === 0) toolSummary = null;
+  else if (orphanTools === 0) toolSummary = `${totalTools} tool call${totalTools === 1 ? "" : "s"}, all traced to LLM run`;
+  else toolSummary = `${totalTools} tool call${totalTools === 1 ? "" : "s"}, ${orphanTools} orphan`;
+
+  // Findings count (for warn).
+  const warnPart = badge === "warn"
+    ? `${tree.findings.length} of ${nTurns} turn${nTurns === 1 ? "" : "s"} flagged`
+    : null;
+
+  const parts = [
+    icon,
+    warnPart,
+    `${nTurns}-turn ${rowLabel}`,
+    cidSummary,
+    toolSummary,
+  ].filter(Boolean);
+
+  let line = parts.join(" · ");
+  if (line.length > 160 && toolSummary) {
+    line = parts.filter(p => p !== toolSummary).join(" · ");
+  }
+  if (line.length > 160 && cidSummary && cidSummary.includes(" — ")) {
+    const shortened = cidSummary.split(" — ")[0];
+    line = line.replace(cidSummary, shortened);
+  }
+  return {icon, badge, line};
+}
