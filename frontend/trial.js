@@ -198,6 +198,7 @@ if (elAbortBtn) {
   });
 }
 const tabContents = {
+  conversation: document.getElementById("tab-conversation"),
   turns: document.getElementById("tab-turns"),
   plan: document.getElementById("tab-plan"),
   verdicts: document.getElementById("tab-verdicts"),
@@ -595,6 +596,7 @@ async function renderTrial(tid) {
     elExportBtn.style.display = "";
   }
 
+  tabContents.conversation.innerHTML = renderConversationTab(trial);
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
@@ -2380,3 +2382,13 @@ function startRowWatchPoll() {
     startRowWatchPoll();
   }
 })();
+
+// ── Customer Conversation View ──
+// Customer-value-oriented rendering of a trial: CID → turn → llm/tool tree
+// with anomaly callouts. See docs/superpowers/specs/2026-05-31-customer-
+// conversation-view-design.md for the full design.
+
+function renderConversationTab(trial) {
+  // Stub — replaced in Task 7 by the full tree emitter.
+  return `<p style="padding:16px;color:#666;">Conversation view — under construction. Use other tabs for now.</p>`;
+}
