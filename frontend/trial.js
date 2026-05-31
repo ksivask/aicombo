@@ -2392,3 +2392,86 @@ function renderConversationTab(trial) {
   // Stub — replaced in Task 7 by the full tree emitter.
   return `<p style="padding:16px;color:#666;">Conversation view — under construction. Use other tabs for now.</p>`;
 }
+
+/**
+ * Extract a human-readable agent response from one trial.turns[i].response.body.
+ *
+ * Adapter shapes probed, in order:
+ *   1. OpenAI chat completions:  {choices: [{message: {content: "..."}}]}
+ *   2. OpenAI streaming concat:  SSE lines "data: {...}" where each delta has
+ *                                choices[0].delta.content; concatenate.
+ *   3. Anthropic messages:       {content: [{type:"text", text: "..."}, ...]}
+ *   4. Responses API:            {output: [{type:"message", content: [{type:"output_text",
+ *                                text: "..."}]}, ...]}
+ *   5. Raw string fallback:      if body is already a string and looks like prose
+ *                                (no leading "{" or "data:"), return it trimmed.
+ *
+ * Returns null if no shape matches. Caller is expected to render a graceful
+ * fallback (e.g., "(response body — see Turns tab)").
+ *
+ * The function never throws — every JSON.parse is try/catch-wrapped because
+ * adapter response bodies in the wild are inconsistent (string vs object,
+ * single SSE event vs concatenated stream).
+ */
+function extractAgentText(turn) {
+  const resp = turn && turn.response;
+  if (!resp) return null;
+  let body = resp.body;
+  if (body == null) return null;
+
+  // If body is a string, try to parse as JSON first; if that fails, try SSE.
+  let parsed = null;
+  if (typeof body === "string") {
+    const trimmed = body.trim();
+    if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+      try { parsed = JSON.parse(trimmed); } catch (_) { parsed = null; }
+    }
+    if (parsed == null && trimmed.startsWith("data:")) {
+      // SSE stream concat — walk lines, parse each JSON after "data: ".
+      const chunks = [];
+      for (const line of trimmed.split(/\r?\n/)) {
+        const m = line.match(/^data:\s*(.*)$/);
+        if (!m || m[1] === "[DONE]") continue;
+        let ev = null;
+        try { ev = JSON.parse(m[1]); } catch (_) { continue; }
+        const d = ev && ev.choices && ev.choices[0] && ev.choices[0].delta;
+        if (d && typeof d.content === "string") chunks.push(d.content);
+      }
+      if (chunks.length) return chunks.join("").trim() || null;
+    }
+    if (parsed == null) {
+      // Plain prose fallback.
+      return trimmed.length ? trimmed : null;
+    }
+  } else if (typeof body === "object") {
+    parsed = body;
+  }
+  if (parsed == null) return null;
+
+  // OpenAI chat completions.
+  const oai = parsed.choices && parsed.choices[0] && parsed.choices[0].message
+    && parsed.choices[0].message.content;
+  if (typeof oai === "string" && oai.length) return oai;
+
+  // Anthropic messages.
+  if (Array.isArray(parsed.content)) {
+    const texts = parsed.content
+      .filter(b => b && b.type === "text" && typeof b.text === "string")
+      .map(b => b.text);
+    if (texts.length) return texts.join("\n").trim() || null;
+  }
+
+  // Responses API.
+  if (Array.isArray(parsed.output)) {
+    const texts = [];
+    for (const item of parsed.output) {
+      if (!item || item.type !== "message" || !Array.isArray(item.content)) continue;
+      for (const c of item.content) {
+        if (c && c.type === "output_text" && typeof c.text === "string") texts.push(c.text);
+      }
+    }
+    if (texts.length) return texts.join("\n").trim() || null;
+  }
+
+  return null;
+}
