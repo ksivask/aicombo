@@ -2523,7 +2523,7 @@ function _partitionAuditsByWindow(audits, startedAt, finishedAt) {
 }
 
 /**
- * Last-6-hex of an mcp-session-id, or "?????" if absent. Matches the
+ * Last-5-hex of an mcp-session-id, or "?????" if absent. Matches the
  * abbreviation used in the CID flow tab's audit node second line.
  */
 function _shortMcpSession(sid) {
