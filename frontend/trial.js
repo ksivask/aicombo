@@ -2475,3 +2475,326 @@ function extractAgentText(turn) {
 
   return null;
 }
+
+/**
+ * Build an rid → {requestAuditIdx, responseAuditIdx, request, response} index
+ * over the trial's llm_request and llm_response audit entries. Used by
+ * buildConversationTree to resolve parent_run_rid lookups.
+ */
+function _indexLlmRunsByRid(audits) {
+  const idx = new Map();
+  for (let i = 0; i < audits.length; i++) {
+    const e = audits[i];
+    const b = e.body || {};
+    const rid = b.rid;
+    if (!rid) continue;
+    const entry = idx.get(rid) || {};
+    if (e.phase === "llm_request") {
+      entry.requestAuditIdx = i;
+      entry.request = e;
+    } else if (e.phase === "llm_response") {
+      entry.responseAuditIdx = i;
+      entry.response = e;
+    }
+    idx.set(rid, entry);
+  }
+  return idx;
+}
+
+/**
+ * Return the audit indices whose body.timestamp falls in [startedAt, finishedAt].
+ * Inclusive on both ends. Timestamps are ISO strings or epoch numbers; coerce
+ * via Date for comparison. Audits with no timestamp fall through (returned as
+ * out-of-window).
+ */
+function _partitionAuditsByWindow(audits, startedAt, finishedAt) {
+  const inWindow = [];
+  const outOfWindow = [];
+  const t0 = new Date(startedAt).getTime();
+  const t1 = new Date(finishedAt).getTime();
+  for (let i = 0; i < audits.length; i++) {
+    const ts = (audits[i].body || {}).timestamp;
+    if (!ts) { outOfWindow.push(i); continue; }
+    const t = new Date(ts).getTime();
+    if (isFinite(t) && t >= t0 && t <= t1) inWindow.push(i);
+    else outOfWindow.push(i);
+  }
+  return {inWindow, outOfWindow};
+}
+
+/**
+ * Last-6-hex of an mcp-session-id, or "?????" if absent. Matches the
+ * abbreviation used in the CID flow tab's audit node second line.
+ */
+function _shortMcpSession(sid) {
+  if (!sid || typeof sid !== "string") return "?????";
+  return sid.length >= 6 ? sid.slice(-5) : sid;
+}
+
+/**
+ * Build the ConversationTree (spec §5) from a trial JSON.
+ *
+ * One pass over trial.turns[] (authoritative turn grouping), one pass over
+ * audits to partition by turn window and CID, then within each (turn, cid)
+ * slice: pair llm_request↔llm_response by rid, attach tool_calls under the
+ * llm_response whose rid matches parent_run_rid, push orphan tool_calls under
+ * the turn.
+ *
+ * Anomaly detection + finding propagation runs after this in
+ * detectTurnAnomalies (Task 5). This function leaves the anomalies arrays
+ * empty for downstream filling.
+ *
+ * Returns null if trial is unrecognisable (missing turns + audit_entries).
+ */
+function buildConversationTree(trial) {
+  if (!trial || (!trial.turns && !trial.audit_entries)) return null;
+
+  const audits = trial.audit_entries || [];
+  const turns = trial.turns || [];
+  const plan = (trial.turn_plan && trial.turn_plan.turns) || [];
+
+  // Build trial-level rid→llmRun index (§5.1 step 4 — needed even before
+  // we walk turns, so orphan detection can ask "does this parent_run_rid
+  // resolve to ANY llm_request.rid in the trial").
+  const rid2Run = _indexLlmRunsByRid(audits);
+
+  // Top-level state — we may raise trial-wide anomalies during the walk
+  // (e.g., turn_plan_misaligned, out-of-window audits).
+  const trialAnomalies = [];
+
+  // Turn-plan misalignment check (§6.1 row).
+  if (plan.length > 0 && plan.length !== turns.length) {
+    trialAnomalies.push({
+      source: "trial",
+      severity: "warn",
+      reason: `turn_plan_misaligned: plan has ${plan.length} turns, execution has ${turns.length}`,
+    });
+  }
+
+  // Group turns by CID. The common case is one CID; multi-CID falls out of
+  // this naturally (each unique CID becomes its own root in `cidsMap`).
+  // We resolve each turn's CID from the FIRST audit in its window that has
+  // body.cid set. Turns whose audits use multiple CIDs raise mixed_cid_in_turn.
+  const cidsMap = new Map();   // cid → {classification, turns: []}
+  const usedAuditIdxs = new Set();
+
+  for (let ti = 0; ti < turns.length; ti++) {
+    const t = turns[ti];
+    const {inWindow, outOfWindow: oo} = _partitionAuditsByWindow(
+      audits, t.started_at, t.finished_at
+    );
+    for (const i of oo) {
+      // Only report once per audit, the first time it slips a window.
+      if (!usedAuditIdxs.has(i) && !audits[i].body) continue;
+    }
+
+    // Determine CID(s) used in this turn.
+    const cidCounts = new Map();
+    for (const i of inWindow) {
+      const c = (audits[i].body || {}).cid;
+      if (c) cidCounts.set(c, (cidCounts.get(c) || 0) + 1);
+    }
+    const cidsInTurn = [...cidCounts.keys()];
+    const mixedCid = cidsInTurn.length > 1;
+
+    // Turn-level fields.
+    const userText = (plan[ti] && typeof plan[ti].content === "string" && plan[ti].content)
+      ? plan[ti].content
+      : (() => {
+          // Fallback: first llm_request.uctx in window.
+          for (const i of inWindow) {
+            const a = audits[i];
+            if (a.phase === "llm_request" && (a.body || {}).uctx) return a.body.uctx;
+          }
+          return "";
+        })();
+    const agentText = extractAgentText(t) || "";
+    const latencyMs = (t.started_at && t.finished_at)
+      ? Math.max(0, new Date(t.finished_at).getTime() - new Date(t.started_at).getTime())
+      : null;
+
+    const turnNode = {
+      turnIdx: (typeof t.turn_idx === "number") ? t.turn_idx : ti,
+      userText,
+      agentText,
+      startedAt: t.started_at,
+      finishedAt: t.finished_at,
+      latencyMs,
+      badge: "pass",                 // filled by detectTurnAnomalies in Task 5
+      anomalies: [],                 // filled by detectTurnAnomalies
+      llmRuns: [],
+      orphanToolCalls: [],
+      _mixedCid: mixedCid,           // surfaced as anomaly in Task 5
+      _inWindowAuditIdxs: inWindow,  // for the per-turn slice walk below
+    };
+
+    // Per-cid slice within the turn: walk inWindow audits in order, pair
+    // llm_request↔llm_response by rid, attach tool_calls to their parent
+    // llmRun via parent_run_rid lookup; collect orphan tool_calls.
+    //
+    // Key: an llm_request and its llm_response share rid. So we keep a
+    // map from rid → llmRun-node we've started building this turn, and on
+    // llm_response we close it out.
+    const ridToNode = new Map();
+    // Pending tool_call: keyed by mcp-session-id, so when tool_response
+    // arrives we attach it to the same node + compute latency.
+    const pendingTools = new Map(); // mcp-sid → {toolNode, ownerRunNode|null}
+
+    for (const i of inWindow) {
+      const e = audits[i];
+      const b = e.body || {};
+      if (e.phase === "llm_request") {
+        const rid = b.rid;
+        if (!rid) continue;
+        let node = ridToNode.get(rid);
+        if (!node) {
+          node = {
+            rid,
+            parentRid: b.parent_rid || null,
+            parentRidAnomaly: !!b.parent_rid_anomaly,
+            isTurnBoundary: !!b.is_turn_boundary,
+            requestAuditIdx: i,
+            responseAuditIdx: null,
+            providerResponseId: null,
+            parentRidSources: Array.isArray(b.parent_rid_sources) ? b.parent_rid_sources : [],
+            toolCalls: [],
+          };
+          ridToNode.set(rid, node);
+          turnNode.llmRuns.push(node);
+        }
+      } else if (e.phase === "llm_response") {
+        const rid = b.rid;
+        if (!rid) continue;
+        let node = ridToNode.get(rid);
+        if (!node) {
+          // Out-of-order or request-missing case — create a stub.
+          node = {
+            rid, parentRid: null, parentRidAnomaly: false, isTurnBoundary: false,
+            requestAuditIdx: null, responseAuditIdx: i, providerResponseId: b.provider_response_id || null,
+            parentRidSources: [], toolCalls: [],
+          };
+          ridToNode.set(rid, node);
+          turnNode.llmRuns.push(node);
+        } else {
+          node.responseAuditIdx = i;
+          node.providerResponseId = b.provider_response_id || null;
+        }
+      } else if (e.phase === "tool_call") {
+        const sid = b["mcp-session-id"] || b.mcp_session_id || "";
+        const prr = b.parent_run_rid;
+        const ownerRun = prr ? ridToNode.get(prr) : null;
+        // Strict orphan rule (§6.1): orphan if parent_run_rid is missing OR
+        // doesn't resolve to a trial-local llm_request.rid. The trial-local
+        // index (rid2Run) covers the "stamped but from a different conv"
+        // case explicitly.
+        const resolvable = !!prr && rid2Run.has(prr);
+        const toolNode = {
+          name: b.tool_name || b.name || "(unnamed)",
+          mcpSession: _shortMcpSession(sid),
+          mcpSessionFull: sid,
+          parentRunRid: prr || null,
+          ssConsumed: false,                 // filled if SS audit seen below
+          ssAuditIdx: null,
+          ssHash: null,
+          callAuditIdx: i,
+          responseAuditIdx: null,
+          latencyMs: null,
+          status: "ok",
+          errorPreview: null,
+          anomalies: [],
+        };
+        if (resolvable && ownerRun) {
+          ownerRun.toolCalls.push(toolNode);
+        } else {
+          turnNode.orphanToolCalls.push(toolNode);
+        }
+        pendingTools.set(sid, {toolNode, ownerRunNode: ownerRun || null});
+      } else if (e.phase === "tool_response") {
+        const sid = b["mcp-session-id"] || b.mcp_session_id || "";
+        const pending = pendingTools.get(sid);
+        if (!pending) continue;
+        pending.toolNode.responseAuditIdx = i;
+        const tCallTs = audits[pending.toolNode.callAuditIdx]
+          && (audits[pending.toolNode.callAuditIdx].body || {}).timestamp;
+        const tRespTs = b.timestamp;
+        if (tCallTs && tRespTs) {
+          const dt = new Date(tRespTs).getTime() - new Date(tCallTs).getTime();
+          if (isFinite(dt)) pending.toolNode.latencyMs = Math.max(0, dt);
+        }
+        if (b.status && b.status !== "ok") {
+          pending.toolNode.status = String(b.status);
+          pending.toolNode.errorPreview = (b.error_preview || b.error || "").slice(0, 200);
+        }
+        pendingTools.delete(sid);
+      } else if (e.phase === "ib_ss" || e.phase === "snapshot") {
+        // Snapshot audit — attach to whatever tool_call's snapshot_hash
+        // matches, if any. Otherwise the snapshot is orphan (handled in
+        // detectTurnAnomalies via per-turn unconsumed-snapshot count).
+        const h = b.snapshot_hash || b.hash;
+        if (!h) continue;
+        // Walk all toolNodes in this turn (under runs + orphans) and match.
+        let matched = false;
+        const visitTools = nodes => {
+          for (const tn of nodes) {
+            if ((audits[tn.callAuditIdx] && audits[tn.callAuditIdx].body
+                 && audits[tn.callAuditIdx].body.snapshot_hash) === h) {
+              tn.ssConsumed = true;
+              tn.ssAuditIdx = i;
+              tn.ssHash = h;
+              matched = true;
+            }
+          }
+        };
+        for (const r of turnNode.llmRuns) visitTools(r.toolCalls);
+        visitTools(turnNode.orphanToolCalls);
+        if (!matched) {
+          turnNode.anomalies.push({
+            source: `audit#${i}`,
+            severity: "warn",
+            reason: `snapshot_orphan: SS ${h.slice(0, 8)}… not consumed by any tool_call in this turn`,
+          });
+        }
+      }
+    } // end inWindow walk
+
+    // Push the turn into the correct CID root. If multiple CIDs in turn,
+    // duplicate the turn under each CID? No — that misrepresents history.
+    // Instead, file the turn under the FIRST CID encountered and raise
+    // mixed_cid_in_turn anomaly (Task 5).
+    const primaryCid = cidsInTurn[0] || "(unknown)";
+    if (!cidsMap.has(primaryCid)) {
+      cidsMap.set(primaryCid, {cid: primaryCid, classification: "preserved", turns: []});
+    }
+    cidsMap.get(primaryCid).turns.push(turnNode);
+  }
+
+  // Classify each CID (preserved / single / audit-only). Matches the
+  // logic implicit in renderCidFlowTab's existing CID classification
+  // (turns-attributed = ≥1, multi-turn = ≥2). audit-only = CID was seen in
+  // audits but no turn used it. For our cids map, "preserved" needs ≥2
+  // turns referencing it; "single" = exactly 1; "audit-only" never happens
+  // in this map because we only added CIDs that had at least one turn —
+  // but the trial may have CIDs in audits that no turn touched, which
+  // we surface as multiCidAnomaly + a "phantom" root in Task 5.
+  for (const root of cidsMap.values()) {
+    if (root.turns.length >= 2) root.classification = "preserved";
+    else if (root.turns.length === 1) root.classification = "single";
+    else root.classification = "audit-only";
+  }
+
+  const cids = [...cidsMap.values()];
+
+  return {
+    header: {
+      rowId: (trial.config && trial.config.row_id) || null,
+      rowDescription: (trial.config && trial.config.description) || null,
+      status: trial.status || null,
+      globalBadge: "pass",          // filled by detectTurnAnomalies (Task 5)
+      elevatorPitch: "",            // filled by generateElevatorPitch (Task 6)
+    },
+    multiCidAnomaly: cids.length > 1,
+    findings: [],                   // filled by detectTurnAnomalies (Task 5)
+    trialAnomalies,
+    cids,
+  };
+}
