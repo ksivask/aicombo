@@ -2576,17 +2576,12 @@ function buildConversationTree(trial) {
   // We resolve each turn's CID from the FIRST audit in its window that has
   // body.cid set. Turns whose audits use multiple CIDs raise mixed_cid_in_turn.
   const cidsMap = new Map();   // cid → {classification, turns: []}
-  const usedAuditIdxs = new Set();
 
   for (let ti = 0; ti < turns.length; ti++) {
     const t = turns[ti];
-    const {inWindow, outOfWindow: oo} = _partitionAuditsByWindow(
+    const {inWindow} = _partitionAuditsByWindow(
       audits, t.started_at, t.finished_at
     );
-    for (const i of oo) {
-      // Only report once per audit, the first time it slips a window.
-      if (!usedAuditIdxs.has(i) && !audits[i].body) continue;
-    }
 
     // Determine CID(s) used in this turn.
     const cidCounts = new Map();
@@ -2682,12 +2677,11 @@ function buildConversationTree(trial) {
       } else if (e.phase === "tool_call") {
         const sid = b["mcp-session-id"] || b.mcp_session_id || "";
         const prr = b.parent_run_rid;
-        const ownerRun = prr ? ridToNode.get(prr) : null;
         // Strict orphan rule (§6.1): orphan if parent_run_rid is missing OR
-        // doesn't resolve to a trial-local llm_request.rid. The trial-local
-        // index (rid2Run) covers the "stamped but from a different conv"
-        // case explicitly.
-        const resolvable = !!prr && rid2Run.has(prr);
+        // doesn't resolve to an llm_request seen IN THIS TURN. `ridToNode`
+        // is the per-turn map; a hit here implies the rid is also in the
+        // trial-level `rid2Run` index by construction.
+        const ownerRun = prr ? ridToNode.get(prr) : null;
         const toolNode = {
           name: b.tool_name || b.name || "(unnamed)",
           mcpSession: _shortMcpSession(sid),
@@ -2703,7 +2697,7 @@ function buildConversationTree(trial) {
           errorPreview: null,
           anomalies: [],
         };
-        if (resolvable && ownerRun) {
+        if (ownerRun) {
           ownerRun.toolCalls.push(toolNode);
         } else {
           turnNode.orphanToolCalls.push(toolNode);
