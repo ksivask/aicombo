@@ -2652,7 +2652,6 @@ function buildConversationTree(trial) {
       llmRuns: [],
       orphanToolCalls: [],
       _mixedCid: mixedCid,           // surfaced as anomaly in Task 5
-      _inWindowAuditIdxs: inWindow,  // for the per-turn slice walk below
     };
 
     // Per-cid slice within the turn: walk inWindow audits in order, pair
@@ -2902,6 +2901,19 @@ function detectTurnAnomalies(tree) {
           severity: "warn",
           reason: "mixed_cid_in_turn: audits in this turn use multiple CIDs",
         });
+      }
+
+      // Build-time anomalies (snapshot_orphan etc., preserved across the
+      // idempotent reset) generate findings on every pass (§6.3).
+      for (const a of turn.anomalies) {
+        if (a && typeof a.source === "string" && a.source.startsWith("audit#")) {
+          findings.push({
+            anchor: `#conv-t${turn.turnIdx}`,
+            title: `Turn ${turn.turnIdx}`,
+            reason: a.reason,
+            severity: a.severity,
+          });
+        }
       }
 
       // Turn-boundary mismatch (§6.1): first llm_request of the turn must
