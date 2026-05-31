@@ -116,3 +116,60 @@ print(f"\n✅ RID smoke PASSED for {trial_id}")
 print(f"   runs: {len(llm_req)}  rids: {rids}")
 print(f"   verdict(b): {vb.get('verdict')} — {vb.get('reason','')[:70]}")
 PY
+
+# ── Conversation View HTML-scrape pass ──
+# After the RID-shape audits pass, verify the static structure of trial.html
+# carries the Conversation tab as the first tab + default-active, and that
+# the JS file ships the renderConversationTab + buildConversationTree
+# entrypoints. The smoke can't execute JS to verify the rendered output, so
+# we cover that via manual visual checks listed at the end.
+echo ""
+echo "─── Conversation View HTML-scrape ───"
+html_url="$API/trial.html"
+js_url="$API/trial.js"
+css_url="$API/style.css"
+
+# trial.html: Conversation button is first + default-active; the tab-content
+# div is first + default-active.
+# Note: use herestrings (<<< "$var") not pipes (echo "$var" |) to avoid
+# set -o pipefail falsely tripping on grep -q's early-exit SIGPIPE.
+html=$(curl -fsS "$html_url" 2>/dev/null) \
+  || { echo "❌ failed to fetch trial.html for scrape" >&2; exit 4; }
+grep -qE 'class="trial-tab-btn active" data-tab="conversation"' <<< "$html" \
+  || { echo "❌ trial.html: Conversation tab button missing default-active class" >&2; exit 4; }
+grep -qE '<div id="tab-conversation" class="tab-content active"' <<< "$html" \
+  || { echo "❌ trial.html: tab-conversation content missing default-active class" >&2; exit 4; }
+first_tab=$(awk '/<div class="trial-tabs">/,/<\/div>/' <<< "$html" | grep 'data-tab=' | head -1)
+grep -q 'data-tab="conversation"' <<< "$first_tab" \
+  || { echo "❌ trial.html: Conversation button is not the FIRST tab" >&2; exit 4; }
+
+# trial.js: required functions are exported (defined at file level).
+js=$(curl -fsS "$js_url" 2>/dev/null) \
+  || { echo "❌ failed to fetch trial.js for scrape" >&2; exit 4; }
+for fn in renderConversationTab buildConversationTree detectTurnAnomalies generateElevatorPitch extractAgentText _wireConvToggle; do
+  grep -qE "^function ${fn}\b" <<< "$js" \
+    || { echo "❌ trial.js: function ${fn} not found" >&2; exit 4; }
+done
+grep -q 'let convShowGovInternals' <<< "$js" \
+  || { echo "❌ trial.js: convShowGovInternals top-level state not found" >&2; exit 4; }
+
+# style.css: required class rules ship.
+css=$(curl -fsS "$css_url" 2>/dev/null) \
+  || { echo "❌ failed to fetch style.css for scrape" >&2; exit 4; }
+for cls in '\.conv-badge' '\.conv-cid' '\.conv-turn' '\.conv-llm' '\.conv-tool' '\.conv-gov-internals' '\.conv-multicid-banner' '\.conv-findings' '@keyframes conv-target-ring'; do
+  grep -qE "$cls" <<< "$css" \
+    || { echo "❌ style.css: rule ${cls} not found" >&2; exit 4; }
+done
+
+echo "✅ Conversation View HTML-scrape PASSED"
+echo ""
+echo "─── Manual visual checklist (open the trial in a browser) ───"
+echo "Trial: $API/trial.html?id=$trial_id"
+echo "  □ Conversation tab is leftmost and active on load."
+echo "  □ Header shows auto-generated pitch (one line, with ✓/⚠/✗ badge)."
+echo "  □ Each turn shows 👤 User / 🤖 Agent preview (or graceful 'no text' fallback)."
+echo "  □ LLM runs paired (request + response per rid); tool_calls under llm_response."
+echo "  □ ⚙ Show governance internals: OFF hides internals; ON reveals rid / parent_run_rid / snapshot_hash / etc."
+echo "  □ If trial has > 1 CID: multi-CID banner present + red."
+echo "  □ Findings panel auto-open when anomalies > 0; clicking a link scrolls + flashes the target."
+echo "  □ 'or open Operator: CID flow / Interactive →' link switches to that tab."
