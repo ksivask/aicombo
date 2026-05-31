@@ -2792,3 +2792,152 @@ function buildConversationTree(trial) {
     cids,
   };
 }
+
+/**
+ * Walk the ConversationTree (Task 4 output) and:
+ *   1. Attach anomaly objects per §6.1.
+ *   2. Promote badges: turn = warn if any anomaly; cid = warn if any turn
+ *      warn OR classification != "preserved"; cid promoted to fail if
+ *      classification = "audit-only".
+ *   3. Trial header globalBadge = "fail" if trial.status === "fail" OR
+ *      multiCidAnomaly; "warn" if any cid badge !== "pass"; "pass" else.
+ *      Multi-CID is severity "fail" per §6.1.
+ *   4. Build the flat findings list with stable anchor IDs matching the
+ *      DOM IDs that Task 7's renderer emits (#conv-t{turnIdx}-llm{k},
+ *      #conv-t{turnIdx}-tool{k}, #conv-t{turnIdx}-orphan{k}, #conv-cid-{cidShort}).
+ *
+ * Mutates `tree` in place. Idempotent (safe to call twice).
+ */
+function detectTurnAnomalies(tree) {
+  if (!tree) return;
+  // Idempotency: clear prior anomalies/findings before re-walking.
+  for (const cid of tree.cids) {
+    cid.badge = "pass";
+    for (const t of cid.turns) {
+      t.badge = "pass";
+      t.anomalies = [];
+      for (const tn of t.orphanToolCalls) tn.anomalies = [];
+    }
+  }
+  const findings = [];
+
+  // Promote trial-wide anomalies (set by buildConversationTree) into findings.
+  for (const a of (tree.trialAnomalies || [])) {
+    findings.push({
+      anchor: "#conv-header",
+      title: "Trial",
+      reason: a.reason,
+      severity: a.severity,
+    });
+  }
+
+  for (const cid of tree.cids) {
+    let cidWarn = cid.classification !== "preserved";
+    const cidAnchor = `#conv-cid-${(cid.cid || "unknown").slice(-6)}`;
+
+    if (cid.classification === "audit-only") {
+      findings.push({
+        anchor: cidAnchor,
+        title: `CID ${cid.cid.slice(0, 8)}…`,
+        reason: "audit-only CID: appears in audits but no turn referenced it",
+        severity: "fail",
+      });
+      cid.badge = "fail";
+    } else if (cid.classification === "single") {
+      findings.push({
+        anchor: cidAnchor,
+        title: `CID ${cid.cid.slice(0, 8)}…`,
+        reason: "single-use CID: only one turn used this CID",
+        severity: "warn",
+      });
+    }
+
+    for (const turn of cid.turns) {
+      // Mixed CID in this turn (raised as a flag in Task 4).
+      if (turn._mixedCid) {
+        turn.anomalies.push({
+          source: "turn",
+          severity: "warn",
+          reason: "mixed_cid_in_turn: audits in this turn use multiple CIDs",
+        });
+      }
+
+      // Turn-boundary mismatch (§6.1): first llm_request of the turn must
+      // have is_turn_boundary === true. We treat absence as "feature off,
+      // skip check" rather than failure. The check fires only when at least
+      // one llmRun anywhere in the trial has the field set (proxy for
+      // "RID feature on for this trial").
+      const firstLlm = turn.llmRuns[0];
+      const anyHasBoundary = tree.cids.some(
+        c => c.turns.some(t => t.llmRuns.some(r => r.isTurnBoundary))
+      );
+      if (firstLlm && anyHasBoundary && firstLlm.isTurnBoundary !== true) {
+        turn.anomalies.push({
+          source: "llm_request",
+          severity: "warn",
+          reason: "turn_boundary_mismatch: first llm_request lacks is_turn_boundary=true",
+        });
+      }
+
+      // Per-llm_request parent_rid_anomaly (§6.1).
+      turn.llmRuns.forEach((run, ki) => {
+        if (run.parentRidAnomaly) {
+          turn.anomalies.push({
+            source: `llm_request#${ki}`,
+            severity: "warn",
+            reason: `parent_rid_anomaly: same-position carrier conflict (rid ${run.rid.slice(0, 8)}…)`,
+          });
+          findings.push({
+            anchor: `#conv-t${turn.turnIdx}-llm${ki}`,
+            title: `Turn ${turn.turnIdx} · llm_request`,
+            reason: `parent_rid_anomaly (CHG-26G same-position conflict)`,
+            severity: "warn",
+          });
+        }
+      });
+
+      // Orphan tool_calls (§6.1) — already separated in Task 4.
+      turn.orphanToolCalls.forEach((tn, oi) => {
+        const reason = tn.parentRunRid
+          ? `orphan tool_call ${tn.name}: parent_run_rid ${tn.parentRunRid.slice(0, 8)}… doesn't resolve to a trial-local LLM run`
+          : `orphan tool_call ${tn.name}: missing parent_run_rid (RID injection may be off)`;
+        tn.anomalies.push({source: "tool_call", severity: "warn", reason});
+        turn.anomalies.push({source: `orphan#${oi}`, severity: "warn", reason});
+        findings.push({
+          anchor: `#conv-t${turn.turnIdx}-orphan${oi}`,
+          title: `Turn ${turn.turnIdx} · orphan tool_call ${tn.name}`,
+          reason,
+          severity: "warn",
+        });
+      });
+
+      // Per-turn badge.
+      turn.badge = turn.anomalies.length > 0 ? "warn" : "pass";
+      if (turn.badge !== "pass") cidWarn = true;
+    }
+
+    if (cid.badge !== "fail") cid.badge = cidWarn ? "warn" : "pass";
+  }
+
+  // Multi-CID fail (§6.1).
+  if (tree.multiCidAnomaly) {
+    findings.push({
+      anchor: "#conv-multicid-banner",
+      title: "Trial",
+      reason: `multi-CID: trial spans ${tree.cids.length} distinct conversations (cross-trial drift suspected)`,
+      severity: "fail",
+    });
+  }
+
+  // Trial header global badge: spec §6.2 says "reflect, not recompute" but
+  // multi-CID is treated as fail-level. So: prefer trial.status if fail/error;
+  // else multi-CID → fail; else any cid badge !== pass → warn; else pass.
+  tree.header.globalBadge = (() => {
+    if (tree.multiCidAnomaly) return "fail";
+    if (tree.cids.some(c => c.badge === "fail")) return "fail";
+    if (tree.cids.some(c => c.badge !== "pass")) return "warn";
+    return "pass";
+  })();
+
+  tree.findings = findings;
+}
