@@ -46,6 +46,7 @@ let __servicesNeedsMermaid = false;
 // The cidflow render-cache keys on the rendered-HTML hash, so flipping this
 // changes the HTML and triggers a re-render automatically.
 let showRunLineage = false;
+let convShowGovInternals = false;  // wired in Task 9; declared now so Task 7's render doesn't ReferenceError.
 
 // I-NEW-1: framework-capability cache. The NOTE-tab's framework rules
 // (e.g. "crewai doesn't implement responses") used to hardcode the
@@ -2389,8 +2390,38 @@ function startRowWatchPoll() {
 // conversation-view-design.md for the full design.
 
 function renderConversationTab(trial) {
-  // Stub — replaced in Task 7 by the full tree emitter.
-  return `<p style="padding:16px;color:#666;">Conversation view — under construction. Use other tabs for now.</p>`;
+  const tree = buildConversationTree(trial);
+  if (!tree) {
+    return `<p style="padding:16px;">No conversation data for this trial.</p>`;
+  }
+  detectTurnAnomalies(tree);
+  const pitch = generateElevatorPitch(trial, tree);
+
+  const header = `<header class="conv-header" id="conv-header">
+      <span class="conv-badge ${pitch.badge}">${escapeHtml(pitch.icon)}</span>
+      <span class="conv-pitch">${escapeHtml(pitch.line)}</span>
+      <label class="conv-toggle">
+        <input type="checkbox" id="conv-gov-internals-cb" ${convShowGovInternals ? "checked" : ""}>
+        ⚙ Show governance internals
+      </label>
+      <a class="conv-link" href="#" data-tab-target="cidflow-interactive">or open Operator: CID flow / Interactive →</a>
+    </header>`;
+
+  const multiBanner = tree.multiCidAnomaly
+    ? `<section class="conv-multicid-banner" id="conv-multicid-banner">⚠ This trial spans ${tree.cids.length} conversations — see verdict (a) / (i). Cross-trial drift suspected.</section>`
+    : "";
+
+  const findings = tree.findings.length
+    ? `<section class="conv-findings" id="conv-findings">
+        <details open><summary>Findings (${tree.findings.length})</summary>
+          <ul>${tree.findings.map(f => `<li class="conv-finding-${f.severity}"><a href="${escapeHtml(f.anchor)}">${escapeHtml(f.title)}</a> — ${escapeHtml(f.reason)}</li>`).join("")}</ul>
+        </details>
+      </section>`
+    : "";
+
+  const cids = tree.cids.map(_renderConvCidRoot).join("");
+
+  return header + multiBanner + findings + cids;
 }
 
 /**
@@ -3019,4 +3050,132 @@ function generateElevatorPitch(trial, tree) {
     line = line.replace(cidSummary, shortened);
   }
   return {icon, badge, line};
+}
+
+/**
+ * Render a single tool_call node (used both under llm_runs and as orphan).
+ * `isOrphan` controls anchor id prefix and the "orphan" badge.
+ */
+function _renderConvToolNode(turn, tool, k, isOrphan) {
+  const id = isOrphan ? `conv-t${turn.turnIdx}-orphan${k}` : `conv-t${turn.turnIdx}-tool${k}`;
+  const badgeClass = isOrphan || tool.anomalies.length > 0 ? "warn" : "pass";
+  const badgeIcon = badgeClass === "warn" ? "⚠" : "✓";
+  const ssBit = tool.ssConsumed
+    ? `<span class="conv-ss-flag pass">✓ ss consumed</span>`
+    : "";
+  const orphanFlag = isOrphan ? `<span class="conv-orphan-flag">orphan</span>` : "";
+  const respLine = tool.responseAuditIdx != null
+    ? `<li class="conv-tool-resp">tool_response · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>${tool.latencyMs != null ? ` · ${tool.latencyMs}ms` : ""} · ${escapeHtml(tool.status)}${tool.errorPreview ? ` · <span class="conv-err">${escapeHtml(tool.errorPreview)}</span>` : ""}</li>`
+    : `<li class="conv-tool-resp">(no tool_response)</li>`;
+  const govInternals = `<ul class="conv-gov-internals">
+      <li>parent_run_rid: <code>${escapeHtml(tool.parentRunRid || "—")}</code> · mcp-session-id: <code>${escapeHtml(tool.mcpSessionFull || "—")}</code>${tool.ssHash ? ` · snapshot_hash: <code>${escapeHtml(tool.ssHash)}</code>` : ""}</li>
+    </ul>`;
+  return `<li class="conv-tool ${isOrphan ? "conv-anomaly" : ""}" id="${id}">
+    <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
+    ${isOrphan ? "tool_call (orphan)" : "tool_call"} <code>${escapeHtml(tool.name)}</code>
+    · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>
+    ${ssBit}${orphanFlag}
+    <ul class="conv-tool-resp-list">${respLine}</ul>
+    ${govInternals}
+  </li>`;
+}
+
+/**
+ * Render one llmRun (llm_request + llm_response pair) and its tool_calls.
+ *
+ * Anchor ID: only the REQUEST <li> gets a stable id (`conv-t{idx}-llm{k}`).
+ * The response has no id because no finding in §6.1 attaches to it
+ * (parent_rid_anomaly is on the request; provider_response_id is operator
+ * telemetry, not a finding). Keeping IDs sparse means the Task 5 anchor
+ * formula `#conv-t{idx}-llm{k}` lines up with the llmRun index directly.
+ */
+function _renderConvLlmRun(turn, run, k) {
+  const reqId = `conv-t${turn.turnIdx}-llm${k}`;
+  const reqAnomaly = run.parentRidAnomaly ? " conv-anomaly" : "";
+  const parentBit = run.parentRid
+    ? `parent: <code>${escapeHtml(run.parentRid.slice(0, 12))}…</code>${run.parentRidAnomaly ? ' <span class="conv-anomaly-flag">⚠ same-position conflict</span>' : ""}`
+    : "parent: —";
+  const reqInternals = `<ul class="conv-gov-internals">
+      <li>rid: <code>${escapeHtml(run.rid)}</code> · is_turn_boundary: ${run.isTurnBoundary}${run.parentRidSources.length ? ` · parent_rid_sources: [${run.parentRidSources.map(s => `<code>${escapeHtml(s)}</code>`).join(", ")}]` : ""}</li>
+    </ul>`;
+  const respInternals = `<ul class="conv-gov-internals">
+      <li>rid: <code>${escapeHtml(run.rid)}</code>${run.providerResponseId ? ` · provider_response_id: <code>${escapeHtml(run.providerResponseId)}</code>` : ""}</li>
+    </ul>`;
+  const tools = run.toolCalls.map((t, ti) => _renderConvToolNode(turn, t, ti, false)).join("");
+  return `<li class="conv-llm${reqAnomaly}" id="${reqId}">
+      <span class="conv-phase">▸ llm_request</span>
+      <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
+      <span class="conv-parent">${parentBit}</span>
+      ${reqInternals}
+    </li>
+    <li class="conv-llm">
+      <span class="conv-phase">▸ llm_response</span>
+      <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
+      ${respInternals}
+      ${tools.length ? `<ul class="conv-tools">${tools}</ul>` : ""}
+    </li>`;
+}
+
+/**
+ * Render one turn block.
+ */
+function _renderConvTurn(turn) {
+  const badgeClass = turn.badge;
+  const badgeIcon = badgeClass === "pass" ? "✓" : "⚠";
+  const latency = turn.latencyMs != null ? `${(turn.latencyMs / 1000).toFixed(1)}s` : "";
+  const userPreview = turn.userText ? _truncate(turn.userText, 120) : "(no user message)";
+  const agentPreview = turn.agentText ? _truncate(turn.agentText, 120) : "(no agent text — see Turns tab for raw response)";
+  const userBlock = turn.userText
+    ? `<div class="conv-msg user">👤 User: <span class="conv-text">${escapeHtml(userPreview.shown)}</span>${userPreview.truncated ? `<details><summary>more</summary><div class="conv-text-full">${escapeHtml(turn.userText)}</div></details>` : ""}</div>`
+    : `<div class="conv-msg user">👤 User: <em>(no user message)</em></div>`;
+  const agentBlock = turn.agentText
+    ? `<div class="conv-msg agent">🤖 Agent: <span class="conv-text">${escapeHtml(agentPreview.shown)}</span>${agentPreview.truncated ? `<details><summary>more</summary><div class="conv-text-full">${escapeHtml(turn.agentText)}</div></details>` : ""}</div>`
+    : `<div class="conv-msg agent">🤖 Agent: <em>${escapeHtml(agentPreview)}</em></div>`;
+  const runs = turn.llmRuns.map((r, k) => _renderConvLlmRun(turn, r, k)).join("");
+  const orphans = turn.orphanToolCalls.length
+    ? `<ul class="conv-orphans">
+        <li class="conv-orphan-label">Orphan tool calls (no resolvable parent_run_rid):</li>
+        ${turn.orphanToolCalls.map((t, k) => _renderConvToolNode(turn, t, k, true)).join("")}
+      </ul>`
+    : "";
+  return `<section class="conv-turn ${badgeClass === "warn" ? "conv-anomaly" : ""}" id="conv-t${turn.turnIdx}">
+      <header class="conv-turn-header">
+        <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
+        <span class="conv-turn-title">Turn ${turn.turnIdx}</span>
+        ${latency ? `<small>${latency}</small>` : ""}
+      </header>
+      ${userBlock}
+      ${agentBlock}
+      <ul class="conv-llm-list">${runs}</ul>
+      ${orphans}
+    </section>`;
+}
+
+/**
+ * Render one CID root.
+ */
+function _renderConvCidRoot(cid) {
+  const badgeClass = cid.badge;
+  const badgeIcon = badgeClass === "pass" ? "✓" : badgeClass === "fail" ? "✗" : "⚠";
+  const stab = cid.classification === "preserved"
+    ? `${cid.turns.length} turns · CID stable`
+    : cid.classification === "single"
+    ? `1 turn · CID single-use`
+    : `audit-only`;
+  return `<article class="conv-cid" id="conv-cid-${(cid.cid || "unknown").slice(-6)}" data-cid="${escapeHtml(cid.cid || "")}">
+      <h2><span class="conv-badge ${badgeClass}">${badgeIcon}</span> conversation <code>${escapeHtml(cid.cid || "(unknown)")}</code>
+          <small>${stab}</small></h2>
+      ${cid.turns.map(_renderConvTurn).join("")}
+    </article>`;
+}
+
+/**
+ * Word-aware truncation. Returns {shown, truncated} so the caller can decide
+ * whether to render an expand <details>.
+ */
+function _truncate(text, maxLen) {
+  if (text.length <= maxLen) return {shown: text, truncated: false};
+  let cut = text.lastIndexOf(" ", maxLen);
+  if (cut < maxLen / 2) cut = maxLen;
+  return {shown: text.slice(0, cut) + "…", truncated: true};
 }
