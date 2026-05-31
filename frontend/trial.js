@@ -598,6 +598,7 @@ async function renderTrial(tid) {
   }
 
   tabContents.conversation.innerHTML = renderConversationTab(trial);
+  _wireConvToggle();
   tabContents.turns.innerHTML = (trial.turns || []).map((t, i) => renderTurnCard(trial, t, i)).join("")
     || "<p>Turn execution started — turn cards will appear here as turns complete.</p>";
 
@@ -3178,4 +3179,35 @@ function _truncate(text, maxLen) {
   let cut = text.lastIndexOf(" ", maxLen);
   if (cut < maxLen / 2) cut = maxLen;
   return {shown: text.slice(0, cut) + "…", truncated: true};
+}
+
+/**
+ * Wire the ⚙ Show governance internals checkbox + the "Operator: CID
+ * flow / Interactive" anchor inside the conversation tab. Called after
+ * each renderConversationTab innerHTML write (renderTrial flow).
+ *
+ * Toggle persistence model mirrors showRunLineage: top-level let,
+ * re-applied to the body class on every wire pass.
+ */
+function _wireConvToggle() {
+  const cb = document.getElementById("conv-gov-internals-cb");
+  if (cb) {
+    cb.checked = convShowGovInternals;
+    cb.addEventListener("change", () => {
+      convShowGovInternals = cb.checked;
+      document.body.classList.toggle("conv-gov-on", convShowGovInternals);
+    });
+  }
+  document.body.classList.toggle("conv-gov-on", convShowGovInternals);
+
+  // Operator link: switch to the cidflow-interactive tab using the same
+  // mechanism the tab buttons use. The link has data-tab-target attribute.
+  document.querySelectorAll(".conv-link[data-tab-target]").forEach(a => {
+    a.addEventListener("click", (e) => {
+      e.preventDefault();
+      const target = a.dataset.tabTarget;
+      const btn = document.querySelector(`.trial-tab-btn[data-tab="${target}"]`);
+      if (btn) btn.click();
+    });
+  });
 }
