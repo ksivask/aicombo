@@ -2810,15 +2810,25 @@ function buildConversationTree(trial) {
  */
 function detectTurnAnomalies(tree) {
   if (!tree) return;
-  // Idempotency: clear prior anomalies/findings before re-walking.
+  // Idempotency: clear Task-5-added anomalies/findings before re-walking.
+  // Preserve build-time anomalies (source starts with "audit#") that
+  // buildConversationTree placed on turn.anomalies — e.g. snapshot_orphan.
   for (const cid of tree.cids) {
     cid.badge = "pass";
     for (const t of cid.turns) {
       t.badge = "pass";
-      t.anomalies = [];
+      t.anomalies = (t.anomalies || []).filter(
+        a => a && typeof a.source === "string" && a.source.startsWith("audit#")
+      );
       for (const tn of t.orphanToolCalls) tn.anomalies = [];
     }
   }
+
+  // Compute once — used inside the per-turn turn-boundary check below.
+  const anyHasBoundary = tree.cids.some(
+    c => c.turns.some(t => t.llmRuns.some(r => r.isTurnBoundary))
+  );
+
   const findings = [];
 
   // Promote trial-wide anomalies (set by buildConversationTree) into findings.
@@ -2868,9 +2878,6 @@ function detectTurnAnomalies(tree) {
       // one llmRun anywhere in the trial has the field set (proxy for
       // "RID feature on for this trial").
       const firstLlm = turn.llmRuns[0];
-      const anyHasBoundary = tree.cids.some(
-        c => c.turns.some(t => t.llmRuns.some(r => r.isTurnBoundary))
-      );
       if (firstLlm && anyHasBoundary && firstLlm.isTurnBoundary !== true) {
         turn.anomalies.push({
           source: "llm_request",
@@ -2933,6 +2940,7 @@ function detectTurnAnomalies(tree) {
   // multi-CID is treated as fail-level. So: prefer trial.status if fail/error;
   // else multi-CID → fail; else any cid badge !== pass → warn; else pass.
   tree.header.globalBadge = (() => {
+    if (tree.header.status === "fail" || tree.header.status === "error") return "fail";
     if (tree.multiCidAnomaly) return "fail";
     if (tree.cids.some(c => c.badge === "fail")) return "fail";
     if (tree.cids.some(c => c.badge !== "pass")) return "warn";
