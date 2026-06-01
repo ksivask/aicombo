@@ -2662,9 +2662,18 @@ function buildConversationTree(trial) {
     // map from rid → llmRun-node we've started building this turn, and on
     // llm_response we close it out.
     const ridToNode = new Map();
-    // Pending tool_call: keyed by mcp-session-id, so when tool_response
-    // arrives we attach it to the same node + compute latency.
-    const pendingTools = new Map(); // mcp-sid → {toolNode, ownerRunNode|null}
+    // tool_call → tool_response correlation: AGW does not put mcp-session-id
+    // on the tool_call / tool_response audit body — it lives only in the HTTP
+    // framework_events headers (see _correlateTurnAuditSessions, which the CID
+    // flow tab uses). So we cannot key correlation by sid. Use a FIFO queue
+    // instead — within a turn, tool_responses pair with tool_calls in arrival
+    // order. The session-id (alias + full) IS available via the same per-turn
+    // correlation helper; we look it up below and stash on the toolNode.
+    const pendingTools = []; // FIFO of {toolNode, ownerRunNode|null}
+    const toolCallPairs = inWindow
+      .map(i => [i, audits[i]])
+      .filter(([_, a]) => a && (a.phase === "tool_call" || a.phase === "tools_list"));
+    const sessionMap = _correlateTurnAuditSessions(t, toolCallPairs);
 
     for (const i of inWindow) {
       const e = audits[i];
@@ -2706,7 +2715,11 @@ function buildConversationTree(trial) {
           node.providerResponseId = b.provider_response_id || null;
         }
       } else if (e.phase === "tool_call") {
-        const sid = b["mcp-session-id"] || b.mcp_session_id || "";
+        // Session-id from framework_events correlation (NOT body — AGW does
+        // not put mcp-session-id on the tool_call body).
+        const session = sessionMap.get(i);
+        const sidAlias = session ? session.alias : "?????";
+        const sidFull  = session ? session.full  : "";
         const prr = b.parent_run_rid;
         // Strict orphan rule (§6.1): orphan if parent_run_rid is missing OR
         // doesn't resolve to an llm_request seen IN THIS TURN. `ridToNode`
@@ -2714,9 +2727,11 @@ function buildConversationTree(trial) {
         // trial-level `rid2Run` index by construction.
         const ownerRun = prr ? ridToNode.get(prr) : null;
         const toolNode = {
-          name: b.tool_name || b.name || "(unnamed)",
-          mcpSession: _shortMcpSession(sid),
-          mcpSessionFull: sid,
+          // AGW emits tool name as body.tool; fall back to tool_name / name
+          // for other adapter shapes that might use those keys.
+          name: b.tool || b.tool_name || b.name || "(unnamed)",
+          mcpSession: sidAlias,
+          mcpSessionFull: sidFull,
           parentRunRid: prr || null,
           ssConsumed: false,                 // filled if SS audit seen below
           ssAuditIdx: null,
@@ -2733,10 +2748,10 @@ function buildConversationTree(trial) {
         } else {
           turnNode.orphanToolCalls.push(toolNode);
         }
-        pendingTools.set(sid, {toolNode, ownerRunNode: ownerRun || null});
+        pendingTools.push({toolNode, ownerRunNode: ownerRun || null});
       } else if (e.phase === "tool_response") {
-        const sid = b["mcp-session-id"] || b.mcp_session_id || "";
-        const pending = pendingTools.get(sid);
+        // Pair with the OLDEST unmatched tool_call this turn (FIFO).
+        const pending = pendingTools.shift();
         if (!pending) continue;
         pending.toolNode.responseAuditIdx = i;
         const tCallTs = audits[pending.toolNode.callAuditIdx]
@@ -2746,11 +2761,11 @@ function buildConversationTree(trial) {
           const dt = new Date(tRespTs).getTime() - new Date(tCallTs).getTime();
           if (isFinite(dt)) pending.toolNode.latencyMs = Math.max(0, dt);
         }
-        if (b.status && b.status !== "ok") {
-          pending.toolNode.status = String(b.status);
+        // AGW uses is_error: bool on tool_response; map to a string status.
+        if (b.is_error === true || (b.status && b.status !== "ok")) {
+          pending.toolNode.status = b.status ? String(b.status) : "error";
           pending.toolNode.errorPreview = (b.error_preview || b.error || "").slice(0, 200);
         }
-        pendingTools.delete(sid);
       } else if (e.phase === "ib_ss" || e.phase === "snapshot") {
         // Snapshot audit — attach to whatever tool_call's snapshot_hash
         // matches, if any. Otherwise the snapshot is orphan (handled in
