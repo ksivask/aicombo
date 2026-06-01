@@ -2423,7 +2423,14 @@ function renderConversationTab(trial) {
   const audits = (trial && trial.audit_entries) || [];
   const cids = tree.cids.map(c => _renderConvCidRoot(c, audits)).join("");
 
-  return header + multiBanner + findings + cids;
+  const snapshots = (tree.snapshots && tree.snapshots.length)
+    ? `<section class="conv-snapshots" id="conv-snapshots">
+        <h2>Tool snapshots referenced (${tree.snapshots.length})</h2>
+        ${tree.snapshots.map(_renderConvSnapshot).join("")}
+      </section>`
+    : "";
+
+  return header + multiBanner + findings + cids + snapshots;
 }
 
 /**
@@ -2586,6 +2593,49 @@ function buildConversationTree(trial) {
   const turns = trial.turns || [];
   const plan = (trial.turn_plan && trial.turn_plan.turns) || [];
 
+  // ── Tool snapshots (parallel-root identity) ──
+  // tools_list audits mint snapshots; tool_calls reference one via
+  // body.snapshot_hash. Same snapshot_hash across multiple tools_list audits
+  // is the same snapshot (content-addressed by hash). We build the index here
+  // and attach a consumer entry from each tool_call below.
+  const snapshotsMap = new Map(); // hash → snapshot node
+  const _ensureSnapshot = (hash) => {
+    if (!snapshotsMap.has(hash)) {
+      snapshotsMap.set(hash, {
+        hash,
+        schemaHash: null,
+        backend: null,
+        tools: [],
+        generatingAuditIdxs: [],
+        consumers: [], // [{turnIdx, toolName, anchor}]
+      });
+    }
+    return snapshotsMap.get(hash);
+  };
+  for (let ai = 0; ai < audits.length; ai++) {
+    const e = audits[ai];
+    if (e.phase !== "tools_list") continue;
+    const b = e.body || {};
+    const h = b.snapshot_hash;
+    if (!h) continue;
+    const ss = _ensureSnapshot(h);
+    ss.generatingAuditIdxs.push(ai);
+    if (!ss.schemaHash && b.schema_hash) ss.schemaHash = b.schema_hash;
+    if (!ss.backend && b.backend) ss.backend = b.backend;
+    if (!ss.tools.length && Array.isArray(b.tools)) {
+      // Capture tool definitions on first observation (same hash → same content).
+      // AGW emits tools either as plain strings (just the names) or as objects
+      // with name + description; handle both.
+      ss.tools = b.tools.map(t => {
+        if (typeof t === "string") return {name: t, description: ""};
+        return {
+          name: (t && t.name) || "?",
+          description: (t && (t.description || t.desc)) || "",
+        };
+      });
+    }
+  }
+
   // Build trial-level rid→llmRun index (§5.1 step 4 — needed even before
   // we walk turns, so orphan detection can ask "does this parent_run_rid
   // resolve to ANY llm_request.rid in the trial").
@@ -2734,6 +2784,7 @@ function buildConversationTree(trial) {
           mcpSession: sidAlias,
           mcpSessionFull: sidFull,
           parentRunRid: prr || null,
+          snapshotHash: b.snapshot_hash || null,   // backlink to the conv-ss-{hash} section
           ssConsumed: false,                 // filled if SS audit seen below
           ssAuditIdx: null,
           ssHash: null,
@@ -2744,10 +2795,20 @@ function buildConversationTree(trial) {
           errorPreview: null,
           anomalies: [],
         };
+        let consumerAnchor;
         if (ownerRun) {
           ownerRun.toolCalls.push(toolNode);
+          consumerAnchor = `#conv-t${turnNode.turnIdx}-tool${ownerRun.toolCalls.length - 1}`;
         } else {
           turnNode.orphanToolCalls.push(toolNode);
+          consumerAnchor = `#conv-t${turnNode.turnIdx}-orphan${turnNode.orphanToolCalls.length - 1}`;
+        }
+        if (toolNode.snapshotHash) {
+          _ensureSnapshot(toolNode.snapshotHash).consumers.push({
+            turnIdx: turnNode.turnIdx,
+            toolName: toolNode.name,
+            anchor: consumerAnchor,
+          });
         }
         pendingTools.push({toolNode, ownerRunNode: ownerRun || null});
       } else if (e.phase === "tool_response") {
@@ -2824,6 +2885,7 @@ function buildConversationTree(trial) {
   }
 
   const cids = [...cidsMap.values()];
+  const snapshots = [...snapshotsMap.values()];
 
   return {
     header: {
@@ -2837,6 +2899,7 @@ function buildConversationTree(trial) {
     findings: [],                   // filled by detectTurnAnomalies (Task 5)
     trialAnomalies,
     cids,
+    snapshots,
   };
 }
 
@@ -3098,6 +3161,9 @@ function _renderConvToolNode(turn, tool, k, isOrphan, audits) {
     ? `<span class="conv-ss-flag pass">✓ ss consumed</span>`
     : "";
   const orphanFlag = isOrphan ? `<span class="conv-orphan-flag">orphan</span>` : "";
+  const ssChip = tool.snapshotHash
+    ? ` <a class="conv-ss-link" href="#conv-ss-${escapeHtml(tool.snapshotHash)}" title="jump to tool snapshot">→ ss:<code>${escapeHtml(tool.snapshotHash)}</code></a>`
+    : "";
   const respLine = tool.responseAuditIdx != null
     ? `<li class="conv-tool-resp">tool_response · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>${tool.latencyMs != null ? ` · ${tool.latencyMs}ms` : ""} · ${escapeHtml(tool.status)}${tool.errorPreview ? ` · <span class="conv-err">${escapeHtml(tool.errorPreview)}</span>` : ""}</li>`
     : `<li class="conv-tool-resp">(no tool_response)</li>`;
@@ -3112,7 +3178,7 @@ function _renderConvToolNode(turn, tool, k, isOrphan, audits) {
         <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
         ${isOrphan ? "tool_call (orphan)" : "tool_call"} <code>${escapeHtml(tool.name)}</code>
         · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>
-        ${ssBit}${orphanFlag}
+        ${ssBit}${orphanFlag}${ssChip}
       </summary>
       <ul class="conv-tool-resp-list">${respLine}</ul>
       ${rawCall}${rawResp}
@@ -3219,6 +3285,43 @@ function _renderConvCidRoot(cid, audits) {
       <h2><span class="conv-badge ${badgeClass}">${badgeIcon}</span> conversation <code>${escapeHtml(cid.cid || "(unknown)")}</code>
           <small>${stab}</small></h2>
       ${cid.turns.map(t => _renderConvTurn(t, audits)).join("")}
+    </article>`;
+}
+
+/**
+ * Render one tool-snapshot root — the "parallel identity" to the CID root.
+ * Each unique snapshot_hash from tools_list audits gets one card; tool_calls
+ * that reference it backlink here via #conv-ss-{hash}, and the consumers
+ * list here forward-links to each tool_call (#conv-tN-toolK / orphanK).
+ */
+function _renderConvSnapshot(ss) {
+  const id = `conv-ss-${ss.hash}`;
+  const consumed = ss.consumers.length > 0;
+  const badgeClass = consumed ? "pass" : "warn";
+  const badgeIcon = consumed ? "✓" : "⚠";
+  const consumerLinks = ss.consumers.length
+    ? ss.consumers.map(c => `<li><a href="${escapeHtml(c.anchor)}">Turn ${c.turnIdx} · tool_call <code>${escapeHtml(c.toolName)}</code></a></li>`).join("")
+    : `<li><em>(no tool_call consumed this snapshot — snapshot_orphan)</em></li>`;
+  const toolList = ss.tools.length
+    ? ss.tools.map(t => `<li><code>${escapeHtml(t.name)}</code>${t.description ? ` — ${escapeHtml(t.description.slice(0, 100))}${t.description.length > 100 ? "…" : ""}` : ""}</li>`).join("")
+    : `<li><em>(tool definitions not captured in tools_list body)</em></li>`;
+  return `<article class="conv-snapshot" id="${id}">
+      <h3>
+        <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
+        tool snapshot <code>${escapeHtml(ss.hash)}</code>
+        <small>${ss.tools.length} tool${ss.tools.length === 1 ? "" : "s"} · ${ss.consumers.length} consumer${ss.consumers.length === 1 ? "" : "s"}${ss.backend ? ` · backend: <code>${escapeHtml(ss.backend)}</code>` : ""}</small>
+      </h3>
+      <details>
+        <summary>tools in this snapshot (${ss.tools.length})</summary>
+        <ul class="conv-ss-tools">${toolList}</ul>
+      </details>
+      <details ${ss.consumers.length ? "open" : ""}>
+        <summary>consumed by ${ss.consumers.length} tool_call${ss.consumers.length === 1 ? "" : "s"}</summary>
+        <ul class="conv-ss-consumers">${consumerLinks}</ul>
+      </details>
+      <ul class="conv-gov-internals">
+        <li>schema_hash: <code>${escapeHtml(ss.schemaHash || "—")}</code> · generated by tools_list audit idx: [${ss.generatingAuditIdxs.join(", ") || "—"}]</li>
+      </ul>
     </article>`;
 }
 
