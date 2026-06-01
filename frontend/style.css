@@ -937,6 +937,38 @@ body.conv-gov-on .conv-gov-internals { display: block; }
   0%   { box-shadow: 0 0 0 4px rgba(255, 193, 7, 0.7); }
   100% { box-shadow: 0 0 0 4px rgba(255, 193, 7, 0); }
 }
+/* Click-to-expand on llm and tool nodes: <details>/<summary> reveal the raw
+ * audit JSON. The summary inherits the monospace tree font; the disclosure
+ * triangle comes from the browser-native <summary> marker (no manual ▸).
+ * The raw payload is scrollable + length-capped so large bodies don't
+ * blow up the tree. */
+.conv-llm summary, .conv-tool summary {
+  cursor: pointer; list-style: revert;
+}
+.conv-llm summary::-webkit-details-marker, .conv-tool summary::-webkit-details-marker {
+  color: #6c757d;
+}
+.conv-llm details, .conv-tool details { display: block; }
+.conv-llm details > :not(summary), .conv-tool details > :not(summary) {
+  margin-left: 12px;
+}
+.conv-raw-audit-wrap { margin: 4px 0; }
+.conv-raw-audit-label {
+  font-size: 10px; color: #6c757d; font-family: monospace;
+  margin: 2px 0; text-transform: lowercase;
+}
+.conv-raw-audit {
+  padding: 6px 10px;
+  background: #f1f3f5;
+  border: 1px solid #dee2e6;
+  border-radius: 3px;
+  font-family: monospace; font-size: 11px;
+  color: #212529;
+  white-space: pre-wrap; word-break: break-word;
+  max-height: 320px; overflow: auto;
+  margin: 0;
+}
+
 .conv-llm:target, .conv-tool:target, .conv-turn:target, .conv-cid:target {
   animation: conv-target-ring 1.5s ease-out;
 }

@@ -2420,7 +2420,8 @@ function renderConversationTab(trial) {
       </section>`
     : "";
 
-  const cids = tree.cids.map(_renderConvCidRoot).join("");
+  const audits = (trial && trial.audit_entries) || [];
+  const cids = tree.cids.map(c => _renderConvCidRoot(c, audits)).join("");
 
   return header + multiBanner + findings + cids;
 }
@@ -3083,8 +3084,13 @@ function generateElevatorPitch(trial, tree) {
 /**
  * Render a single tool_call node (used both under llm_runs and as orphan).
  * `isOrphan` controls anchor id prefix and the "orphan" badge.
+ *
+ * The node is wrapped in a <details>; the summary is the always-visible
+ * one-liner; expanding reveals the raw tool_call (and tool_response, if
+ * matched) audit JSON for forensic drill-in. Native <summary> provides the
+ * disclosure triangle, so no manual ▸ glyph here.
  */
-function _renderConvToolNode(turn, tool, k, isOrphan) {
+function _renderConvToolNode(turn, tool, k, isOrphan, audits) {
   const id = isOrphan ? `conv-t${turn.turnIdx}-orphan${k}` : `conv-t${turn.turnIdx}-tool${k}`;
   const badgeClass = isOrphan || tool.anomalies.length > 0 ? "warn" : "pass";
   const badgeIcon = badgeClass === "warn" ? "⚠" : "✓";
@@ -3098,12 +3104,19 @@ function _renderConvToolNode(turn, tool, k, isOrphan) {
   const govInternals = `<ul class="conv-gov-internals">
       <li>parent_run_rid: <code>${escapeHtml(tool.parentRunRid || "—")}</code> · mcp-session-id: <code>${escapeHtml(tool.mcpSessionFull || "—")}</code>${tool.ssHash ? ` · snapshot_hash: <code>${escapeHtml(tool.ssHash)}</code>` : ""}</li>
     </ul>`;
+  const rawCall = _rawAuditPre(audits, tool.callAuditIdx, "tool_call");
+  const rawResp = _rawAuditPre(audits, tool.responseAuditIdx, "tool_response");
   return `<li class="conv-tool ${isOrphan ? "conv-anomaly" : ""}" id="${id}">
-    <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
-    ${isOrphan ? "tool_call (orphan)" : "tool_call"} <code>${escapeHtml(tool.name)}</code>
-    · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>
-    ${ssBit}${orphanFlag}
-    <ul class="conv-tool-resp-list">${respLine}</ul>
+    <details>
+      <summary>
+        <span class="conv-badge ${badgeClass}">${badgeIcon}</span>
+        ${isOrphan ? "tool_call (orphan)" : "tool_call"} <code>${escapeHtml(tool.name)}</code>
+        · mcp-ss <code>${escapeHtml(tool.mcpSession)}</code>
+        ${ssBit}${orphanFlag}
+      </summary>
+      <ul class="conv-tool-resp-list">${respLine}</ul>
+      ${rawCall}${rawResp}
+    </details>
     ${govInternals}
   </li>`;
 }
@@ -3117,7 +3130,7 @@ function _renderConvToolNode(turn, tool, k, isOrphan) {
  * telemetry, not a finding). Keeping IDs sparse means the Task 5 anchor
  * formula `#conv-t{idx}-llm{k}` lines up with the llmRun index directly.
  */
-function _renderConvLlmRun(turn, run, k) {
+function _renderConvLlmRun(turn, run, k, audits) {
   const reqId = `conv-t${turn.turnIdx}-llm${k}`;
   const reqAnomaly = run.parentRidAnomaly ? " conv-anomaly" : "";
   const parentBit = run.parentRid
@@ -3129,16 +3142,28 @@ function _renderConvLlmRun(turn, run, k) {
   const respInternals = `<ul class="conv-gov-internals">
       <li>rid: <code>${escapeHtml(run.rid)}</code>${run.providerResponseId ? ` · provider_response_id: <code>${escapeHtml(run.providerResponseId)}</code>` : ""}</li>
     </ul>`;
-  const tools = run.toolCalls.map((t, ti) => _renderConvToolNode(turn, t, ti, false)).join("");
+  const tools = run.toolCalls.map((t, ti) => _renderConvToolNode(turn, t, ti, false, audits)).join("");
+  const rawReq  = _rawAuditPre(audits, run.requestAuditIdx,  "llm_request");
+  const rawResp = _rawAuditPre(audits, run.responseAuditIdx, "llm_response");
   return `<li class="conv-llm${reqAnomaly}" id="${reqId}">
-      <span class="conv-phase">▸ llm_request</span>
-      <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
-      <span class="conv-parent">${parentBit}</span>
+      <details>
+        <summary>
+          <span class="conv-phase">llm_request</span>
+          <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
+          <span class="conv-parent">${parentBit}</span>
+        </summary>
+        ${rawReq}
+      </details>
       ${reqInternals}
     </li>
     <li class="conv-llm">
-      <span class="conv-phase">▸ llm_response</span>
-      <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
+      <details>
+        <summary>
+          <span class="conv-phase">llm_response</span>
+          <span class="conv-rid">rid=<code>${escapeHtml(run.rid.slice(0, 12))}…</code></span>
+        </summary>
+        ${rawResp}
+      </details>
       ${respInternals}
       ${tools.length ? `<ul class="conv-tools">${tools}</ul>` : ""}
     </li>`;
@@ -3147,7 +3172,7 @@ function _renderConvLlmRun(turn, run, k) {
 /**
  * Render one turn block.
  */
-function _renderConvTurn(turn) {
+function _renderConvTurn(turn, audits) {
   const badgeClass = turn.badge;
   const badgeIcon = badgeClass === "pass" ? "✓" : "⚠";
   const latency = turn.latencyMs != null ? `${(turn.latencyMs / 1000).toFixed(1)}s` : "";
@@ -3159,11 +3184,11 @@ function _renderConvTurn(turn) {
   const agentBlock = turn.agentText
     ? `<div class="conv-msg agent">🤖 Agent: <span class="conv-text">${escapeHtml(agentPreview.shown)}</span>${agentPreview.truncated ? `<details><summary>more</summary><div class="conv-text-full">${escapeHtml(turn.agentText)}</div></details>` : ""}</div>`
     : `<div class="conv-msg agent">🤖 Agent: <em>${escapeHtml(agentPreview)}</em></div>`;
-  const runs = turn.llmRuns.map((r, k) => _renderConvLlmRun(turn, r, k)).join("");
+  const runs = turn.llmRuns.map((r, k) => _renderConvLlmRun(turn, r, k, audits)).join("");
   const orphans = turn.orphanToolCalls.length
     ? `<ul class="conv-orphans">
         <li class="conv-orphan-label">Orphan tool calls (no resolvable parent_run_rid):</li>
-        ${turn.orphanToolCalls.map((t, k) => _renderConvToolNode(turn, t, k, true)).join("")}
+        ${turn.orphanToolCalls.map((t, k) => _renderConvToolNode(turn, t, k, true, audits)).join("")}
       </ul>`
     : "";
   return `<section class="conv-turn ${badgeClass === "warn" ? "conv-anomaly" : ""}" id="conv-t${turn.turnIdx}">
@@ -3182,7 +3207,7 @@ function _renderConvTurn(turn) {
 /**
  * Render one CID root.
  */
-function _renderConvCidRoot(cid) {
+function _renderConvCidRoot(cid, audits) {
   const badgeClass = cid.badge;
   const badgeIcon = badgeClass === "pass" ? "✓" : badgeClass === "fail" ? "✗" : "⚠";
   const stab = cid.classification === "preserved"
@@ -3193,7 +3218,7 @@ function _renderConvCidRoot(cid) {
   return `<article class="conv-cid" id="conv-cid-${(cid.cid || "unknown").slice(-6)}" data-cid="${escapeHtml(cid.cid || "")}">
       <h2><span class="conv-badge ${badgeClass}">${badgeIcon}</span> conversation <code>${escapeHtml(cid.cid || "(unknown)")}</code>
           <small>${stab}</small></h2>
-      ${cid.turns.map(_renderConvTurn).join("")}
+      ${cid.turns.map(t => _renderConvTurn(t, audits)).join("")}
     </article>`;
 }
 
@@ -3206,6 +3231,21 @@ function _truncate(text, maxLen) {
   let cut = text.lastIndexOf(" ", maxLen);
   if (cut < maxLen / 2) cut = maxLen;
   return {shown: text.slice(0, cut) + "…", truncated: true};
+}
+
+/**
+ * Render a <pre class="conv-raw-audit"> block with one audit entry's raw
+ * payload, headed by a small label (`label` is the phase name shown to the
+ * reader). Returns "" if idx is null/missing OR audit[idx] doesn't exist,
+ * so callers can interpolate unconditionally.
+ */
+function _rawAuditPre(audits, idx, label) {
+  if (idx == null || !audits || !audits[idx]) return "";
+  const body = audits[idx].body || audits[idx];
+  let json;
+  try { json = JSON.stringify(body, null, 2); }
+  catch (_) { json = String(body); }
+  return `<div class="conv-raw-audit-wrap"><div class="conv-raw-audit-label">${escapeHtml(label)} audit[${idx}]</div><pre class="conv-raw-audit">${escapeHtml(json)}</pre></div>`;
 }
 
 /**

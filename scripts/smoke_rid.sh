@@ -156,10 +156,14 @@ grep -q 'let convShowGovInternals' <<< "$js" \
 # style.css: required class rules ship.
 css=$(curl -fsS "$css_url" 2>/dev/null) \
   || { echo "❌ failed to fetch style.css for scrape" >&2; exit 4; }
-for cls in '\.conv-badge' '\.conv-cid' '\.conv-turn' '\.conv-llm' '\.conv-tool' '\.conv-gov-internals' '\.conv-multicid-banner' '\.conv-findings' '@keyframes conv-target-ring'; do
+for cls in '\.conv-badge' '\.conv-cid' '\.conv-turn' '\.conv-llm' '\.conv-tool' '\.conv-gov-internals' '\.conv-multicid-banner' '\.conv-findings' '@keyframes conv-target-ring' '\.conv-raw-audit'; do
   grep -qE "$cls" <<< "$css" \
     || { echo "❌ style.css: rule ${cls} not found" >&2; exit 4; }
 done
+
+# Click-to-expand raw-audit drill-in helper is shipped in trial.js.
+grep -qE '^function _rawAuditPre\b' <<< "$js" \
+  || { echo "❌ trial.js: _rawAuditPre helper not found" >&2; exit 4; }
 
 echo "✅ Conversation View HTML-scrape PASSED"
 echo ""
