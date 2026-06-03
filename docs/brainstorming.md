@@ -732,3 +732,28 @@ For the ship gate, (b) failure is acceptable IF (a/c/f/i) all pass — those are
 
 ### tool_call audit body shape
 `gar` and `snapshot_hash` are TOP-LEVEL fields in the `body` dict for `phase=tool_call` audits — NOT nested under `args._ib_gar` / `args._ib_ss`. The audit-construction code lifts them out of the tool arguments and into structured top-level fields. Task scripts that probe `args._ib_gar` will report 0 — but the verdict logic reads the right place.
+
+---
+## Structured X-IB-CID / X-IB-RID header passthrough (2026-06-03)
+
+**Goal:** accept structured `key=value` form for `X-IB-CID` alongside bare form, and add a new `X-IB-RID` header (bare + structured). Promotes AGW spec §14.5/§15.5 + §15.6 (deferred) to active.
+
+**Decisions:**
+- Non-conv_id fields → **generic key-value bag** on GovContext (vs extract-conv_id-only / tid-into-isolation). Carried + audited.
+- **Only conv_id active** for CID (vs tid drives isolation). tid + extras carried-only. Tenant isolation stays keyed on backend_name (§13.4).
+- Grammar: `=` present ⇒ structured; else bare. Comma-separated, keys `[a-z0-9_]+`, split on first `=`, last-wins, bounds (≤8 pairs / key≤32 / val≤128 / charset `[A-Za-z0-9_.:-]`), over-limit dropped+logged.
+- Malformed conv_id ⇒ **lenient** (ignore id, keep bag).
+- Gate: `header_passthrough` gates the **whole header** (id + bag).
+- X-IB-RID structured (user idea, replaced earlier either/or): `run_id` = adopt current RID (override f2's unconditional mint), `prun_id` = parent RID as **winning-source-but-observed** (wins, recorded source=header, disagreeing scan still trips parent_rid_anomaly).
+- Naming: **conv_id / run_id / prun_id**.
+- Config: new `RidConfig`; both `cid.header_passthrough` and `rid.header_passthrough` default **false** (flips current CID default of true — migration note in spec).
+- Impl lands in agw-gh/cidgar (Rust); harness coverage in aiplay; design doc in aiplay/docs/superpowers/specs/.
+
+**Alternatives rejected:**
+- CID-only extraction / tid-into-isolation now → deferred (YAGNI).
+- Separate plain-only X-IB-RID with single semantic (adopt OR seed) → superseded by structured run_id+prun_id carrying both.
+- prid hard-override-silent / just-another-candidate → rejected in favor of winning-but-observed.
+- Short keys cid/rid/prid → user chose conv_id/run_id/prun_id.
+- header_passthrough default true (symmetric) → user chose false for both (opt-in).
+
+**Spec:** docs/superpowers/specs/2026-06-03-cid-rid-header-passthrough-design.md
