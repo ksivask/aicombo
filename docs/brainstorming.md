@@ -756,4 +756,4 @@ For the ship gate, (b) failure is acceptable IF (a/c/f/i) all pass — those are
 - Short keys cid/rid/prid → user chose conv_id/run_id/prun_id.
 - header_passthrough default true (symmetric) → user chose false for both (opt-in).
 
-**Spec:** docs/superpowers/specs/2026-06-03-cid-rid-header-passthrough-design.md
+**Spec:** relocated to agw-gh `ibfork/docs` → `docs/features/2026-06-03-cid-rid-header-passthrough/` (README.md + design.md + plan.md, commit a209ed29). Per-header bag gating + f2 gate placement decided during plan-writing (hook site can't read cfg; mirrors I3).
