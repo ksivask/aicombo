@@ -62,6 +62,8 @@ binds:
                 hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
                   header_passthrough: true
+                rid:
+                  header_passthrough: true      # CHG-27: opt-in for X-IB-RID passthrough
                 gar:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
@@ -99,6 +101,8 @@ binds:
                 hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
                   header_passthrough: true
+                rid:
+                  header_passthrough: true      # CHG-27: opt-in for X-IB-RID passthrough
                 gar:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
@@ -154,6 +158,8 @@ binds:
                 hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
                   header_passthrough: true
+                rid:
+                  header_passthrough: true      # CHG-27: opt-in for X-IB-RID passthrough
                 gar:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
@@ -199,6 +205,8 @@ binds:
                 hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
                   header_passthrough: true
+                rid:
+                  header_passthrough: true      # CHG-27: opt-in for X-IB-RID passthrough
                 gar:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:
@@ -238,6 +246,8 @@ binds:
                 hash_algorithm: sha256          # CHG-25D: new required field
                 cid:
                   header_passthrough: true
+                rid:
+                  header_passthrough: true      # CHG-27: opt-in for X-IB-RID passthrough
                 gar:
                   mode: required                # CHG-25E: was schema_required: true
                 channels:

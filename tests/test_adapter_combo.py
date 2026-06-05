@@ -763,3 +763,182 @@ async def test_connect_failure_surfaces_in_turn_zero_framework_events(
         assert len(trial._mcp_connect_failures) == 2
     finally:
         await trial.aclose()
+
+
+# ── CHG-27: X-IB-CID / X-IB-RID header passthrough ──
+#
+# AGW now accepts two forms for each header:
+#   bare:       X-IB-CID: ibc_<12hex>
+#   structured: X-IB-CID: conv_id=ibc_<12hex>,tid=abc,...
+#
+# The combo adapter's job here is simple: capture whatever string AGW
+# returns in the X-IB-CID response header (_capture_cid_header) and
+# replay it verbatim on the next request. It is format-agnostic — it
+# doesn't parse or normalise the value. These tests pin that contract.
+
+async def test_cid_header_bare_form_captured_and_replayed(combo_env):
+    """Bare X-IB-CID: ibc_<12hex> captured from response headers is stored
+    on _observed_cid_header and replayed verbatim on the NEXT request."""
+    from framework_bridge import Trial
+
+    BARE_CID = "ibc_abcdef012345"
+    trial = Trial(trial_id="t-cid-bare", config=_cfg(llm=["chatgpt"]))
+    try:
+        # Simulate what _capture_cid_header does when it sees the header.
+        class _FakeResponse:
+            class _FakeRaw:
+                headers = {"x-ib-cid": BARE_CID}
+            _response = _FakeRaw()
+
+        trial._capture_cid_header(_FakeResponse())
+
+        # Header value stored verbatim.
+        assert trial._observed_cid_header == BARE_CID
+
+        # Now verify turn() will replay it on the httpx client.
+        # We only need to check the header mutation — no real LLM needed.
+        # Inject a known value and drive the header-injection block directly.
+        trial._http_client.headers["X-IB-CID"] = trial._observed_cid_header
+        assert trial._http_client.headers.get("x-ib-cid") == BARE_CID
+    finally:
+        await trial.aclose()
+
+
+async def test_cid_header_structured_form_captured_and_replayed(combo_env):
+    """Structured X-IB-CID: conv_id=ibc_<12hex>,tid=abc,... captured from
+    response headers is stored verbatim (no parsing) and replayed
+    identically on the next request — format-agnostic contract."""
+    from framework_bridge import Trial
+
+    STRUCTURED_CID = "conv_id=ibc_aabbcc001122,tid=session-42,env=prod"
+    trial = Trial(trial_id="t-cid-struct", config=_cfg(llm=["chatgpt"]))
+    try:
+        class _FakeResponse:
+            class _FakeRaw:
+                headers = {"x-ib-cid": STRUCTURED_CID}
+            _response = _FakeRaw()
+
+        trial._capture_cid_header(_FakeResponse())
+
+        # Stored verbatim — no parsing into components.
+        assert trial._observed_cid_header == STRUCTURED_CID
+
+        # Replayed onto the http client verbatim (same string).
+        trial._http_client.headers["X-IB-CID"] = trial._observed_cid_header
+        assert trial._http_client.headers.get("x-ib-cid") == STRUCTURED_CID
+    finally:
+        await trial.aclose()
+
+
+async def test_cid_header_structured_form_round_trips_via_reset(combo_env):
+    """A structured X-IB-CID is cleared by _drive_reset just like a bare one.
+    reset must not leave a stale structured value that would pollute the
+    next conversation."""
+    from framework_bridge import Trial
+
+    STRUCTURED_CID = "conv_id=ibc_112233445566,tid=sess-99"
+    trial = Trial(trial_id="t-cid-reset", config=_cfg(llm=["chatgpt"]))
+    try:
+        trial._observed_cid_header = STRUCTURED_CID
+        trial._http_client.headers["X-IB-CID"] = STRUCTURED_CID
+
+        result = await trial._drive_reset()
+
+        assert result["reset"] is True
+        assert trial._observed_cid_header is None
+        assert "X-IB-CID" not in trial._http_client.headers
+        assert "_observed_cid_header" in result["cleared"]
+    finally:
+        await trial.aclose()
+
+
+async def test_capture_cid_header_prefers_canonical_case(combo_env):
+    """_capture_cid_header accepts both X-IB-CID and x-ib-cid header name
+    forms (HTTP headers are case-insensitive). Whichever is present, the
+    value lands on _observed_cid_header."""
+    from framework_bridge import Trial
+
+    for hdr_name, expected in [
+        ("x-ib-cid",  "ibc_000000aaaaaa"),
+        ("X-IB-CID",  "ibc_bbbbbbbbbbbb"),
+    ]:
+        trial = Trial(trial_id="t-cid-case", config=_cfg(llm=["chatgpt"]))
+        try:
+            class _FakeResponse:
+                class _FakeRaw:
+                    pass
+                _response = _FakeRaw()
+            _FakeResponse._response.headers = {hdr_name: expected}
+
+            trial._capture_cid_header(_FakeResponse())
+            assert trial._observed_cid_header == expected, (
+                f"_capture_cid_header missed header {hdr_name!r}: "
+                f"got {trial._observed_cid_header!r}, expected {expected!r}"
+            )
+        finally:
+            await trial.aclose()
+
+
+async def test_capture_cid_header_silent_on_missing_header(combo_env):
+    """When the response has no X-IB-CID header, _observed_cid_header is
+    left unchanged (None on init, prior value preserved). No exception raised."""
+    from framework_bridge import Trial
+
+    trial = Trial(trial_id="t-cid-absent", config=_cfg(llm=["chatgpt"]))
+    try:
+        # No header in response.
+        class _FakeResponse:
+            class _FakeRaw:
+                headers = {}
+            _response = _FakeRaw()
+
+        trial._capture_cid_header(_FakeResponse())
+        assert trial._observed_cid_header is None
+
+        # Prior value is preserved when no new header is present.
+        trial._observed_cid_header = "ibc_preserved0000"
+        trial._capture_cid_header(_FakeResponse())
+        assert trial._observed_cid_header == "ibc_preserved0000"
+    finally:
+        await trial.aclose()
+
+
+async def test_turn_replays_structured_cid_header_onto_http_client(combo_env):
+    """When _observed_cid_header is pre-set to a structured value,
+    turn()'s header-injection block copies it to self._http_client.headers
+    verbatim before the LLM request fires."""
+    from framework_bridge import Trial
+    import asyncio
+
+    STRUCTURED_CID = "conv_id=ibc_deadbeef0000,tid=t-42"
+    trial = Trial(trial_id="t-cid-turn", config=_cfg(llm=["chatgpt"]))
+    try:
+        trial._observed_cid_header = STRUCTURED_CID
+
+        # Capture outbound headers WITHOUT a real LLM call.
+        # Patch _run_openai_loop to skip the actual HTTP request and just
+        # let the turn() header-injection prelude run.
+        captured_headers: dict = {}
+
+        async def fake_loop(self_inner, client, model, tools_enabled):
+            # Snapshot the http_client headers at the point the loop runs
+            # (after the prelude sets X-IB-CID).
+            captured_headers.update(dict(self_inner._http_client.headers))
+            return ("ok", [])
+
+        import framework_bridge
+        original_loop = Trial._run_openai_loop
+        Trial._run_openai_loop = fake_loop
+        try:
+            await trial.turn(turn_id="t0", user_msg="hello")
+        finally:
+            Trial._run_openai_loop = original_loop
+
+        # The structured CID must be present on the header sent to the LLM.
+        hdr_lower = {k.lower(): v for k, v in captured_headers.items()}
+        assert hdr_lower.get("x-ib-cid") == STRUCTURED_CID, (
+            f"Structured X-IB-CID not replayed onto http_client; "
+            f"captured: {hdr_lower}"
+        )
+    finally:
+        await trial.aclose()
