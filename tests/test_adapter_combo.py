@@ -926,7 +926,6 @@ async def test_turn_replays_structured_cid_header_onto_http_client(combo_env):
             captured_headers.update(dict(self_inner._http_client.headers))
             return ("ok", [])
 
-        import framework_bridge
         original_loop = Trial._run_openai_loop
         Trial._run_openai_loop = fake_loop
         try:
