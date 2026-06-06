@@ -1328,3 +1328,67 @@ Both fixes were precisely specified with exact before/after code. No ambiguity.
 **User:** add structured `X-IB-CID: conv_id=ibc_...,tid=...` form + keep bare; then add X-IB-RID; idea evolved to structured X-IB-RID `run_id=ibr_...,prun_id=ibr_...`.
 **Reasoning/decisions:** generic key-value bag on GovContext; only conv_id active for CID (tid carried-only); run_id overrides f2 mint, prun_id = winning-but-observed parent; naming conv_id/run_id/prun_id; both header_passthrough default false (flips current CID default true — migration note). Clarified true=trust/read header, false=ignore (derive from in-band content only).
 **Actions:** wrote design doc docs/superpowers/specs/2026-06-03-cid-rid-header-passthrough-design.md; updated brainstorming.md. Impl targets agw-gh/cidgar Rust + aiplay harness tests.
+
+---
+### CHG-27C plan tasks 11–13: config default flip, RidConfig, f2 RID gate (2026-06-04)
+**User:** Implement CHG-27C tasks 11–13 in agw-gh/.worktrees/cidgar (branch ibfork/feat/cidgar): (A) flip CidConfig.header_passthrough default false, (B) add RidConfig, (C) f2 RID gate. 3 commits.
+**Reasoning:** TDD-ish approach per brief. Sub-A: found 2 tests to update — defaults_applied_when_omitted (asserting old true default, now asserts false with message) and header_passthrough_true_honors_pre_populated_ctx_cid (was relying on default=true, now explicitly sets cfg.cid.header_passthrough=true). Flipped default in CidConfig::default(). Sub-B: wrote test first (compile-fail), then added RidConfig struct + Default impl after CidConfig's Default, added pub rid: RidConfig to CidGarConfig (derived Default works since RidConfig: Default, no struct-literal initializations found). Sub-C: updated 5 existing header-RID tests (f2_adopts_header_run_id_instead_of_minting, header_prun_id_wins_and_is_sourced, header_prun_id_disagreeing_with_scan_flags_anomaly, header_prun_id_agreeing_with_scan_no_anomaly, header_prun_id_equal_run_id_flags_self_parent) to explicitly set cfg.rid.header_passthrough=true; added 2 new gate tests; added gate block in on_llm_request after CID gate before mint+parent-resolution.
+**Actions:** 3 commits: 700802be (A), b81f527e (B), 541027b9 (C). 912 unit tests pass, fmt+clippy clean.
+
+---
+**[Reviewer] CHG-27C build-quality review (BASE 22fceb28 .. HEAD 541027b9)**
+**Reasoning:** Read full diff + surrounding config.rs (CidConfig/RidConfig/GarConfig siblings) and cidgar.rs on_llm_request gate region (CID gate I3, new RID gate, RID mint/parent-resolution). Ran governance tests (283 pass) and reproduced repo clippy gate.
+**Finding (blocker):** `cargo clippy --all-targets -- -D warnings` (Makefile:47) FAILS — 2 `derivable_impls` errors. CidConfig::default flipped true→false made its manual impl derivable; new RidConfig manual impl is also derivable. Prior log claim "clippy clean" does not hold. Fix: derive Default, move CHG-27C note to field doc.
+**Finding (doc):** CidConfig.header_passthrough has no field doc; breaking-flip rationale lives only inside Default impl. RidConfig documents on the field (asymmetric). Operator config examples not updated, but test-harness pins cid=true so unaffected; no CHANGELOG exists.
+**Finding (good):** Gate symmetric with CID gate; clears the 3 documented ctx fields; placed correctly before mint. 5 made-explicit tests unchanged in assertions (no semantic drift). 2 new gate tests sound; assert_ne! on minted rid (48-bit uuid) vs fixed test value — collision 1/2^48, acceptable.
+**Verdict:** fix-first (clippy gate).
+
+---
+
+## 2026-06-05 — CHG-27C task 14: IdSource provenance + audit emission
+
+### Entry — User prompt (subagent task)
+**User:** Implement plan task 14 of CHG-27C: IdSource enum + f2 provenance tracking + audit emission of header bags and sources. Two commits (A: IdSource+f2; B: audit emission).
+
+### Reasoning
+Read governance/types.rs, log.rs, cidgar.rs fully (3556 lines). Observed: serde import style in types.rs uses `serde::Serialize` as path attribute (not `use serde`); log.rs uses `use serde::{Deserialize, Serialize}`. Phase::LlmRequest had 7 fields; `parent_rid_sources` uses `Vec::is_empty`, `is_turn_boundary` uses `is_false` helper — this is the skip_serializing_if pattern to mirror. Integration test binary OOM-kills the linker (pre-existing infrastructure issue — verified by stash+baseline run); all 915 lib tests pass.
+
+### Actions
+**Commit A (1b6904c8):** `IdSource` enum added to types.rs before `Channel`; `cid_source`/`rid_source` fields added to `GovContext` after `rid_header_bag`. In cidgar.rs: `IdSource` imported; `had_header_cid`/`had_header_rid` captured after gates; `scanned_was_some` captured before `.or()` consumes it; `ctx.cid_source` and `ctx.rid_source` set after resolution/mint. 3 new tests: `cid_source_reflects_header_vs_generated`, `rid_source_reflects_header_vs_minted`, `cid_source_scan_when_history_carries_cid`.
+
+**Commit B (ae8771c0):** In log.rs: `IdSource` imported; 4 new fields on `Phase::LlmRequest` with `skip_serializing_if = is_id_source_generated` / `Vec::is_empty`; `is_id_source_generated` helper added; `with_audit_redaction` match arm extended to pass-through all 4 new fields; f2 `LogEntry::new(Phase::LlmRequest {...})` populated from `ctx`; existing test `llm_request_phase_omits_rid_fields_when_default` extended with assertions for the 4 new default/empty fields; all 5 existing `Phase::LlmRequest` test constructions updated with `IdSource::default()` + empty vecs.
+
+**Gates:** `cargo fmt --check` OK, `cargo clippy --all-targets -- -D warnings` OK, 915 lib tests OK.
+
+**log.rs reality vs brief:** `cid_header_bag`/`rid_header_bag` typed as `Vec<(agent_core::prelude::Strng, agent_core::prelude::Strng)>` (matching `GovContext`). `IdSource` skipped when `Generated` (not always-emitted) to match the sibling `is_false`/`Vec::is_empty` backwards-compat pattern of all CHG-26D fields.
+
+---
+
+## 2026-06-05 — Plan task 15: CHG-27A/B/C change-ledger + AGW spec promotion (docs worktree)
+
+### Entry — User prompt (subagent task)
+**User:** Implement plan task 15 of feature `2026-06-03-cid-rid-header-passthrough` in the docs repo worktree (`/home/nixusr/ws/agw-gh/.worktrees/docs-v2`, branch `ibfork/docs`). Three sub-tasks: (1) append CHG-27A/B/C rows to change-ledger.md, (2) promote §14.5/§15.5/§15.6 in spec.md, (3) add feature folder row to features README.
+
+### Reasoning
+Read change-ledger.md (full 859 lines) to understand row format — CHG-25/26 blocks use a header-plus-table pattern with a summary paragraph, then a `### File:` section header, then a `| ID | Type | Description | v1alpha | feat branch | Status |` table. Confirmed CHG-26A..G format (the most recent precedent).
+
+Read design.md in the feature folder to understand the three change blocks exactly. Read spec.md (~1100 lines) to locate §14.5 (already the "cidgar config cleanup" section — so the new block goes as §14.7 after §14.6 "run identity"), §15.5, and §15.6. Checked features README.md table structure.
+
+Decided: add §14.7 as the new active spec section; update §15.5/§15.6 in-place with a "PROMOTED" status note + active behavior summary, keeping historical text for context; update the stale §5.2 forward-reference note; add feature folder row to README table with `in-progress` status (implemented on feat branch, not yet merged).
+
+### Actions
+- `docs/change-ledger.md`: appended "Structured X-IB-CID / X-IB-RID header passthrough (CHG-27A through CHG-27C) — 2026-06-04/05" block with summary paragraph + file/table rows for CHG-27A, CHG-27B, CHG-27C. Source branch `ibfork/feat/cidgar`, status `Implemented`.
+- `docs/features/2026-04-19-governance-cidgar/spec.md`: added §14.7 (full active spec: bag grammar, X-IB-CID behavior, X-IB-RID behavior, gate placement, config, breaking change note, provenance, audit extensions, H1-H10 edge case table); updated §15.5 with PROMOTED status + summary of delta from original design (no X-IB-Baggage, baggage via structured form instead); updated §15.6 with PROMOTED status + active behavior summary; updated stale §5.2 forward-reference note.
+- `docs/features/README.md`: added `2026-06-03-cid-rid-header-passthrough/` row with `ibfork/feat/cidgar` + `in-progress`.
+- Staged those three files (not CLAUDE.md), committed as `docs: CHG-27A/B/C structured X-IB-CID/X-IB-RID header passthrough — ledger + spec promotion` → SHA `26618484`.
+
+---
+### Subagent-driven execution: CHG-27 header passthrough (2026-06-04..06)
+**User:** approved subagent-driven execution; mid-run: "don't prompt unless urgent/critical".
+**Process:** 8 units, each implemented by a fresh subagent + spec review + quality review; review minors folded in by controller. Two subagent reports were cut off mid-run (Units 1, 4) — work verified directly from the worktree and completed.
+**Results:**
+- agw-gh cidgar (ibfork/feat/cidgar), aef098da → 50db8775 (22 commits): header_bag.rs parser, cid_from_header, rid_header.rs, GovContext fields, f2 conditional mint + prun_id winning-but-observed, gates (both header_passthrough default FALSE — breaking CID flip), IdSource provenance, audit emission. 917 lib + 82 integration tests green; fmt + clippy --all-targets -D warnings clean.
+- agw-gh docs-v2 (ibfork/docs): 26618484 + 7b31c98a — CHG-27A/B/C ledger rows, spec §14.7 new + §15.5/§15.6 promoted, README index row, status in-progress.
+- aiplay (main): f16c314 + 55b5274 — 14 harness tests (combo capture/replay verbatim round-trip of structured X-IB-CID; audit-tail surfacing of cid_source/rid_source/bags in both log shapes), agw/config.yaml rid.header_passthrough opt-in on 5 LLM routes (cid was already explicit — no breakage from default flip).
+**Review catches worth noting:** clippy -D warnings derivable_impls (fixed by deriving Default), gated-off-header provenance-integrity test added, H10 bare-malformed tests pinned, ledger key/value charset precision fix.
+**Final review:** coherent end-to-end; ready to merge all three repos.
